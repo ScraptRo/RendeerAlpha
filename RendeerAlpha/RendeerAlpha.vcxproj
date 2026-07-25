@@ -1,0 +1,169 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{8b4afa91-2025-47da-b23d-2414bb5d08fb}</ProjectGuid>
+    <RootNamespace>RendeerAlpha</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(SolutionDir)RendeerAlpha\include;$(SolutionDir)RendeerAlpha\src;$(SolutionDir)Dep\Vulkan\include\VULKAN;$(SolutionDir)Dep\Vulkan\include\GLFW;$(SolutionDir)RendeerAlpha\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>G:\Vulkan\include\VULKAN\Lib;G:\Vulkan\include\GLFW\lib-vc2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Lib>
+      <AdditionalDependencies>glfw3.lib;vulkan-1.lib;shaderc_combinedd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)Dep\Vulkan\include\VULKAN\Lib;$(SolutionDir)Dep\Vulkan\include\GLFW\lib-vc2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Lib>
+    <PostBuildEvent>
+      <!-- Deploy the engine's runtime assets (default GUI font, etc.) next to the exe,
+           which shares this OutDir. Consumers get res/ without any manual copy. -->
+      <Command>xcopy "$(ProjectDir)res" "$(OutDir)res\" /E /I /Y /D</Command>
+      <Message>Copying engine res/ to output directory</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(SolutionDir)RendeerAlpha\include;$(SolutionDir)RendeerAlpha\src;$(SolutionDir)Dep\Vulkan\include\VULKAN;$(SolutionDir)Dep\Vulkan\include\GLFW;</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <Lib>
+      <AdditionalDependencies>glfw3.lib;vulkan-1.lib;shaderc_combined.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)Dep\Vulkan\include\VULKAN\Lib;$(SolutionDir)Dep\Vulkan\include\GLFW\lib-vc2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Lib>
+    <PostBuildEvent>
+      <!-- Deploy the engine's runtime assets (default GUI font, etc.) next to the exe,
+           which shares this OutDir. Consumers get res/ without any manual copy. -->
+      <Command>xcopy "$(ProjectDir)res" "$(OutDir)res\" /E /I /Y /D</Command>
+      <Message>Copying engine res/ to output directory</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="include\GraphicalObjects\Mesh.h" />
+    <ClInclude Include="include\GraphicalSrc\MemoryBuffer.h" />
+    <ClInclude Include="include\Core\BackendConnector.h" />
+    <ClInclude Include="include\GraphicalSrc\DeviceHandler.h" />
+    <ClInclude Include="include\GraphicalSrc\Swapchain.h" />
+    <ClInclude Include="include\GraphicalSrc\Renderer.h" />
+    <ClInclude Include="include\GraphicalSrc\FrameBuffer.h" />
+    <ClInclude Include="include\GraphicalSrc\FontAtlas.h" />
+    <ClInclude Include="include\GraphicalSrc\GuiRenderer.h" />
+    <ClInclude Include="include\GraphicalSrc\Shader.h" />
+    <ClInclude Include="include\GraphicalSrc\ShaderCompiler.h" />
+    <ClInclude Include="include\GraphicalObjects\Texture.h" />
+    <ClInclude Include="include\GraphicalSrc\GraphicsPipeline.h" />
+    <ClInclude Include="include\GraphicalSrc\Descriptors.h" />
+    <ClInclude Include="include\GraphicalObjects\Material.h" />
+    <ClInclude Include="include\GraphicalObjects\Scene.h" />
+    <ClInclude Include="include\RendeerAlpha.h" />
+    <ClInclude Include="include\Core\Common.h" />
+    <ClInclude Include="include\Core\Core.h" />
+    <ClInclude Include="include\Core\Framework.h" />
+    <ClInclude Include="include\Core\Datatypes.h" />
+    <ClInclude Include="include\GraphicalObjects\Window.h" />
+    <ClInclude Include="include\GraphicalObjects\Input.h" />
+    <ClInclude Include="include\GraphicalObjects\Gui.h" />
+    <ClInclude Include="include\Logger\Logger.h" />
+    <ClInclude Include="src\vendor\nlohmann\json.hpp" />
+    <ClInclude Include="src\vendor\nlohmann\json_fwd.hpp" />
+    <ClInclude Include="src\vendor\OBJ-Loader-master\OBJ_Loader.h" />
+    <ClInclude Include="src\vendor\RDA_Library\array_wrapper.h" />
+    <ClInclude Include="src\vendor\RDA_Library\concurrent_buffers.h" />
+    <ClInclude Include="src\vendor\RDA_Library\obj_ref.h" />
+    <ClInclude Include="src\vendor\RDA_Library\shared_allocation.h" />
+    <ClInclude Include="src\vendor\RDA_Library\stack_list.h" />
+    <ClInclude Include="src\vendor\stb_image\stb_image.h" />
+    <ClInclude Include="src\vendor\stb_truetype\stb_truetype.h" />
+    <ClInclude Include="src\vendor\tinyxml2\tinyxml2.h" />
+    <ClInclude Include="src\vendor\vma\vk_mem_alloc.h" />
+    <ClInclude Include="include\GraphicalSrc\WindownSurface.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\GraphicalObjects\Mesh.cpp" />
+    <ClCompile Include="src\GraphicalSrc\MemoryBuffer.cpp" />
+    <ClCompile Include="src\GraphicalSrc\DeviceHandler.cpp" />
+    <ClCompile Include="src\GraphicalSrc\Swapchain.cpp" />
+    <ClCompile Include="src\GraphicalSrc\Renderer.cpp" />
+    <ClCompile Include="src\GraphicalSrc\FrameBuffer.cpp" />
+    <ClCompile Include="src\GraphicalSrc\FontAtlas.cpp" />
+    <ClCompile Include="src\GraphicalSrc\GuiRenderer.cpp" />
+    <ClCompile Include="src\GraphicalSrc\Shader.cpp" />
+    <ClCompile Include="src\GraphicalSrc\ShaderCompiler.cpp" />
+    <ClCompile Include="src\GraphicalObjects\Texture.cpp" />
+    <ClCompile Include="src\GraphicalSrc\GraphicsPipeline.cpp" />
+    <ClCompile Include="src\GraphicalSrc\Descriptors.cpp" />
+    <ClCompile Include="src\GraphicalObjects\Material.cpp" />
+    <ClCompile Include="src\GraphicalObjects\Scene.cpp" />
+    <ClCompile Include="src\RendeerAlpha.cpp" />
+    <ClCompile Include="src\GraphicalObjects\Window.cpp" />
+    <ClCompile Include="src\GraphicalObjects\Input.cpp" />
+    <ClCompile Include="src\GraphicalObjects\Gui.cpp" />
+    <ClCompile Include="src\Logger\Logger.cpp" />
+    <ClCompile Include="src\vendor\stb_image\stb_image.cpp" />
+    <ClCompile Include="src\vendor\stb_truetype\stb_truetype.cpp" />
+    <ClCompile Include="src\vendor\tinyxml2\tinyxml2.cpp" />
+    <ClCompile Include="src\vendor\vma\vk_mem_alloc.cpp" />
+    <ClCompile Include="src\GraphicalSrc\WindownSurface.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
