@@ -65,6 +65,7 @@ namespace RDA {
 		}
 
 		syncOSState(); // seed the cached size before anything renders
+		mSwapchain.setVsync(mInfo.vsync); // FIFO vs. Mailbox; honored on recreate too
 		mSwapchain.create(mSurface.Get(), cachedExtent());
 		if (!mFrameBuffer.createSurface(mSwapchain)) {
 			RDA_RUNTIME_ERROR("Failed to create the window's surface FrameBuffer");

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Norciv widget theme. Each entry is a named variant of one widget type; a widget
+     selects it by name (Widget::variant, or the variant argument on the immediate
+     calls). Colors are #RGB / #RRGGBB / #RRGGBBAA, or decimal "r,g,b[,a]". Any field
+     left out inherits from the "default" variant, so these can be partial. -->
+<theme>
+  <!-- Primary call-to-action button: calm blue, rounded. -->
+  <button name="primary">
+    <normal>#3A6AD0</normal>
+    <hovered>#4C7CE6</hovered>
+    <pressed>#2A54B4</pressed>
+    <text>#FFFFFF</text>
+    <radius>6</radius>
+  </button>
+
+  <!-- Destructive action: red. Inherits the rounding from primary via base=. -->
+  <button name="danger" base="primary">
+    <normal>#B23A3A</normal>
+    <hovered>#CC4A4A</hovered>
+    <pressed>#8E2A2A</pressed>
+    <text>#FFECEC</text>
+  </button>
+
+  <!-- Outlined, transparent-looking button: border + rounding, no fill emphasis. -->
+  <button name="ghost">
+    <normal>#22262E</normal>
+    <hovered>#2C323C</hovered>
+    <pressed>#3A6AD0</pressed>
+    <text>#AFC4E8</text>
+    <border>#4C5A78</border>
+    <borderWidth>1</borderWidth>
+    <radius>6</radius>
+  </button>
+
+  <!-- Toggle with a green check. -->
+  <checkbox name="accent">
+    <box>#2C3A30</box>
+    <boxHover>#3C5040</boxHover>
+    <check>#63D68A</check>
+    <label>#DFF3E4</label>
+  </checkbox>
+
+  <!-- Warm orange slider. -->
+  <slider name="warm">
+    <track>#332A22</track>
+    <fill>#E08A3C</fill>
+    <knob>#F0C08A</knob>
+    <knobActive>#FFE0B0</knobActive>
+  </slider>
+
+  <!-- Dim caption text for secondary labels. -->
+  <label name="muted">
+    <color>#8A94A6</color>
+  </label>
+
+  <!-- IDE-style Python editor: mode="code" seeds the multi-line + gutter defaults,
+       language= turns on highlighting, and <syntax> gives each token kind a color. -->
+  <textfield name="ide" mode="code">
+    <background>#101218</background>
+    <gutter>#161922</gutter>
+    <lineNumber>#5A6478</lineNumber>
+    <currentLine>#FFFFFF10</currentLine>
+    <selection>#3C5A96A0</selection>
+    <caret>#78AAFF</caret>
+    <caretWidth>2</caretWidth>
+    <border>#2A303C</border>
+    <borderWidth>1</borderWidth>
+    <language>python</language>
+    <syntax>
+      <plain>#D4D4D4</plain>
+      <keyword>#C586C0</keyword>
+      <type>#4EC9B0</type>
+      <string>#CE9178</string>
+      <number>#B5CEA8</number>
+      <comment>#6A9955</comment>
+      <operator>#D4D4D4</operator>
+      <function>#DCDCAA</function>
+      <preprocessor>#9B9BFF</preprocessor>
+    </syntax>
+  </textfield>
+
+  <!-- Same editor look, different language — base= copies everything else. -->
+  <textfield name="ide-cpp" base="ide">
+    <language>cpp</language>
+  </textfield>
+
+  <!-- A soft, rounded prose area for notes. -->
+  <textfield name="notes" mode="document">
+    <background>#1C1E24</background>
+    <text>#DDE1E8</text>
+    <border>#333A46</border>
+    <borderWidth>1</borderWidth>
+    <radius>8</radius>
+    <padding>14</padding>
+  </textfield>
+</theme>

@@ -1,0 +1,211 @@
+#pragma once
+#include <Core/Datatypes.h>
+#include <vendor/RDA_Library/inline_vector.h>
+#include <vector>
+#include <string>
+#include <cstdint>
+
+// Shared GUI value types, split out so both the immediate frontend (Gui) and the
+// retained widget tree (Widget) can depend on them without a circular include.
+namespace RDA {
+	class Texture;
+
+	// Pack RGBA (0..255) into the R8G8B8A8_UNORM layout the UI vertex expects. constexpr
+	// so it can be a default argument.
+	constexpr uint32_t rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+		return static_cast<uint32_t>(r) | (static_cast<uint32_t>(g) << 8) |
+		       (static_cast<uint32_t>(b) << 16) | (static_cast<uint32_t>(a) << 24);
+	}
+
+	struct Rect {
+		float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+		bool contains(glm::vec2 p) const {
+			return p.x >= x && p.y >= y && p.x <= x + w && p.y <= y + h;
+		}
+	};
+
+	// Navigation / editing keys an editable widget reacts to. Character input arrives
+	// separately as text; these are the non-printing actions.
+	enum class GuiEditKey : uint8_t {
+		Backspace, Delete, Left, Right, Up, Down, Home, End, Enter, Tab
+	};
+
+	// The pointer + keyboard state the GUI reacts to, in the target's pixel space. On a
+	// window this is the mouse; for an in-world panel it is the raycast hit. The
+	// decoupling seam — the GUI never reads the raw window input directly.
+	struct GuiInput {
+		glm::vec2 pointer{ 0.0f };
+		glm::vec2 viewport{ 0.0f }; // target size in GUI pixels (for edge docking, etc.)
+		bool  down = false;
+		bool  pressed = false;
+		bool  released = false;
+		float scroll = 0.0f;
+
+		// Text entry, consumed by whichever widget holds keyboard focus.
+		std::string typed; // printable characters entered this frame
+		// Edit/navigation keys this frame (incl. repeats). A frame realistically carries a
+		// handful, so these live inside the struct and never reach the heap; the spill
+		// path is only there for a stuck key or a very long repeat burst.
+		RDL::inline_vector<GuiEditKey, 16> editKeys;
+		bool  shift = false;              // extend selection with movement keys
+		bool  ctrl = false;              // word-wise movement; enables the actions below
+		bool  alt = false;               // column (box) selection while dragging
+		// Editing shortcuts, set by the engine when the combo is pressed this frame.
+		bool  copy = false;              // Ctrl+C
+		bool  cut = false;               // Ctrl+X
+		bool  paste = false;             // Ctrl+V
+		bool  selectAll = false;         // Ctrl+A
+		float dt = 0.0f;                 // seconds since last frame (caret blink)
+	};
+
+	// Which flavor of text field to present. Same editing core, different presentation
+	// and behavior — see TextFieldStyle::forMode for the per-mode defaults.
+	enum class TextFieldMode {
+		Line,      // single-line classic input; Enter commits
+		Document,  // multi-line text area with document padding
+		Code,      // multi-line, monospace, line-number gutter + current-line highlight
+	};
+
+	// What a run of source text means, for syntax highlighting. A Language (Syntax.h)
+	// classifies text into these; SyntaxStyle gives each one a color. Kept here rather
+	// than in Syntax.h so TextFieldStyle can carry a palette without pulling in the
+	// tokenizer.
+	enum class TokenKind : uint8_t {
+		Plain,        // anything unclassified
+		Keyword,      // if / def / return ...
+		Type,         // builtin types and constants (int, True, None ...)
+		String,       // quoted literals, including multi-line ones
+		Number,       // numeric literals
+		Comment,      // line and block comments
+		Operator,     // punctuation and operators
+		Function,     // identifier used as a call
+		Preprocessor, // C's #define, Python's @decorator
+		Count
+	};
+
+	// Per-token-kind colors, carried by TextFieldStyle so a theme variant defines its
+	// own palette. Defaults are a dark editor scheme; Plain doubles as the field's
+	// normal text color when a language is active.
+	struct SyntaxStyle {
+		uint32_t colors[static_cast<size_t>(TokenKind::Count)] = {
+			rgba(228, 230, 235), // Plain
+			rgba(197, 134, 192), // Keyword
+			rgba( 78, 201, 176), // Type
+			rgba(206, 145, 120), // String
+			rgba(181, 206, 168), // Number
+			rgba(106, 153,  85), // Comment
+			rgba(212, 212, 212), // Operator
+			rgba(220, 220, 170), // Function
+			rgba(155, 155, 255), // Preprocessor
+		};
+		uint32_t color(TokenKind kind) const { return colors[static_cast<size_t>(kind)]; }
+	};
+
+	struct TextFieldStyle {
+		TextFieldMode mode = TextFieldMode::Line;
+		bool  multiline = false;       // set by forMode
+		bool  showLineNumbers = false; // set by forMode (Code)
+		bool  highlightCurrentLine = false;
+		bool  readOnly = false;
+		float padding = 6.0f;
+
+		uint32_t background  = rgba(18, 20, 26);
+		uint32_t text        = rgba(228, 230, 235);
+		uint32_t caret       = rgba(120, 170, 255);
+		uint32_t selection   = rgba(60, 92, 150, 140);
+		uint32_t gutter      = rgba(28, 30, 38);
+		uint32_t lineNumber  = rgba(110, 120, 140);
+		uint32_t currentLine = rgba(255, 255, 255, 14);
+
+		// Frame + caret geometry.
+		uint32_t border      = rgba(58, 62, 72);
+		float    borderWidth = 0.0f;   // 0 = no border
+		float    radius      = 0.0f;   // corner radius, in pixels
+		float    caretWidth  = 2.0f;
+
+		// Scroll bar (multiline fields).
+		uint32_t scrollTrack      = rgba(28, 30, 38, 180);
+		uint32_t scrollThumb      = rgba(70, 78, 96);
+		uint32_t scrollThumbHover = rgba(120, 130, 160);
+
+		// Syntax highlighting: the name of a language in Gui::syntax() (empty = off, the
+		// whole field draws in `text`), plus the palette its tokens are drawn with.
+		std::string language;
+		SyntaxStyle syntax;
+
+		// A style pre-configured for the given mode (colors/flags/padding).
+		static TextFieldStyle forMode(TextFieldMode mode);
+	};
+
+	// ---- per-widget visual styles ------------------------------------------------
+	// One plain-data struct per widget type. Their defaults are the engine's built-in
+	// look (the same values the widgets used to hardcode), so a widget with no theme
+	// looks exactly as before. A Theme holds named variants of these; a widget selects
+	// one by name. Every field is a color unless noted, so the XML loader can treat
+	// most of them uniformly. Keep these dependency-free (just colors + scalars).
+	struct ButtonStyle {
+		uint32_t normal  = rgba(58, 62, 72);
+		uint32_t hovered = rgba(80, 86, 100);
+		uint32_t pressed = rgba(42, 106, 208);
+		uint32_t text    = rgba(235, 236, 240);
+		uint32_t border      = rgba(90, 96, 112);
+		float    borderWidth = 0.0f; // 0 = no border
+		float    radius      = 0.0f; // corner radius, in pixels
+	};
+
+	struct CheckboxStyle {
+		uint32_t box      = rgba(58, 62, 72);
+		uint32_t boxHover = rgba(80, 86, 100);
+		uint32_t check    = rgba(120, 180, 255);
+		uint32_t label    = rgba(228, 230, 235);
+		uint32_t border      = rgba(90, 96, 112);
+		float    borderWidth = 0.0f;
+		float    radius      = 0.0f;
+		float    checkInset  = 0.28f; // check size as a fraction of the box
+	};
+
+	struct SliderStyle {
+		uint32_t track      = rgba(40, 44, 52);
+		uint32_t fill       = rgba(60, 110, 200);
+		uint32_t knob       = rgba(150, 170, 210);
+		uint32_t knobActive = rgba(200, 220, 255);
+		float    knobWidth  = 8.0f;
+		float    radius     = 0.0f; // rounds the track, fill and knob
+	};
+
+	struct PanelStyle {
+		uint32_t body         = rgba(28, 30, 36, 235);
+		uint32_t accent       = rgba(74, 106, 208);
+		float    accentHeight = 3.0f; // height of the top accent strip, in pixels
+		uint32_t border       = rgba(58, 62, 72);
+		float    borderWidth  = 0.0f;
+		float    radius       = 0.0f;
+	};
+
+	struct LabelStyle {
+		uint32_t color = rgba(230, 230, 235);
+	};
+
+	struct GuiVertex {
+		glm::vec2 pos;
+		glm::vec2 uv;
+		uint32_t  color; // R8G8B8A8_UNORM, see rgba()
+	};
+
+	// A run of indices sharing one clip rect (x0, y0, x1, y1) in pixels and one texture.
+	// texture == nullptr means the font atlas (solid quads + text); non-null is an image
+	// (e.g. the scene rendered by a Viewport widget), drawn with the image pipeline.
+	struct GuiDrawCmd {
+		glm::vec4      clip;
+		uint32_t       indexOffset;
+		uint32_t       indexCount;
+		const Texture* texture = nullptr;
+	};
+
+	struct GuiDrawData {
+		std::vector<GuiVertex>  vertices;
+		std::vector<uint16_t>   indices;
+		std::vector<GuiDrawCmd> commands;
+		void clear() { vertices.clear(); indices.clear(); commands.clear(); }
+	};
+}

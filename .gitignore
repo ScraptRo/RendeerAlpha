@@ -364,3 +364,4 @@ FodyWeavers.xsd
 # RendeerAlpha runtime artifacts
 RDA_DEBUG.txt
 shader_cache/
+dock_layout.ini

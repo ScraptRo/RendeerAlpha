@@ -106,6 +106,13 @@ namespace RDA {
 		return true;
 	}
 
+	float FontAtlas::advance(char c) const {
+		if (mChars.empty()) return 0.0f;
+		unsigned char uc = static_cast<unsigned char>(c);
+		if (uc < kFirstChar || uc >= kFirstChar + kCharCount) uc = ' ';
+		return mChars[uc - kFirstChar].xadvance;
+	}
+
 	float FontAtlas::textWidth(const std::string& text) const {
 		if (mChars.empty()) return 0.0f;
 		float width = 0.0f;

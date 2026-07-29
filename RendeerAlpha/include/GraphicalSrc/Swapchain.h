@@ -17,6 +17,11 @@ namespace RDA {
 		void recreate(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
 		void destroy();
 
+		// Selects the present mode used by (re)create: true = FIFO (vsync, cap to
+		// refresh), false = prefer Mailbox (uncapped). Set once before create();
+		// recreate() reuses it, so vsync survives a resize.
+		void setVsync(bool vsync) { mVsync = vsync; }
+
 		VkSwapchainKHR handle()     const { return mSwapchain; }
 		VkExtent2D     extent()     const { return mExtent; }
 		VkFormat       format()     const { return mFormat; }
@@ -37,13 +42,14 @@ namespace RDA {
 		std::vector<VkFence>     mImagesInFlight;    // borrowed renderer fences, not owned
 		VkFormat   mFormat = VK_FORMAT_UNDEFINED;
 		VkExtent2D mExtent{};
+		bool       mVsync = true; // FIFO when set, Mailbox-if-available when not
 
 		void createSwapchain(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
 		void createImageViews();
 		void createSyncObjects();
 
 		static VkSurfaceFormatKHR chooseFormat(const std::vector<VkSurfaceFormatKHR>& available);
-		static VkPresentModeKHR   choosePresentMode(const std::vector<VkPresentModeKHR>& available);
+		VkPresentModeKHR          choosePresentMode(const std::vector<VkPresentModeKHR>& available) const;
 		static VkExtent2D         chooseExtent(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D fallback);
 	};
 }

@@ -63,7 +63,9 @@ namespace RDA {
 		}
 	)GLSL";
 
-	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight) {
+	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight, ViewportMode mode) {
+		mViewportMode = mode;
+
 		// Draw into the window's own surface FrameBuffer by default; the pipeline below
 		// is built against its render pass.
 		mTarget = &window.getFrameBuffer();
@@ -73,15 +75,67 @@ namespace RDA {
 		}
 		if (!createFrameResources()) return false;
 		if (!createCameraResources()) return false;
+
+		// Widget mode: build the offscreen scene target first, so the forward pipeline can
+		// be built against the render pass it will actually draw the scene into. It starts
+		// window-sized; the engine resizes it to the Viewport widget from the next frame.
+		if (mViewportMode == ViewportMode::Widget) {
+			mSceneColorFormat = mTarget->colorFormat();
+			ensureSceneTarget(window.cachedExtent());
+			if (!mSceneTarget.isValid()) {
+				RDA_LOG_ERROR("Failed to create the offscreen scene target");
+				return false;
+			}
+		}
+
 		if (!createForwardPipeline()) return false;
 
-		// The GUI overlay shares the target's render pass (drawn after the scene).
+		// The GUI always draws into the surface pass.
 		if (!mGuiRenderer.init(mTarget->renderPass(), fontPath, fontHeight, MAX_FRAMES_IN_FLIGHT)) {
 			return false;
 		}
 
 		RDA_LOG_SUCCES("Forward renderer initialized");
 		return true;
+	}
+
+	void Renderer::ensureSceneTarget(VkExtent2D extent) {
+		// Frames the requested size must hold steady before we commit to a resize (~0.1s).
+		static constexpr int kSettleFrames = 6;
+
+		if (mViewportMode != ViewportMode::Widget) return;
+		if (extent.width == 0 || extent.height == 0) return;
+
+		if (mSceneTarget.isValid() &&
+			mSceneTarget.extent().width == extent.width && mSceneTarget.extent().height == extent.height) {
+			mSceneSettleFrames = 0; // already at the requested size
+			return;
+		}
+
+		// Debounce: an active drag changes the size every frame, so wait until it stops
+		// changing. The viewport briefly samples the old-sized texture (a slight stretch)
+		// during the settle — cheap and transient — instead of recreating each frame.
+		if (mSceneTarget.isValid()) {
+			if (extent.width == mPendingSceneExtent.width && extent.height == mPendingSceneExtent.height) {
+				if (++mSceneSettleFrames < kSettleFrames) return;
+			} else {
+				mPendingSceneExtent = extent;
+				mSceneSettleFrames = 0;
+				return;
+			}
+			// Settled: the old target may still be in flight, so drain before recreating.
+			vkDeviceWaitIdle(getDevice());
+		}
+
+		mSceneTarget.createOffscreen(extent.width, extent.height, mSceneColorFormat);
+		mSceneSettleFrames = 0;
+	}
+
+	const Texture* Renderer::sceneTexture() const {
+		if (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid()) {
+			return &mSceneTarget.colorTexture();
+		}
+		return nullptr;
 	}
 
 	bool Renderer::createFrameResources() {
@@ -179,6 +233,11 @@ namespace RDA {
 		std::array<VkVertexInputAttributeDescription, 3> allAttributes = Vertex::getAttributeDescriptions();
 		std::vector<VkVertexInputAttributeDescription> attributes = { allAttributes[0], allAttributes[1] };
 
+		// The scene draws into the offscreen target (Widget mode) or the surface (Fullscreen);
+		// build the pipeline against whichever render pass it will actually be used in.
+		VkRenderPass scenePass = (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid())
+			? mSceneTarget.renderPass() : mTarget->renderPass();
+
 		mForwardPipeline = PipelineBuilder()
 			.addShader(vertex)
 			.addShader(fragment)
@@ -190,7 +249,7 @@ namespace RDA {
 			.setDepth(true, true, VK_COMPARE_OP_LESS)
 			.addDescriptorSetLayout(mCameraSetLayout)
 			.addPushConstantRange(modelPush)
-			.setTarget(mTarget->renderPass(), 0)
+			.setTarget(scenePass, 0)
 			.build();
 
 		if (!mForwardPipeline.isValid()) {
@@ -211,6 +270,8 @@ namespace RDA {
 		if (device == VK_NULL_HANDLE) return;
 
 		mGuiRenderer.destroy();
+		mSceneTarget.destroy();
+		mGuiLayer.destroy();
 		mForwardPipeline.destroy();
 
 		mCameraUniforms.clear();
@@ -275,7 +336,9 @@ namespace RDA {
 
 		if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
 			// The window rebuilds its swapchain and its surface FrameBuffer together;
-			// mTarget points at that same FrameBuffer, so it stays valid afterwards.
+			// mTarget points at that same FrameBuffer, so it stays valid afterwards. The
+			// offscreen scene target follows the Viewport widget (resized by the engine),
+			// not the window, so it needs nothing here.
 			window.recreateSwapchain();
 			return;
 		}
@@ -337,6 +400,62 @@ namespace RDA {
 		mCurrentFrame = (mCurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
+	void Renderer::drawSceneItems(VkCommandBuffer cmd) {
+		mForwardPipeline.bind(cmd);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mForwardPipeline.layout(),
+			0, 1, &mCameraSets[mCurrentFrame], 0, nullptr);
+
+		// One draw per scene item. This flat loop is exactly what batching and
+		// instancing will later replace, without the render pass changing.
+		const Scene& scene = getScene();
+		for (const DrawItem& item : scene.items()) {
+			if (!item.mesh.IsValid() || !item.mesh->isValid()) continue;
+			vkCmdPushConstants(cmd, mForwardPipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT,
+				0, sizeof(glm::mat4), &item.transform);
+			item.mesh->recordDraw(cmd);
+		}
+	}
+
+	static void beginPass(VkCommandBuffer cmd, VkRenderPass pass, VkFramebuffer framebuffer,
+	                      VkExtent2D extent, bool transparentClear = false) {
+		std::array<VkClearValue, 2> clearValues{};
+		clearValues[0].color = transparentClear
+			? VkClearColorValue{ { 0.0f, 0.0f, 0.0f, 0.0f } } // GUI layer: nothing drawn = see-through
+			: VkClearColorValue{ { 0.02f, 0.02f, 0.03f, 1.0f } }; // dark slate
+		clearValues[1].depthStencil = { 1.0f, 0 };
+
+		VkRenderPassBeginInfo info{};
+		info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		info.renderPass = pass;
+		info.framebuffer = framebuffer;
+		info.renderArea.offset = { 0, 0 };
+		info.renderArea.extent = extent;
+		info.clearValueCount = static_cast<uint32_t>(clearValues.size());
+		info.pClearValues = clearValues.data();
+		vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+	}
+
+	bool Renderer::ensureGuiLayer(VkExtent2D extent) {
+		if (extent.width == 0 || extent.height == 0) return false;
+		if (mGuiLayer.isValid() && mGuiLayer.extent().width == extent.width &&
+		    mGuiLayer.extent().height == extent.height) {
+			return true;
+		}
+		// Size follows the window. Recreating drops the cached content, so the layer is
+		// marked invalid and re-rasterised on this frame.
+		vkDeviceWaitIdle(getDevice());
+		mGuiLayer.destroy();
+		if (!mGuiLayer.createOffscreen(extent.width, extent.height, mSceneColorFormat)) {
+			RDA_LOG_ERROR("Failed to create the GUI layer target");
+			return false;
+		}
+		// The GUI pipelines are per-render-pass, so the layer needs its own set. The
+		// render pass survives a resize, so this only ever builds once.
+		if (!mGuiRenderer.buildLayerPipelines(mGuiLayer.renderPass())) return false;
+		mGuiLayerValid = false;
+		return true;
+	}
+
 	void Renderer::recordFrame(VkCommandBuffer cmd, Window& window, uint32_t imageIndex) {
 		Swapchain& swapchain = window.getSwapchain();
 
@@ -347,41 +466,55 @@ namespace RDA {
 			return;
 		}
 
-		std::array<VkClearValue, 2> clearValues{};
-		clearValues[0].color = { { 0.02f, 0.02f, 0.03f, 1.0f } }; // dark slate
-		clearValues[1].depthStencil = { 1.0f, 0 };
+		mGuiRenderer.beginFrame(mCurrentFrame);
 
-		VkRenderPassBeginInfo renderPassInfo{};
-		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		renderPassInfo.renderPass = mTarget->renderPass();
-		renderPassInfo.framebuffer = mTarget->framebuffer(imageIndex);
-		renderPassInfo.renderArea.offset = { 0, 0 };
-		renderPassInfo.renderArea.extent = swapchain.extent();
-		renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-		renderPassInfo.pClearValues = clearValues.data();
+		if (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid()) {
+			// Pass 1: the scene into its offscreen target (sampleable afterwards).
+			beginPass(cmd, mSceneTarget.renderPass(), mSceneTarget.framebuffer(0), mSceneTarget.extent());
+			setViewportAndScissor(cmd, mSceneTarget.extent());
+			drawSceneItems(cmd);
+			vkCmdEndRenderPass(cmd);
 
-		vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-		setViewportAndScissor(cmd, swapchain.extent());
+			Gui& gui = window.gui();
+			const bool layerReady = mGuiLayerCaching && ensureGuiLayer(swapchain.extent());
+			if (layerReady) {
+				// Pass 2 (only when the GUI actually changed): rasterise the whole GUI
+				// once into the cached layer, leaving the Viewport widget's quad out so
+				// its area stays transparent for the live scene to show through.
+				if (!mGuiLayerValid || mGuiLayerVersion != gui.drawVersion()) {
+					beginPass(cmd, mGuiLayer.renderPass(), mGuiLayer.framebuffer(0),
+					          mGuiLayer.extent(), /*transparentClear*/ true);
+					setViewportAndScissor(cmd, mGuiLayer.extent());
+					mGuiRenderer.record(cmd, gui.drawData(), mGuiLayer.extent(), mCurrentFrame,
+					                    gui.drawVersion(), /*skipTexture*/ sceneTexture(),
+					                    /*intoLayer*/ true);
+					vkCmdEndRenderPass(cmd);
+					mGuiLayerVersion = gui.drawVersion();
+					mGuiLayerValid = true;
+				}
 
-		mForwardPipeline.bind(cmd);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mForwardPipeline.layout(),
-			0, 1, &mCameraSets[mCurrentFrame], 0, nullptr);
-
-		// One draw per scene item. This flat loop is exactly what batching and
-		// instancing will later replace, without the render pass above changing.
-		const Scene& scene = getScene();
-		for (const DrawItem& item : scene.items()) {
-			if (!item.mesh.IsValid() || !item.mesh->isValid()) continue;
-
-			vkCmdPushConstants(cmd, mForwardPipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT,
-				0, sizeof(glm::mat4), &item.transform);
-			item.mesh->recordDraw(cmd);
+				// Pass 3: two quads — the live scene, then the cached GUI over it.
+				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+				mGuiRenderer.recordComposite(cmd, swapchain.extent(), mCurrentFrame,
+				                             sceneTexture(), gui.viewportRect(),
+				                             &mGuiLayer.colorTexture());
+				vkCmdEndRenderPass(cmd);
+			} else {
+				// No layer (allocation failed): fall back to drawing the GUI directly.
+				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+				mGuiRenderer.record(cmd, gui.drawData(), swapchain.extent(), mCurrentFrame,
+				                    gui.drawVersion());
+				vkCmdEndRenderPass(cmd);
+			}
+		} else {
+			// Scene then GUI overlay, both into the surface, in one pass.
+			beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+			setViewportAndScissor(cmd, swapchain.extent());
+			drawSceneItems(cmd);
+			mGuiRenderer.record(cmd, window.gui().drawData(), swapchain.extent(), mCurrentFrame,
+			                    window.gui().drawVersion());
+			vkCmdEndRenderPass(cmd);
 		}
-
-		// GUI overlay: same pass, after the scene, no clear — draws on top.
-		mGuiRenderer.record(cmd, window.gui().drawData(), swapchain.extent(), mCurrentFrame);
-
-		vkCmdEndRenderPass(cmd);
 
 		if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
 			RDA_LOG_ERROR("Failed to record command buffer");

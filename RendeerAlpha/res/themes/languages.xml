@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Syntax-highlighting languages, loaded into Gui::syntax() (GuiConfig::languagesPath).
+     "python" is built into the engine; these are added on top. A language may derive
+     from another with base="name" and override only what differs. Keyword and type
+     lists are whitespace-separated. -->
+<languages>
+  <language name="cpp">
+    <keywords>
+      alignas alignof and asm auto break case catch class concept const consteval
+      constexpr constinit const_cast continue co_await co_return co_yield decltype
+      default delete do dynamic_cast else enum explicit export extern for friend goto
+      if inline mutable namespace new noexcept not operator or private protected public
+      register reinterpret_cast requires return sizeof static static_assert static_cast
+      struct switch template this thread_local throw try typedef typeid typename union
+      using virtual volatile while xor
+    </keywords>
+    <types>
+      bool char char8_t char16_t char32_t double float int long short signed unsigned
+      void wchar_t size_t ptrdiff_t nullptr true false uint8_t uint16_t uint32_t
+      uint64_t int8_t int16_t int32_t int64_t string vector map unordered_map
+    </types>
+    <lineComment>//</lineComment>
+    <blockComment begin="/*" end="*/"/>
+    <string>"</string>
+    <string>'</string>
+    <preprocessor>#</preprocessor>
+  </language>
+
+  <!-- GLSL is C-like: inherit the comment/string rules and swap the word lists. -->
+  <language name="glsl" base="cpp">
+    <keywords>
+      attribute break case const continue default discard do else flat for if in inout
+      layout noperspective out precision return smooth struct switch uniform varying
+      while
+    </keywords>
+    <types>
+      bool double float int uint void mat2 mat3 mat4 vec2 vec3 vec4 ivec2 ivec3 ivec4
+      uvec2 uvec3 uvec4 bvec2 bvec3 bvec4 sampler2D sampler3D samplerCube true false
+    </types>
+  </language>
+
+  <language name="lua">
+    <keywords>
+      and break do else elseif end for function goto if in local not or repeat return
+      then until while
+    </keywords>
+    <types>true false nil self</types>
+    <lineComment>--</lineComment>
+    <blockComment begin="--[[" end="]]"/>
+    <string>"</string>
+    <string>'</string>
+  </language>
+</languages>

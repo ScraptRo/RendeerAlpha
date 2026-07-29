@@ -41,6 +41,8 @@ namespace RDA {
 
 		// Advance width of `text` in pixels.
 		float textWidth(const std::string& text) const;
+		// Advance width of a single glyph in pixels (space for unknown glyphs).
+		float advance(char c) const;
 
 	private:
 		Texture                 mTexture;

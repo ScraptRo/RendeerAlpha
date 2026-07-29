@@ -141,7 +141,14 @@ namespace RDA {
 		return available[0];
 	}
 
-	VkPresentModeKHR Swapchain::choosePresentMode(const std::vector<VkPresentModeKHR>& available) {
+	VkPresentModeKHR Swapchain::choosePresentMode(const std::vector<VkPresentModeKHR>& available) const {
+		// With vsync we want FIFO: it blocks presentation to the display's refresh, so
+		// the loop never renders frames that are thrown away. Mailbox renders as fast as
+		// the GPU can and discards all but the latest each vblank — smooth, but it pins
+		// the GPU at full power, so it is opt-in.
+		if (mVsync) {
+			return VK_PRESENT_MODE_FIFO_KHR; // always available; the vblank-paced default
+		}
 		for (const auto& mode : available) {
 			if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
 				return mode;

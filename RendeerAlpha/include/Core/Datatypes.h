@@ -10,6 +10,31 @@
 
 namespace RDA {
 
+	// How the 3D scene is presented.
+	enum class ViewportMode {
+		Fullscreen, // scene renders straight to the window surface; the GUI overlays it
+		Widget,     // scene renders to an offscreen target shown by a Viewport widget
+	};
+
+	// When the engine produces a frame.
+	enum class RedrawMode {
+		// Render and present every loop iteration. What a game wants: the scene is
+		// assumed to change constantly.
+		Continuous,
+
+		// Render only when something actually changed — the GUI's geometry differs from
+		// the last frame, the window was resized, or the application asked for a frame
+		// with rendeerRequestRedraw(). Otherwise the loop skips rendering entirely and
+		// the window keeps showing the last presented image, which costs no GPU at all.
+		// The event pump also idles instead of spinning, so the CPU drops with it.
+		//
+		// The GUI is tracked automatically; *scene* animation is not visible to the
+		// engine (in Widget mode a spinning cube leaves the GUI's geometry untouched),
+		// so an app that animates its scene must call rendeerRequestRedraw() while it
+		// is animating.
+		OnDemand,
+	};
+
 	struct AppInfo {
 		std::string name; // Application Name
 		uint32_t appVersion;
@@ -22,6 +47,7 @@ namespace RDA {
 		std::string name;
 		unsigned int Width;
 		unsigned int Height;
+		bool vsync = true; // FIFO present (cap to refresh) vs. Mailbox (uncapped, burns GPU)
 	};
 
 	// Standard interleaved vertex used by the mesh / pipeline layer.

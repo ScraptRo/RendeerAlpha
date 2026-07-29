@@ -108,6 +108,15 @@
     <ClInclude Include="include\GraphicalObjects\Gui.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\GraphicalObjects\GuiTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\GraphicalObjects\Widget.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\GraphicalObjects\Docking.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\GraphicalSrc\Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -177,6 +186,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\GraphicalObjects\Gui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GraphicalObjects\GuiWidgets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GraphicalObjects\Widget.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GraphicalObjects\Docking.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\GraphicalSrc\Shader.cpp">

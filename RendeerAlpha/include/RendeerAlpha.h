@@ -13,6 +13,15 @@ namespace RDA {
 	struct GuiConfig {
 		std::string fontPath = "res/fonts/CascadiaMono.ttf";
 		float       fontHeight = 18.0f;
+
+		// Optional XML theme loaded at startup into the main window's Gui::theme().
+		// Empty = the built-in look only. Variants can also be added later from code
+		// (gui().theme().defineButton(...) / loadFromFile(...)).
+		std::string themePath;
+
+		// Optional XML syntax-highlighting languages, loaded into Gui::syntax(). The
+		// "python" language is always available; this file adds or overrides others.
+		std::string languagesPath;
 	};
 
 	// Where the engine's event + render loop runs.
@@ -33,8 +42,26 @@ namespace RDA {
 	// which is why creating meshes, materials and scene items from inside them needs
 	// no synchronization of its own.
 	struct AppConfig {
-		AppInfo    app;                                  // name, version, windowDependent
-		ThreadMode threadMode = ThreadMode::Caller;
+		AppInfo      app;                                // name, version, windowDependent
+		ThreadMode   threadMode = ThreadMode::Caller;
+		ViewportMode viewportMode = ViewportMode::Fullscreen; // scene to surface, or to a Viewport widget
+		RedrawMode   redrawMode = RedrawMode::Continuous;     // every frame, or only on change
+
+		// ViewportMode::Widget only. With an animating scene the engine must produce a
+		// frame every tick, and that re-rasterises the whole GUI — every panel, glyph and
+		// border — even though only the viewport's contents changed. With this on, the
+		// GUI is drawn once into a cached layer and re-drawn only when it actually
+		// changes; each frame then composites that layer over the live scene (two quads).
+		//
+		// Off by default: it is a different rendering path, and worth eyeballing on your
+		// setup before relying on it.
+		bool         cacheGuiLayer = false;
+
+		// Cap the render loop to the display's refresh rate (FIFO present). On by
+		// default: leaving it off makes the GPU render frames it never shows, which on
+		// a laptop just wastes power and heat. Set false for uncapped rendering
+		// (Mailbox present) when benchmarking or measuring raw frame times.
+		bool vsync = true;
 
 		std::function<void()>              onStart;      // once, after the window + renderer are up
 		std::function<void(float dtSeconds)> onUpdate;   // once per frame, before that frame is drawn
@@ -60,6 +87,13 @@ void rendeerStop();
 // Block until an Owned-mode loop has fully stopped and been torn down. No-op in
 // Caller mode. Call this before the process exits when using Owned mode.
 void rendeerWait();
+
+// Ask for one more frame to be rendered. Only meaningful in RedrawMode::OnDemand,
+// where the engine otherwise skips rendering when nothing it can see has changed —
+// call this while the scene is animating, or after changing anything the GUI's own
+// geometry does not reflect. Safe to call from any callback or thread; it also wakes
+// an idling event pump. A no-op in Continuous mode.
+void rendeerRequestRedraw();
 
 RDA::Window* getMainWindow();
 
