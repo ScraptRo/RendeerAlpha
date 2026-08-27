@@ -1,4 +1,5 @@
 #include <GraphicalObjects/Gui.h>
+#include <Logger/Logger.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -9,29 +10,163 @@ namespace RDA {
 	// A clip large enough to mean "unclipped"; the backend clamps it to the target.
 	static constexpr glm::vec4 kFullClip{ 0.0f, 0.0f, 1.0e6f, 1.0e6f };
 
+	bool Gui::canReuseRetained() const {
+		if (!mCacheValid || mLayoutDirty) return false;
+
+		// Any input at all could move a hover highlight, a caret or a dock, so the tree
+		// has to be walked to find out.
+		if (mInput.pointer != mLastPointer) return false;
+		if (mInput.down || mInput.pressed || mInput.released) return false;
+		if (mInput.scroll != 0.0f) return false;
+		if (!mInput.typed.empty() || !mInput.editKeys.empty()) return false;
+		if (mInput.copy || mInput.cut || mInput.paste || mInput.selectAll || mInput.submit) return false;
+
+		// A focused field blinks its caret, which is geometry changing on a timer.
+		if (mFocused != 0) return false;
+
+		// The layout is measured against the target, and a Viewport widget's quad samples
+		// whatever texture it was given — either changing invalidates the geometry.
+		if (mInput.viewport != mLastViewport) return false;
+		if (mSceneTexture != mLastSceneTexture) return false;
+
+		// Docks added or closed outside the walk, or queued from inside it and still
+		// waiting to be applied.
+		if (mDockSpace.revision() != mLastDockRevision) return false;
+		if (mDockSpace.hasPendingWork()) return false;
+
+		return true;
+	}
+
 	void Gui::begin(const GuiInput& input) {
 		mInput = input;
 		// Everything handed out last frame is free again. Two stores, no deallocation.
 		mFrameArena.reset();
-		mDraw.clear();
 		mClipStack.clear();
 		mScopeStack.clear();
-		mCurrentClip = kFullClip;
+		// Seeded to the target rather than to "infinite": widgets read the current clip
+		// as the area they are laid out inside, so the outermost one has to be a real
+		// size or anything anchored at the root would stretch to the fallback's extent.
+		mCurrentClip = (input.viewport.x > 0.0f && input.viewport.y > 0.0f)
+			? glm::vec4(0.0f, 0.0f, input.viewport.x, input.viewport.y)
+			: kFullClip;
 		mCurrentTexture = nullptr;
+		mFocusClaimed = false;
+		mScrollConsumed = false;
+
+		// Everything queued from last frame's callbacks lands here, before anything walks
+		// the tree — the one point where restructuring is unambiguously safe. A structural
+		// edit obviously invalidates the cached geometry.
+		if (!mTree.empty()) mLayoutDirty = true;
+		mTree.flush();
+
+		if (canReuseRetained()) {
+			// Truncate back to where the retained walk finished last frame. The geometry
+			// is already in the buffers, so this costs three size assignments and no
+			// copying; the application's immediate calls then append after it as usual.
+			mDraw.vertices.resize(mRetainedVertices);
+			mDraw.indices.resize(mRetainedIndices);
+			mDraw.commands.resize(mRetainedCommands);
+			mCmdStart = static_cast<uint32_t>(mRetainedIndices);
+			// `mHot` and `mViewportRect` are deliberately left alone: without input they
+			// still describe the situation the skipped walk would have reproduced.
+			++mCacheStats.reused;
+			return;
+		}
+
+		mDraw.clear();
 		mViewportRect = Rect{}; // a Viewport widget re-reports it during the walk below
 		mCmdStart = 0;
-
 		// Hot is recomputed from scratch each frame; active persists (a press-drag keeps
 		// the same widget active until release).
 		mHot = 0;
-		mFocusClaimed = false;
 
-		// Walk the retained tree first: it forms the base layer, and any immediate calls
-		// the app makes in onUpdate then draw on top of it and win input ties.
-		mRetainedRoot.paint(*this, glm::vec2(0.0f));
+		{
+			// Guarded: any direct structural edit from inside the walk now warns instead
+			// of quietly corrupting the container it happens in.
+			WidgetWalkGuard guard;
 
-		// Dockable containers sit above the static tree.
-		mDockSpace.update(*this, mInput.viewport);
+			// Walk the retained tree first: it forms the base layer, and any immediate
+			// calls the app makes in onUpdate then draw on top of it and win input ties.
+			mRetainedRoot.paint(*this, glm::vec2(0.0f));
+
+			// Dockable containers sit above the static tree.
+			mDockSpace.update(*this, mInput.viewport);
+		}
+
+		// Close the in-progress command so the retained portion is a whole number of draw
+		// commands; immediate calls then start a fresh one and the split is clean.
+		flushCmd();
+		mRetainedVertices = mDraw.vertices.size();
+		mRetainedIndices = mDraw.indices.size();
+		mRetainedCommands = mDraw.commands.size();
+		mLastPointer = mInput.pointer;
+		mLastViewport = mInput.viewport;
+		mLastSceneTexture = mSceneTexture;
+		mLastDockRevision = mDockSpace.revision();
+		mLayoutDirty = false;
+		mCacheValid = true;
+		++mCacheStats.walked;
+	}
+
+	void debugLogDrawData(const char* label, const GuiDrawData& data) {
+		RDA_LOG_INFO("draw[" << label << "] vertices=" << data.vertices.size()
+			<< " indices=" << data.indices.size() << " commands=" << data.commands.size());
+		for (size_t i = 0; i < data.commands.size(); ++i) {
+			const GuiDrawCmd& c = data.commands[i];
+			const uint64_t end = static_cast<uint64_t>(c.indexOffset) + c.indexCount;
+			RDA_LOG_INFO("  cmd[" << i << "] range=" << c.indexOffset << ".." << end
+				<< (end > data.indices.size() ? " PAST-END" : "")
+				<< " clip=(" << c.clip.x << "," << c.clip.y << ")-(" << c.clip.z << "," << c.clip.w << ")"
+				<< " texture=" << (const void*)c.texture);
+		}
+	}
+
+	void debugLogCommandVertices(const char* label, const GuiDrawData& data,
+	                             size_t commandIndex, size_t limit) {
+		if (commandIndex >= data.commands.size()) {
+			RDA_LOG_WARNING("draw[" << label << "] no command " << commandIndex);
+			return;
+		}
+		const GuiDrawCmd& c = data.commands[commandIndex];
+		RDA_LOG_INFO("draw[" << label << "] command " << commandIndex << " vertices:");
+		size_t shown = 0;
+		for (uint32_t i = c.indexOffset; i < c.indexOffset + c.indexCount && shown < limit; ++i, ++shown) {
+			if (i >= data.indices.size()) { RDA_LOG_WARNING("  index " << i << " past end"); break; }
+			const uint16_t vi = data.indices[i];
+			if (vi >= data.vertices.size()) { RDA_LOG_WARNING("  vertex " << vi << " past end"); break; }
+			const GuiVertex& v = data.vertices[vi];
+			RDA_LOG_INFO("  i[" << i << "]=" << vi << " pos=(" << v.pos.x << "," << v.pos.y
+				<< ") uv=(" << v.uv.x << "," << v.uv.y << ")");
+		}
+	}
+
+	bool Gui::appendDrawData(const GuiDrawData& data) {
+		if (data.vertices.empty() || data.commands.empty()) return true; // nothing to add
+
+		// Indices are 16-bit and are rebased onto the end of this frame's vertices, so
+		// the merged buffer has to stay inside what one can name. Refusing is better than
+		// wrapping silently, which would draw whatever happened to be at the low indices.
+		const size_t base = mDraw.vertices.size();
+		if (base + data.vertices.size() > 0xFFFFu) return false;
+
+		const uint32_t indexBase = static_cast<uint32_t>(mDraw.indices.size());
+		mDraw.vertices.insert(mDraw.vertices.end(), data.vertices.begin(), data.vertices.end());
+		mDraw.indices.reserve(mDraw.indices.size() + data.indices.size());
+		for (uint16_t index : data.indices) {
+			mDraw.indices.push_back(static_cast<uint16_t>(base + index));
+		}
+		for (GuiDrawCmd cmd : data.commands) {
+			cmd.indexOffset += indexBase;
+			mDraw.commands.push_back(cmd);
+		}
+
+		// The appended indices already belong to the commands that came with them, so the
+		// in-progress command has to start *after* them. Without this, end()'s flushCmd()
+		// spans from wherever it was to the new end and emits a second command covering
+		// everything appended — drawing it again with this GUI's own texture, which for an
+		// image batch means sampling the font atlas instead.
+		mCmdStart = static_cast<uint32_t>(mDraw.indices.size());
+		return true;
 	}
 
 	void Gui::end() {

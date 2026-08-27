@@ -21,7 +21,10 @@ namespace RDA {
 	// Both are a single subpass with one color + one depth attachment. Their render
 	// passes are compatible whenever the color formats match, so one pipeline can draw
 	// into either — which is what makes the swap above free on the pipeline side too.
-	enum class FrameBufferKind { Surface, Offscreen };
+	//  - Depth: no colour at all, just a sampleable depth image. What a shadow map is:
+	//    the scene is rendered from the light's point of view purely to record how far
+	//    the nearest surface is in each direction.
+	enum class FrameBufferKind { Surface, Offscreen, Depth };
 
 	class FrameBuffer {
 	public:
@@ -42,6 +45,9 @@ namespace RDA {
 		bool createOffscreen(uint32_t width, uint32_t height,
 		                     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB);
 
+		// Depth-only target of a fixed size, sampleable afterwards — a shadow map.
+		bool createDepthOnly(uint32_t width, uint32_t height);
+
 		void destroy();
 
 		FrameBufferKind kind()        const { return mKind; }
@@ -55,6 +61,8 @@ namespace RDA {
 		// Offscreen only: the rendered color as a sampleable texture. Has no valid image
 		// for a Surface target (its color lives in the swapchain, not here).
 		const Texture&  colorTexture() const { return mColor; }
+		// Depth-only targets: the recorded depth, ready to sample.
+		const Texture&  depthTexture() const { return mDepth; }
 
 		static VkFormat findDepthFormat();
 
@@ -71,6 +79,7 @@ namespace RDA {
 		VkFormat                   mDepthFormat = VK_FORMAT_UNDEFINED;
 
 		bool createRenderPass(VkImageLayout colorFinalLayout, bool sampledAfterwards);
+		bool createDepthOnlyRenderPass();
 		bool createDepth();
 		bool createSurfaceFramebuffers(Swapchain& swapchain);
 		bool createOffscreenFramebuffer();

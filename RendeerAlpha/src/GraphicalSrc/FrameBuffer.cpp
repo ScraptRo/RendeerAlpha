@@ -89,6 +89,102 @@ namespace RDA {
 		return true;
 	}
 
+	// ---- Depth only (shadow map) ----------------------------------------------------
+	bool FrameBuffer::createDepthOnly(uint32_t width, uint32_t height) {
+		destroy();
+		mKind = FrameBufferKind::Depth;
+		mExtent = { width, height };
+		mColorFormat = VK_FORMAT_UNDEFINED; // there is no colour attachment
+		mDepthFormat = findDepthFormat();
+
+		TextureDesc depth{};
+		depth.width = width;
+		depth.height = height;
+		depth.format = mDepthFormat;
+		depth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		depth.aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+		depth.withSampler = true;
+		// Outside the mapped area the border reads as the far plane, i.e. nothing
+		// casting — so geometry beyond the shadow map's reach is lit, not black.
+		depth.addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+		depth.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		if (!mDepth.create(depth)) {
+			RDA_LOG_ERROR("Failed to create the shadow map depth attachment");
+			return false;
+		}
+
+		if (!createDepthOnlyRenderPass()) return false;
+
+		VkImageView view = mDepth.view();
+		VkFramebufferCreateInfo info{};
+		info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		info.renderPass = mRenderPass;
+		info.attachmentCount = 1;
+		info.pAttachments = &view;
+		info.width = width;
+		info.height = height;
+		info.layers = 1;
+
+		mFramebuffers.resize(1);
+		if (vkCreateFramebuffer(getDevice(), &info, nullptr, &mFramebuffers[0]) != VK_SUCCESS) {
+			RDA_LOG_ERROR("Failed to create the shadow map framebuffer");
+			mFramebuffers.clear();
+			return false;
+		}
+		return true;
+	}
+
+	bool FrameBuffer::createDepthOnlyRenderPass() {
+		VkAttachmentDescription depth{};
+		depth.format = mDepthFormat;
+		depth.samples = VK_SAMPLE_COUNT_1_BIT;
+		depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // the whole point: keep the depth
+		depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+		VkAttachmentReference depthRef{ 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+		VkSubpassDescription subpass{};
+		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount = 0; // depth only
+		subpass.pDepthStencilAttachment = &depthRef;
+
+		std::array<VkSubpassDependency, 2> dependencies{};
+		// Entry: wait for last frame's sampling of this map to finish before overwriting.
+		dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[0].dstSubpass = 0;
+		dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		dependencies[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+		dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		// Exit: make the depth writes visible to the lighting pass that samples them.
+		dependencies[1].srcSubpass = 0;
+		dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+		VkRenderPassCreateInfo createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		createInfo.attachmentCount = 1;
+		createInfo.pAttachments = &depth;
+		createInfo.subpassCount = 1;
+		createInfo.pSubpasses = &subpass;
+		createInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+		createInfo.pDependencies = dependencies.data();
+
+		if (vkCreateRenderPass(getDevice(), &createInfo, nullptr, &mRenderPass) != VK_SUCCESS) {
+			RDA_LOG_ERROR("Failed to create the shadow map render pass");
+			mRenderPass = VK_NULL_HANDLE;
+			return false;
+		}
+		return true;
+	}
+
 	// ---- Shared building blocks ---------------------------------------------------
 	bool FrameBuffer::createRenderPass(VkImageLayout colorFinalLayout, bool sampledAfterwards) {
 		std::array<VkAttachmentDescription, 2> attachments{};

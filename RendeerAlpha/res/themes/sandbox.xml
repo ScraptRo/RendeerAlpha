@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Norciv widget theme. Each entry is a named variant of one widget type; a widget
+<!-- Sandbox widget theme. Each entry is a named variant of one widget type; a widget
      selects it by name (Widget::variant, or the variant argument on the immediate
      calls). Colors are #RGB / #RRGGBB / #RRGGBBAA, or decimal "r,g,b[,a]". Any field
      left out inherits from the "default" variant, so these can be partial. -->
@@ -82,6 +82,22 @@
   <!-- Same editor look, different language — base= copies everything else. -->
   <textfield name="ide-cpp" base="ide">
     <language>cpp</language>
+  </textfield>
+
+  <!-- The script console's input: the IDE editor, highlighting JavaScript. -->
+  <textfield name="ide-js" base="ide">
+    <language>javascript</language>
+  </textfield>
+
+  <!-- The console's output log. Read-only, no gutter, dimmer than the input so the two
+       halves of the panel are visually distinct. -->
+  <textfield name="console-out" mode="document">
+    <background>#0C0E13</background>
+    <text>#9AA6B8</text>
+    <border>#2A303C</border>
+    <borderWidth>1</borderWidth>
+    <padding>8</padding>
+    <readOnly>true</readOnly>
   </textfield>
 
   <!-- A soft, rounded prose area for notes. -->

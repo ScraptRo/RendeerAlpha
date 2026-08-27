@@ -32,42 +32,96 @@ namespace RDA {
 	}
 
 	// ---- DescriptorAllocator -------------------------------------------------------
-	bool DescriptorAllocator::init(uint32_t maxSets, const std::vector<VkDescriptorPoolSize>& sizes) {
+	bool DescriptorAllocator::init(uint32_t setsPerPool, const std::vector<VkDescriptorPoolSize>& sizes) {
 		destroy();
+		if (setsPerPool == 0 || sizes.empty()) return false;
+		// Kept so a later block can be built to the same shape. A pool's sizes cannot be
+		// changed after creation, so the only way to grow is another pool exactly like it.
+		mSetsPerPool = setsPerPool;
+		mSizes = sizes;
+		return addPool();
+	}
+
+	bool DescriptorAllocator::addPool() {
 		VkDescriptorPoolCreateInfo poolInfo{};
 		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		poolInfo.maxSets = maxSets;
-		poolInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
-		poolInfo.pPoolSizes = sizes.data();
+		poolInfo.maxSets = mSetsPerPool;
+		poolInfo.poolSizeCount = static_cast<uint32_t>(mSizes.size());
+		poolInfo.pPoolSizes = mSizes.data();
 
-		if (vkCreateDescriptorPool(getDevice(), &poolInfo, nullptr, &mPool) != VK_SUCCESS) {
+		VkDescriptorPool pool = VK_NULL_HANDLE;
+		if (vkCreateDescriptorPool(getDevice(), &poolInfo, nullptr, &pool) != VK_SUCCESS) {
 			RDA_LOG_ERROR("Failed to create descriptor pool");
-			mPool = VK_NULL_HANDLE;
 			return false;
 		}
+		mPools.push_back(pool);
 		return true;
 	}
 
 	VkDescriptorSet DescriptorAllocator::allocate(VkDescriptorSetLayout layout) {
+		if (mPools.empty()) {
+			RDA_LOG_ERROR("Descriptor allocator used before init()");
+			return VK_NULL_HANDLE;
+		}
+
+		// A set handed back earlier costs nothing to reuse, and reusing it is what keeps
+		// the pools sized to how many are alive at once rather than to how many have ever
+		// been asked for.
+		auto returned = mRecycled.find(layout);
+		if (returned != mRecycled.end() && !returned->second.empty()) {
+			VkDescriptorSet set = returned->second.back();
+			returned->second.pop_back();
+			return set;
+		}
+
 		VkDescriptorSetAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = mPool;
+		allocInfo.descriptorPool = mPools.back();
 		allocInfo.descriptorSetCount = 1;
 		allocInfo.pSetLayouts = &layout;
 
 		VkDescriptorSet set = VK_NULL_HANDLE;
+		VkResult result = vkAllocateDescriptorSets(getDevice(), &allocInfo, &set);
+		if (result == VK_SUCCESS) return set;
+
+		// A full or fragmented pool is the expected answer once enough windows or
+		// materials exist, not a failure: open another block and ask again. Anything else
+		// is the device saying no, and retrying would not change that.
+		if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL) {
+			RDA_LOG_ERROR("Failed to allocate descriptor set");
+			return VK_NULL_HANDLE;
+		}
+		if (!addPool()) return VK_NULL_HANDLE;
+
+		allocInfo.descriptorPool = mPools.back();
 		if (vkAllocateDescriptorSets(getDevice(), &allocInfo, &set) != VK_SUCCESS) {
-			RDA_LOG_ERROR("Failed to allocate descriptor set (pool exhausted?)");
+			// A fresh pool that cannot satisfy one set means the block is smaller than a
+			// single set needs — a sizing mistake no amount of growing will fix.
+			RDA_LOG_ERROR("Failed to allocate descriptor set from a fresh pool: the pool "
+			              "block is too small for even one set of this layout");
 			return VK_NULL_HANDLE;
 		}
 		return set;
 	}
 
+	void DescriptorAllocator::recycle(VkDescriptorSetLayout layout, VkDescriptorSet set) {
+		if (set == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) return;
+		mRecycled[layout].push_back(set);
+	}
+
 	void DescriptorAllocator::destroy() {
-		if (mPool != VK_NULL_HANDLE) {
-			vkDestroyDescriptorPool(getDevice(), mPool, nullptr);
-			mPool = VK_NULL_HANDLE;
+		VkDevice device = getDevice();
+		if (device != VK_NULL_HANDLE) {
+			// The sets inside go with the pool, so none needs freeing individually.
+			for (VkDescriptorPool pool : mPools) {
+				if (pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, pool, nullptr);
+			}
 		}
+		mPools.clear();
+		mSizes.clear();
+		mSetsPerPool = 0;
+		// The recycled ones lived in those pools, so they are gone with them.
+		mRecycled.clear();
 	}
 
 	// ---- DescriptorWriter ----------------------------------------------------------

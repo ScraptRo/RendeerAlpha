@@ -5,6 +5,7 @@
 #include <GraphicalObjects/GuiTheme.h>
 #include <GraphicalObjects/Syntax.h>
 #include <GraphicalObjects/Widget.h>
+#include <GraphicalObjects/GuiComponents.h>
 #include <GraphicalObjects/Docking.h>
 #include <vendor/RDA_Library/frame_arena.h>
 #include <string>
@@ -22,10 +23,24 @@ namespace RDA {
 	//
 	// The only cross-frame state is interaction (hot/active, keyed by a stable id) and the
 	// reused draw buffers; that id system underpins both modes.
+	// Writes a draw list's shape to the log: the counts, and for every command its index
+	// range, clip rect and texture. Geometry that does not appear where it should is
+	// almost always a batch whose range or clip is not what its author believed, and
+	// reading it is faster than reasoning about it.
+	void debugLogDrawData(const char* label, const GuiDrawData& data);
+
+	// The vertices a single command actually covers, for when the counts look right but
+	// the shape on screen does not. Logs at most `limit` of them.
+	void debugLogCommandVertices(const char* label, const GuiDrawData& data,
+	                             size_t commandIndex, size_t limit = 8);
+
 	class Gui {
 	public:
 		// Binds the CPU-side font metrics (the atlas texture is the backend's concern).
 		void init(const FontAtlas* font) { mFont = font; }
+		// The atlas this GUI measures against, so a runtime can pass its CPU metrics on
+		// to client processes that have no atlas of their own. Null until init().
+		const FontAtlas* fontAtlas() const { return mFont; }
 
 		// Frame boundaries — driven by the engine, around the app's onUpdate. begin() also
 		// walks the retained tree, so retained widgets draw beneath this frame's immediate
@@ -36,6 +51,17 @@ namespace RDA {
 		// The persistent widget tree. Build it once (e.g. in onStart), mutate it at
 		// runtime; it is walked every frame automatically.
 		Container& retained() { return mRetainedRoot; }
+
+		// Structural edits, applied at the top of the next frame rather than immediately.
+		// This is what a widget callback should use: a button that adds or removes a
+		// sibling fires while its parent's children are being walked, and editing there
+		// pulls the container out from under the walk. Building the tree during setup can
+		// still use add()/remove() directly.
+		WidgetTree& tree() { return mTree; }
+
+		// Reusable widget subtrees described in XML rather than assembled in C++. Load a
+		// file with components().loadFromFile(...), then instantiate by name.
+		GuiComponents& components() { return mComponents; }
 
 		// The dock space: code-defined containers the user can drag and dock to window
 		// edges. Laid out and drawn automatically each frame, above the retained tree.
@@ -57,6 +83,13 @@ namespace RDA {
 
 		// The input for the current frame (pointer/keyboard), for custom widgets/docking.
 		const GuiInput& input() const { return mInput; }
+
+		// Wheel arbitration. Widgets are painted innermost-last, so the first one under
+		// the pointer that can actually move claims the wheel for the frame: a text field
+		// with its own overflow scrolls its text, and an enclosing ScrollView moves only
+		// once that field has nothing left to give. Cleared each frame in begin().
+		bool scrollConsumed() const { return mScrollConsumed; }
+		void consumeScroll() { mScrollConsumed = true; }
 
 		// Scratch memory for things that live exactly one frame. Rewound in begin(), so
 		// anything taken from it is valid until the next frame starts and must not be
@@ -109,20 +142,50 @@ namespace RDA {
 		bool checkbox(const char* id, const char* label, bool& value, const Rect& rect, Variant variant = kDefaultVariant);
 		// Drags `value` within [minValue, maxValue]; returns true while it changes.
 		bool sliderFloat(const char* id, float& value, float minValue, float maxValue, const Rect& rect, Variant variant = kDefaultVariant);
+		// A drag bar. Adjusts `size` by how far the pointer moves along the bar's normal,
+		// clamped to [minSize, maxSize]; returns true on the frames it changes.
+		bool splitter(const char* id, float& size, float minSize, float maxSize,
+		              const Rect& rect, bool vertical);
 		// An editable text field; edits `text` in place, returns true the frames it
 		// changes. The style (Line / Document / Code) governs layout and behavior.
-		bool textField(const char* id, std::string& text, const Rect& rect, const TextFieldStyle& style);
+		// `outFocused`, when given, reports whether this field holds keyboard focus —
+		// enough for a caller to tell which of several editors a shortcut belongs to.
+		bool textField(const char* id, std::string& text, const Rect& rect, const TextFieldStyle& style,
+		               bool* outFocused = nullptr);
 
 		// Whether any text field currently holds keyboard focus.
 		bool hasKeyboardFocus() const { return mFocused != 0; }
 
 		const GuiDrawData& drawData() const { return mDraw; }
 
+		// Tells the GUI that something it cannot see has changed, so the retained tree is
+		// walked again next frame instead of reusing last frame's geometry.
+		//
+		// The cache notices input, resizes and structural edits by itself. What it cannot
+		// notice is an application writing to a widget's public fields — `label->text =
+		// "..."` from game logic is invisible from here. Call this after doing that.
+		void markDirty() { mLayoutDirty = true; }
+
+		// How the retained cache is doing: frames whose widget tree was walked versus
+		// frames that reused the previous walk's geometry.
+		struct CacheStats { uint64_t walked = 0; uint64_t reused = 0; };
+		const CacheStats& cacheStats() const { return mCacheStats; }
+
 		// A fingerprint of the geometry produced this frame, updated by end(). Two frames
 		// with the same version are pixel-identical, which lets the renderer skip the
 		// vertex/index upload and lets an on-demand loop skip the frame entirely. It is
 		// derived from the built draw data rather than from change notifications, so no
 		// widget mutation can slip past it.
+		// Appends an already-built draw list, in this GUI's own coordinate space. The
+		// runtime host uses it to draw the client surfaces its compositor has placed:
+		// they arrive as finished geometry, so there is nothing to build, only to add to
+		// what this frame will record.
+		//
+		// Returns false when the merged vertex count would pass what a 16-bit index can
+		// name; the caller should record that layer separately rather than lose it.
+		// Call between begin() and end().
+		bool appendDrawData(const GuiDrawData& data);
+
 		uint64_t drawVersion() const { return mDrawVersion; }
 		// Whether this frame's draw data differs from the previous frame's.
 		bool drawChanged() const { return mDrawChanged; }
@@ -139,6 +202,9 @@ namespace RDA {
 			float scrollY = 0.0f;
 			float blink = 0.0f;   // caret blink accumulator; reset on any edit/move
 			float scrollGrab = 0.0f; // pointer offset within the scroll thumb while dragging it
+			// 1 = a plain click drags the caret; 2 or 3 = this press selected a word or a
+			// line, and dragging must leave that selection alone.
+			int   dragGranularity = 1;
 
 			// Cached syntax highlighting. Re-lexed only when the text or the language
 			// changes, so an idle editor costs nothing per frame.
@@ -190,13 +256,36 @@ namespace RDA {
 		uint64_t mDrawVersion = 0;   // fingerprint of this frame's draw data
 		bool     mDrawChanged = true; // whether it differs from the previous frame
 
+		// ---- retained-tree cache ----
+		// The draw list is built retained-first, then the application's immediate calls
+		// are appended. When nothing the tree depends on has changed, the retained part
+		// of last frame's list is still correct: the vectors are truncated back to these
+		// counts and the walk is skipped entirely. Nothing is copied — the geometry is
+		// already sitting in the buffers.
+		bool     mLayoutDirty = true;
+		bool     mCacheValid = false;
+		size_t   mRetainedVertices = 0;
+		size_t   mRetainedIndices = 0;
+		size_t   mRetainedCommands = 0;
+		glm::vec2 mLastPointer{ 0.0f };
+		glm::vec2 mLastViewport{ 0.0f };
+		const Texture* mLastSceneTexture = nullptr;
+		uint64_t   mLastDockRevision = 0;
+		CacheStats mCacheStats;
+
+		// Whether last frame's retained geometry can stand in for this frame's.
+		bool canReuseRetained() const;
+
 		uint32_t mFocused = 0;       // id of the keyboard-focused text field, 0 = none
 		bool     mFocusClaimed = false; // a focused widget kept/took focus this frame
 		std::unordered_map<uint32_t, TextState> mTextStates;
 		std::function<std::string()>     mGetClipboard;
 		std::function<void(const char*)> mSetClipboard;
 
+		WidgetTree     mTree;                     // structural edits pending for next frame
+		GuiComponents  mComponents;               // XML-defined widget subtrees
 		Container      mRetainedRoot{ "__root" }; // invisible root of the persistent tree
+		bool           mScrollConsumed = false;   // wheel already claimed this frame
 		DockSpace      mDockSpace;                // dockable containers, above the tree
 		Theme          mTheme;                    // named style variants for this window's GUI
 		SyntaxRegistry mSyntax;                   // languages for text-field highlighting

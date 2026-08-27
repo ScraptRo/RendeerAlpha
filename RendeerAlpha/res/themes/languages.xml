@@ -39,6 +39,29 @@
     </types>
   </language>
 
+  <!-- JavaScript, for the embedded QuickJS runtime. Derives its comment rules from cpp
+       (// and /* */ are identical) and adds the backtick template literal, which spans
+       lines despite being a single character. -->
+  <language name="javascript" base="cpp">
+    <keywords>
+      as async await break case catch class const continue debugger default delete do
+      else export extends finally for from function get if import in instanceof let new
+      of return set static super switch this throw try typeof var void while with yield
+    </keywords>
+    <types>
+      true false null undefined NaN Infinity globalThis
+      Array ArrayBuffer BigInt Boolean Date Error EvalError Float32Array Float64Array
+      Function Int8Array Int16Array Int32Array JSON Map Math Number Object Promise Proxy
+      RangeError ReferenceError Reflect RegExp Set String Symbol SyntaxError TypeError
+      Uint8Array Uint16Array Uint32Array WeakMap WeakSet console
+    </types>
+    <lineComment>//</lineComment>
+    <blockComment begin="/*" end="*/"/>
+    <string>"</string>
+    <string>'</string>
+    <multilineString>`</multilineString>
+  </language>
+
   <language name="lua">
     <keywords>
       and break do else elseif end for function goto if in local not or repeat return

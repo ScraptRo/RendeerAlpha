@@ -83,21 +83,24 @@ namespace RDA {
 			return false;
 		}
 
-		mFrames.resize(framesInFlight);
+		// No buffers yet: they are created per window, by the first window to draw.
+		mFramesInFlight = framesInFlight;
 
-		// A small per-frame pool for transient image-texture descriptor sets.
-		VkDescriptorPoolSize size{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 };
+		// One pool for image descriptor sets, holding a set per live texture rather than
+		// per frame. FREE_DESCRIPTOR_SET so a single one can be released when its texture
+		// goes, which is the only moment recycling is safe when several windows share
+		// this renderer.
+		constexpr uint32_t kMaxImageSets = 256;
+		VkDescriptorPoolSize size{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxImageSets };
 		VkDescriptorPoolCreateInfo poolInfo{};
 		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		poolInfo.maxSets = 8;
+		poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+		poolInfo.maxSets = kMaxImageSets;
 		poolInfo.poolSizeCount = 1;
 		poolInfo.pPoolSizes = &size;
-		mImagePools.resize(framesInFlight, VK_NULL_HANDLE);
-		for (uint32_t i = 0; i < framesInFlight; ++i) {
-			if (vkCreateDescriptorPool(getDevice(), &poolInfo, nullptr, &mImagePools[i]) != VK_SUCCESS) {
-				RDA_LOG_ERROR("GUI: failed to create image descriptor pool");
-				return false;
-			}
+		if (vkCreateDescriptorPool(getDevice(), &poolInfo, nullptr, &mImagePool) != VK_SUCCESS) {
+			RDA_LOG_ERROR("GUI: failed to create image descriptor pool");
+			return false;
 		}
 
 		RDA_LOG_SUCCES("GUI renderer initialized");
@@ -184,13 +187,30 @@ namespace RDA {
 		return true;
 	}
 
-	VkDescriptorSet GuiRenderer::imageSetFor(const Texture* texture, uint32_t frameIndex) {
+	VkDescriptorSet GuiRenderer::imageSetFor(const Texture* texture) {
 		auto it = mImageSets.find(texture);
-		if (it != mImageSets.end()) return it->second;
+		if (it != mImageSets.end()) {
+			// Still describing the same image: the ordinary hit.
+			if (it->second.revision == texture->revision()) {
+				return it->second.set;
+			}
+			// The texture was rebuilt underneath its entry — a render target resized
+			// without releasing what pointed at it. Whoever destroyed the view should have
+			// called forgetTexture() first, so this is a bug upstream rather than a case
+			// to handle quietly.
+			//
+			// The stale set is dropped from the map but deliberately not freed: a frame in
+			// flight may still be reading it, and freeing a set that is in use trades a
+			// wrong image for undefined behaviour. It costs one set out of the pool until
+			// teardown, which is the cheap half of the trade.
+			RDA_LOG_WARNING("GUI: image descriptor set was stale (its texture was rebuilt "
+			                "without forgetTexture); rebuilding it");
+			mImageSets.erase(it);
+		}
 
 		VkDescriptorSetAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = mImagePools[frameIndex];
+		allocInfo.descriptorPool = mImagePool;
 		allocInfo.descriptorSetCount = 1;
 		allocInfo.pSetLayouts = &mSetLayout;
 		VkDescriptorSet set = VK_NULL_HANDLE;
@@ -201,19 +221,47 @@ namespace RDA {
 			.writeImage(0, texture->view(), texture->sampler(),
 			            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 			.update(set);
-		mImageSets[texture] = set;
+		// Stamped with the identity it was written against, so the next lookup can tell
+		// whether the image behind this pointer is still the one this set describes.
+		mImageSets[texture] = ImageSet{ set, texture->revision() };
 		return set;
 	}
 
-	void GuiRenderer::beginFrame(uint32_t frameIndex) {
-		if (frameIndex >= mImagePools.size()) return;
-		// Recycle last use of this frame slot's transient sets. Done once per frame
-		// because a frame can record several times (GUI layer, then composite).
-		vkResetDescriptorPool(getDevice(), mImagePools[frameIndex], 0);
-		mImageSets.clear();
+	GuiRenderer::DynamicBuffers* GuiRenderer::buffersFor(const Window* owner, uint32_t frameIndex) {
+		if (frameIndex >= mFramesInFlight) return nullptr;
+		std::vector<DynamicBuffers>& frames = mWindowFrames[owner];
+		if (frames.size() != mFramesInFlight) frames.resize(mFramesInFlight);
+		return &frames[frameIndex];
 	}
 
-	void GuiRenderer::record(VkCommandBuffer cmd, const GuiDrawData& data,
+	void GuiRenderer::beginFrame(const Window* owner, uint32_t frameIndex) {
+		// The buffers are brought into existence here rather than mid-record, so a window
+		// drawing for the first time allocates before it is recording into a command
+		// buffer.
+		buffersFor(owner, frameIndex);
+
+		// Image sets need no recycling: they now live as long as their texture. Resetting
+		// a pool here would free sets that another window's in-flight frame is still
+		// reading, since every window drives its own frame counter through this one
+		// renderer. forgetTexture() is what releases them instead.
+	}
+
+	void GuiRenderer::forgetWindow(const Window* owner) {
+		// The buffers go with the entry: MemoryBuffer frees itself, and the caller has
+		// already waited for the GPU.
+		mWindowFrames.erase(owner);
+	}
+
+	void GuiRenderer::forgetTexture(const Texture* texture) {
+		auto found = mImageSets.find(texture);
+		if (found == mImageSets.end()) return;
+		if (mImagePool != VK_NULL_HANDLE && found->second.set != VK_NULL_HANDLE) {
+			vkFreeDescriptorSets(getDevice(), mImagePool, 1, &found->second.set);
+		}
+		mImageSets.erase(found);
+	}
+
+	void GuiRenderer::record(VkCommandBuffer cmd, const Window* owner, const GuiDrawData& data,
 	                         VkExtent2D targetExtent, uint32_t frameIndex, uint64_t drawVersion,
 	                         const Texture* skipTexture, bool intoLayer) {
 		// A pipeline is only valid with the render pass it was built against.
@@ -221,11 +269,16 @@ namespace RDA {
 		const GraphicsPipeline& imagePipeline = intoLayer ? mLayerImagePipeline : mImagePipeline;
 		if (!atlasPipeline.isValid() || !imagePipeline.isValid()) return;
 		if (data.commands.empty() || data.vertices.empty() || data.indices.empty()) return;
-		if (frameIndex >= mFrames.size()) return;
+
+		// This window's own buffers. Nothing another window draws this iteration can
+		// touch them, so the fence it was waited on is enough to make the upload below
+		// safe.
+		DynamicBuffers* buffers = buffersFor(owner, frameIndex);
+		if (!buffers) return;
+		DynamicBuffers& fb = *buffers;
 
 		VkDeviceSize vertexSize = data.vertices.size() * sizeof(GuiVertex);
 		VkDeviceSize indexSize = data.indices.size() * sizeof(uint16_t);
-		DynamicBuffers& fb = mFrames[frameIndex];
 		bool reallocated = false;
 		if (vertexSize > fb.vertexCapacity) {
 			fb.vertexCapacity = roundUpCapacity(vertexSize);
@@ -268,7 +321,7 @@ namespace RDA {
 			bool isImage = command.texture != nullptr;
 			VkPipeline wantPipeline = isImage ? imagePipeline.handle() : atlasPipeline.handle();
 			VkPipelineLayout layout = isImage ? imagePipeline.layout() : atlasPipeline.layout();
-			VkDescriptorSet set = isImage ? imageSetFor(command.texture, frameIndex) : mAtlasSet;
+			VkDescriptorSet set = isImage ? imageSetFor(command.texture) : mAtlasSet;
 			if (set == VK_NULL_HANDLE) continue;
 
 			if (wantPipeline != bound) {
@@ -291,11 +344,13 @@ namespace RDA {
 		}
 	}
 
-	void GuiRenderer::recordComposite(VkCommandBuffer cmd, VkExtent2D targetExtent, uint32_t frameIndex,
-	                                  const Texture* sceneTexture, const Rect& sceneRect,
-	                                  const Texture* layerTexture) {
-		if (frameIndex >= mFrames.size() || !layerTexture) return;
-		DynamicBuffers& fb = mFrames[frameIndex];
+	void GuiRenderer::recordComposite(VkCommandBuffer cmd, const Window* owner, VkExtent2D targetExtent,
+	                                  uint32_t frameIndex, const Texture* sceneTexture,
+	                                  const Rect& sceneRect, const Texture* layerTexture) {
+		if (!layerTexture) return;
+		DynamicBuffers* buffers = buffersFor(owner, frameIndex);
+		if (!buffers) return;
+		DynamicBuffers& fb = *buffers;
 
 		// Quad 0: the live scene, in the Viewport widget's rect. Quad 1: the cached GUI
 		// layer over the whole target.
@@ -338,14 +393,14 @@ namespace RDA {
 		// The scene first, then the GUI layer over it — so anything the GUI draws on top
 		// of the viewport (a floating container, say) still covers the scene.
 		if (sceneTexture && sceneRect.w > 0.0f && sceneRect.h > 0.0f) {
-			if (VkDescriptorSet set = imageSetFor(sceneTexture, frameIndex)) {
+			if (VkDescriptorSet set = imageSetFor(sceneTexture)) {
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mImagePipeline.handle());
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mImagePipeline.layout(),
 				                        0, 1, &set, 0, nullptr);
 				vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 			}
 		}
-		if (VkDescriptorSet set = imageSetFor(layerTexture, frameIndex)) {
+		if (VkDescriptorSet set = imageSetFor(layerTexture)) {
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mCompositePipeline.handle());
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mCompositePipeline.layout(),
 			                        0, 1, &set, 0, nullptr);
@@ -362,12 +417,14 @@ namespace RDA {
 		mLayerAtlasPipeline.destroy();
 		mLayerImagePipeline.destroy();
 		mLayerPipelinesReady = false;
-		mFrames.clear();
+		mWindowFrames.clear();
+		mFramesInFlight = 0;
 
-		for (VkDescriptorPool pool : mImagePools) {
-			if (pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, pool, nullptr);
+		// The pool goes as a whole, so the sets in it need no individual freeing.
+		if (mImagePool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(device, mImagePool, nullptr);
 		}
-		mImagePools.clear();
+		mImagePool = VK_NULL_HANDLE;
 		mImageSets.clear();
 
 		mPool.destroy();

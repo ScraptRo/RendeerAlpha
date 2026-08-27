@@ -365,3 +365,13 @@ FodyWeavers.xsd
 RDA_DEBUG.txt
 shader_cache/
 dock_layout.ini
+
+# CMake
+# The build tree, and the caches CMake and the IDEs drop beside it. Generated project
+# files are deliberately not committed: the CMakeLists are the build description, and a
+# checked-in .sln would be a second one to keep in step with it.
+build/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake

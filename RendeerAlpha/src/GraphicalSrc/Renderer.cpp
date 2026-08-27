@@ -1,69 +1,32 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/Renderer.h>
+#include <GraphicalSrc/SceneBindings.h>
+#include <GraphicalSrc/SceneFrame.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/Swapchain.h>
 #include <GraphicalSrc/Shader.h>
 #include <GraphicalObjects/Window.h>
 #include <GraphicalObjects/Scene.h>
 #include <Logger/Logger.h>
+#include <glm/gtc/matrix_transform.hpp> // lookAt / ortho, for the light's matrix
 #include <array>
+#include <cmath>
 #include <thread>
 #include <chrono>
 
 namespace RDA {
 
-	// Matches the CameraUBO block in the forward shaders below (std140).
-	struct CameraUniform {
-		glm::mat4 view;
-		glm::mat4 proj;
-		glm::vec4 lightDirection; // xyz = direction the light travels; w unused
-	};
+	// Set 0's layout lives in SceneBindings.h; the forward technique in ForwardPass.
 
-	static const char* kForwardVertexSource = R"GLSL(
-		#version 450
-		layout(location = 0) in vec3 inPosition;
-		layout(location = 1) in vec3 inNormal;
-
-		layout(set = 0, binding = 0) uniform CameraUBO {
-			mat4 view;
-			mat4 proj;
-			vec4 lightDirection;
-		} camera;
-
-		layout(push_constant) uniform Push {
-			mat4 model;
-		} push;
-
-		layout(location = 0) out vec3 vWorldNormal;
-
-		void main() {
-			gl_Position = camera.proj * camera.view * push.model * vec4(inPosition, 1.0);
-			vWorldNormal = mat3(push.model) * inNormal;
+	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight, ViewportMode mode,
+	                    bool guiEnabled) {
+		mGuiEnabled = guiEnabled;
+		// A Viewport widget is the only thing that can display an offscreen scene, so
+		// without a GUI there is nothing to render into one.
+		if (!mGuiEnabled && mode == ViewportMode::Widget) {
+			RDA_LOG_WARNING("ViewportMode::Widget needs a GUI to display the scene; using Fullscreen");
+			mode = ViewportMode::Fullscreen;
 		}
-	)GLSL";
-
-	static const char* kForwardFragmentSource = R"GLSL(
-		#version 450
-		layout(location = 0) in vec3 vWorldNormal;
-
-		layout(set = 0, binding = 0) uniform CameraUBO {
-			mat4 view;
-			mat4 proj;
-			vec4 lightDirection;
-		} camera;
-
-		layout(location = 0) out vec4 outColor;
-
-		void main() {
-			vec3 n = normalize(vWorldNormal);
-			vec3 l = normalize(-camera.lightDirection.xyz);
-			float diffuse = max(dot(n, l), 0.0);
-			vec3 base = vec3(0.80, 0.80, 0.85);
-			outColor = vec4(base * (0.15 + 0.85 * diffuse), 1.0);
-		}
-	)GLSL";
-
-	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight, ViewportMode mode) {
 		mViewportMode = mode;
 
 		// Draw into the window's own surface FrameBuffer by default; the pipeline below
@@ -75,6 +38,10 @@ namespace RDA {
 		}
 		if (!createFrameResources()) return false;
 		if (!createCameraResources()) return false;
+		// Before the material resources so binding 2 of the frame sets is written while
+		// they are still untouched by any frame.
+		if (!mShadowPass.init(mCameraSetLayout)) return false;
+		if (!mMaterials.init()) return false;
 
 		// Widget mode: build the offscreen scene target first, so the forward pipeline can
 		// be built against the render pass it will actually draw the scene into. It starts
@@ -88,14 +55,25 @@ namespace RDA {
 			}
 		}
 
-		if (!createForwardPipeline()) return false;
+		// Built against whichever pass the scene is actually drawn into: the offscreen
+		// target in Widget mode, the window surface otherwise.
+		VkRenderPass scenePass = (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid())
+			? mSceneTarget.renderPass() : mTarget->renderPass();
+		if (!mForward.init(scenePass, mCameraSetLayout, mMaterials.layout())) return false;
 
-		// The GUI always draws into the surface pass.
-		if (!mGuiRenderer.init(mTarget->renderPass(), fontPath, fontHeight, MAX_FRAMES_IN_FLIGHT)) {
-			return false;
+		// The GUI always draws into the surface pass. Skipped entirely when the
+		// application has no GUI — that is where the font bake and the GUI pipelines are
+		// paid for, so an application without one never builds them.
+		if (mGuiEnabled) {
+			if (!mGuiRenderer.init(mTarget->renderPass(), fontPath, fontHeight, MAX_FRAMES_IN_FLIGHT)) {
+				return false;
+			}
 		}
 
-		RDA_LOG_SUCCES("Forward renderer initialized");
+		// Parenthesised: the log macros expand to `oss << x`, and << binds tighter than
+		// ?:, so an unwrapped ternary would stream the condition instead of the message.
+		RDA_LOG_SUCCES((mGuiEnabled ? "Forward renderer initialized"
+		                            : "Forward renderer initialized (no GUI)"));
 		return true;
 	}
 
@@ -127,6 +105,13 @@ namespace RDA {
 			vkDeviceWaitIdle(getDevice());
 		}
 
+		// The colour texture is a member of the target, so recreating it keeps its address
+		// while replacing the view and sampler inside it. Anything caching by that address
+		// — the GUI's image descriptor sets — would go on pointing at the destroyed view,
+		// so what points at it is released first. A no-op on the first creation, when
+		// nothing has sampled it yet.
+		forgetTexture(&mSceneTarget.colorTexture());
+
 		mSceneTarget.createOffscreen(extent.width, extent.height, mSceneColorFormat);
 		mSceneSettleFrames = 0;
 	}
@@ -151,33 +136,7 @@ namespace RDA {
 			return false;
 		}
 
-		mCommandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = mCommandPool;
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
-		if (vkAllocateCommandBuffers(device, &allocInfo, mCommandBuffers.data()) != VK_SUCCESS) {
-			RDA_LOG_ERROR("Failed to allocate command buffers");
-			return false;
-		}
-
-		mImageAvailable.resize(MAX_FRAMES_IN_FLIGHT);
-		mInFlight.resize(MAX_FRAMES_IN_FLIGHT);
-
-		VkSemaphoreCreateInfo semaphoreInfo{};
-		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-		VkFenceCreateInfo fenceInfo{};
-		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // start signaled so frame 0 doesn't deadlock
-
-		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &mImageAvailable[i]) != VK_SUCCESS ||
-				vkCreateFence(device, &fenceInfo, nullptr, &mInFlight[i]) != VK_SUCCESS) {
-				RDA_LOG_ERROR("Failed to create frame synchronization objects");
-				return false;
-			}
-		}
+		// Per-window frame resources are built on first draw; only the pool is made here.
 		return true;
 	}
 
@@ -186,83 +145,61 @@ namespace RDA {
 		mCameraSetLayout = DescriptorLayoutBuilder()
 			.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+			.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+			.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT)
 			.build();
 		if (mCameraSetLayout == VK_NULL_HANDLE) return false;
 
+		// A block of one window's worth of frames. The allocator opens another whenever
+		// this one fills, so this is the granularity of growth, not a limit on windows —
+		// which it used to be, silently, at exactly one window.
+		constexpr uint32_t kSetsPerBlock = MAX_FRAMES_IN_FLIGHT * 4;
 		std::vector<VkDescriptorPoolSize> sizes = {
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAMES_IN_FLIGHT },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kSetsPerBlock },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kSetsPerBlock },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSetsPerBlock },
 		};
-		if (!mDescriptorPool.init(MAX_FRAMES_IN_FLIGHT, sizes)) return false;
+		if (!mDescriptorPool.init(kSetsPerBlock, sizes)) return false;
 
-		mCameraUniforms.resize(MAX_FRAMES_IN_FLIGHT);
-		mCameraSets.resize(MAX_FRAMES_IN_FLIGHT);
-		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			if (!mCameraUniforms[i].create(sizeof(CameraUniform),
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, MemoryResidence::CpuToGpu)) {
-				RDA_LOG_ERROR("Failed to create camera uniform buffer");
-				return false;
-			}
-			mCameraSets[i] = mDescriptorPool.allocate(mCameraSetLayout);
-			if (mCameraSets[i] == VK_NULL_HANDLE) return false;
+		// The buffers and sets themselves are built per window, by framesFor().
+		return true;
+	}
 
-			DescriptorWriter()
-				.writeBuffer(0, mCameraUniforms[i].handle(), sizeof(CameraUniform), 0,
-				             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-				.update(mCameraSets[i]);
+	// One window's set 0, for each frame in flight.
+	bool Renderer::createFrameSceneResources(WindowFrames& frames) {
+		for (WindowFrames::Frame& frame : frames.frames) {
+			if (!frame.scene.create(mDescriptorPool, mCameraSetLayout)) return false;
+			// The shadow map exists by now: ShadowPass::init() runs during init(), and
+			// this runs on a window's first draw.
+			if (mShadowPass.isValid()) frame.scene.bindShadowMap(mShadowPass.depthTexture());
 		}
 		return true;
 	}
 
-	bool Renderer::createForwardPipeline() {
-		Shader vertex = Shader::fromSource(kForwardVertexSource, ShaderStage::Vertex, "forward.vert");
-		Shader fragment = Shader::fromSource(kForwardFragmentSource, ShaderStage::Fragment, "forward.frag");
-		if (!vertex.isValid() || !fragment.isValid()) {
-			RDA_LOG_ERROR("Failed to build forward shaders");
-			return false;
-		}
-
-		VkPushConstantRange modelPush{};
-		modelPush.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-		modelPush.offset = 0;
-		modelPush.size = sizeof(glm::mat4);
-
-		// The mesh buffer is interleaved position/normal/uv, but the forward shader
-		// only reads position and normal, so describe just those two (the stride still
-		// steps over the whole Vertex). The uv attribute joins here once it's textured.
-		VkVertexInputBindingDescription binding = Vertex::getBindingDescription();
-		std::array<VkVertexInputAttributeDescription, 3> allAttributes = Vertex::getAttributeDescriptions();
-		std::vector<VkVertexInputAttributeDescription> attributes = { allAttributes[0], allAttributes[1] };
-
-		// The scene draws into the offscreen target (Widget mode) or the surface (Fullscreen);
-		// build the pipeline against whichever render pass it will actually be used in.
-		VkRenderPass scenePass = (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid())
-			? mSceneTarget.renderPass() : mTarget->renderPass();
-
-		mForwardPipeline = PipelineBuilder()
-			.addShader(vertex)
-			.addShader(fragment)
-			.setVertexInput(binding, attributes)
-			.setTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-			// Cull nothing for now: it keeps a first mesh visible regardless of its
-			// winding. Batching/deferred later will want proper back-face culling.
-			.setCull(VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
-			.setDepth(true, true, VK_COMPARE_OP_LESS)
-			.addDescriptorSetLayout(mCameraSetLayout)
-			.addPushConstantRange(modelPush)
-			.setTarget(scenePass, 0)
-			.build();
-
-		if (!mForwardPipeline.isValid()) {
-			RDA_LOG_ERROR("Failed to build the forward pipeline");
-			return false;
-		}
-		return true;
-	}
-
-	Material Renderer::forwardMaterial() const {
+	// Depth-only: position through the light's matrix, nothing else. It still reads the
+	// object buffer, so it uses the same set 0 and the same per-draw index as the main
+	// pass — one source of truth for where an object is.
+	Material Renderer::forwardMaterial(const MaterialTextures& textures) {
 		Material material;
-		material.setPipeline(&mForwardPipeline);
+		material.setPipeline(&mForward.pipeline());
+		material.textures = textures; // keeps the textures alive alongside the set
+
+		VkDescriptorSet set = mMaterials.allocateSet(textures);
+		if (set == VK_NULL_HANDLE) return material; // drawn untextured rather than not at all
+		material.setSets(1, { set }); // set 1; set 0 is the frame's scene data
 		return material;
+	}
+
+	void Renderer::releaseMaterial(Material& material) {
+		for (VkDescriptorSet set : material.takeSets()) mMaterials.releaseSet(set);
+	}
+
+	Material Renderer::forwardMaterial() {
+		// Still gets a descriptor set, filled with the neutral defaults. The shader uses
+		// set 1 unconditionally, so a material without one would be a bound-descriptor
+		// error at draw time rather than simply "untextured".
+		return forwardMaterial(MaterialTextures{});
 	}
 
 	void Renderer::destroy() {
@@ -272,22 +209,20 @@ namespace RDA {
 		mGuiRenderer.destroy();
 		mSceneTarget.destroy();
 		mGuiLayer.destroy();
-		mForwardPipeline.destroy();
+		mShadowPass.destroy();
+		mForward.destroy();
 
-		mCameraUniforms.clear();
-		mCameraSets.clear();
+
+		// Before the pool: every window's set 0 was allocated from it, and its buffers
+		// are freed here. Ordering the other way round works only by accident.
+		destroyWindowFrames();
+
+		mMaterials.destroy();
 		mDescriptorPool.destroy();
 		if (mCameraSetLayout != VK_NULL_HANDLE) {
 			vkDestroyDescriptorSetLayout(device, mCameraSetLayout, nullptr);
 			mCameraSetLayout = VK_NULL_HANDLE;
 		}
-
-		for (size_t i = 0; i < mImageAvailable.size(); i++) {
-			vkDestroySemaphore(device, mImageAvailable[i], nullptr);
-			vkDestroyFence(device, mInFlight[i], nullptr);
-		}
-		mImageAvailable.clear();
-		mInFlight.clear();
 
 		if (mCommandPool != VK_NULL_HANDLE) {
 			vkDestroyCommandPool(device, mCommandPool, nullptr);
@@ -306,19 +241,134 @@ namespace RDA {
 		}
 	}
 
-	void Renderer::updateCamera(uint32_t frame) {
-		const Scene& scene = getScene();
-		CameraUniform data{};
-		data.view = scene.camera.view;
-		data.proj = scene.camera.proj;
-		data.lightDirection = glm::vec4(scene.lightDirection, 0.0f);
-		mCameraUniforms[frame].upload(&data, sizeof(data));
+	Renderer::WindowFrames* Renderer::framesFor(const Window* window) {
+		auto found = mWindowFrames.find(window);
+		if (found != mWindowFrames.end()) return &found->second;
+
+		VkDevice device = getDevice();
+
+		// Allocated in one call, as the API wants, then handed out one per frame.
+		std::vector<VkCommandBuffer> commandBuffers(MAX_FRAMES_IN_FLIGHT);
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = mCommandPool;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
+			RDA_LOG_ERROR("Failed to allocate command buffers for a window");
+			return nullptr;
+		}
+
+		VkSemaphoreCreateInfo semaphoreInfo{};
+		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+		VkFenceCreateInfo fenceInfo{};
+		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // start signaled so frame 0 doesn't deadlock
+
+		WindowFrames frames;
+		frames.frames.resize(MAX_FRAMES_IN_FLIGHT);
+		// Handed out before anything else can fail, so every one of them has an owner that
+		// releaseFrames() will find. Assigning them as the loop below went would strand the
+		// ones past the failure with nothing pointing at them.
+		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) frames[i].command = commandBuffers[i];
+
+		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			WindowFrames::Frame& frame = frames[i];
+			// Into locals, then stored: a failed create leaves its handle undefined rather
+			// than null, and passing that to vkDestroy* would be worse than the leak.
+			VkSemaphore semaphore = VK_NULL_HANDLE;
+			VkFence fence = VK_NULL_HANDLE;
+			const bool ok =
+				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &semaphore) == VK_SUCCESS &&
+				vkCreateFence(device, &fenceInfo, nullptr, &fence) == VK_SUCCESS;
+			if (ok) {
+				frame.imageAvailable = semaphore;
+				frame.fence = fence;
+				continue;
+			}
+			// Keep whichever half was made so it goes with the rest.
+			if (semaphore != VK_NULL_HANDLE) frame.imageAvailable = semaphore;
+			RDA_LOG_ERROR("Failed to create frame synchronization objects for a window");
+			releaseFrames(frames);
+			return nullptr;
+		}
+
+		// Inserted before the scene resources are built, because building them needs a
+		// stable home: the MemoryBuffers inside are move-only and own device memory, and
+		// creating them into a local that is then moved would work but leaves two objects
+		// briefly owning the same allocation.
+		auto inserted = mWindowFrames.emplace(window, std::move(frames));
+		WindowFrames& stored = inserted.first->second;
+		if (!createFrameSceneResources(stored)) {
+			RDA_LOG_ERROR("Failed to create scene resources for a window");
+			// Erasing alone would free the buffers and leave every semaphore, fence and
+			// command buffer behind — they are raw handles with no destructor.
+			releaseFrames(stored);
+			mWindowFrames.erase(inserted.first);
+			return nullptr;
+		}
+		return &stored;
+	}
+
+	void Renderer::releaseFrames(WindowFrames& frames) {
+		VkDevice device = getDevice();
+		if (device == VK_NULL_HANDLE) { frames.frames.clear(); return; }
+
+		// The command buffers are freed in one call, so they are gathered back up;
+		// everything else a frame owns is released as we go.
+		std::vector<VkCommandBuffer> commandBuffers;
+		commandBuffers.reserve(frames.frames.size());
+		for (WindowFrames::Frame& frame : frames.frames) {
+			if (frame.imageAvailable != VK_NULL_HANDLE) {
+				vkDestroySemaphore(device, frame.imageAvailable, nullptr);
+			}
+			if (frame.fence != VK_NULL_HANDLE) vkDestroyFence(device, frame.fence, nullptr);
+			if (frame.command != VK_NULL_HANDLE) commandBuffers.push_back(frame.command);
+			// Its set 0 buffers go too. The sets themselves are the pool's to free.
+			frame.scene.destroy();
+		}
+		if (!commandBuffers.empty() && mCommandPool != VK_NULL_HANDLE) {
+			vkFreeCommandBuffers(device, mCommandPool,
+				static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+		}
+		frames.frames.clear();
+	}
+
+	void Renderer::forgetWindow(const Window* window) {
+		auto found = mWindowFrames.find(window);
+		if (found == mWindowFrames.end()) return;
+		releaseFrames(found->second);
+		mWindowFrames.erase(found);
+		// Its GUI geometry buffers go the same way, and for the same reason: a frame in
+		// flight may still have been reading them until the caller waited.
+		mGuiRenderer.forgetWindow(window);
+		// The target may have been pointing at the framebuffer that is about to go.
+		if (mTarget && !mTargetOverridden) mTarget = nullptr;
+	}
+
+	void Renderer::destroyWindowFrames() {
+		// Runs before the command pool and the descriptor pool are destroyed, so freeing
+		// each window's frames individually is still valid here.
+		for (auto& entry : mWindowFrames) releaseFrames(entry.second);
+		mWindowFrames.clear();
 	}
 
 	void Renderer::drawWindow(Window& window) {
 		GPUInfo& gpu = getGPU();
 		VkDevice device = gpu.LDevice;
 		Swapchain& swapchain = window.getSwapchain();
+
+		// This window's own fences, semaphores and command buffers. Built on first draw.
+		WindowFrames* frames = framesFor(&window);
+		if (!frames) return;
+		// Handed to every helper below rather than stashed on the renderer. This frame
+		// belongs to this window and to nothing else.
+		const uint32_t frameIndex = frames->currentFrame;
+		WindowFrames::Frame& frame = (*frames)[frameIndex];
+
+		// Every window draws into its own surface framebuffer. All windows share the
+		// surface format, so the pipelines built against the first one stay compatible.
+		if (!mTargetOverridden) mTarget = &window.getFrameBuffer();
 
 		// Minimized: no surface to render to. Idle briefly so the loop doesn't spin.
 		VkExtent2D windowExtent = window.cachedExtent();
@@ -327,12 +377,12 @@ namespace RDA {
 			return;
 		}
 
-		vkWaitForFences(device, 1, &mInFlight[mCurrentFrame], VK_TRUE, UINT64_MAX);
+		vkWaitForFences(device, 1, &frame.fence, VK_TRUE, UINT64_MAX);
 
 		uint32_t imageIndex = 0;
 		VkResult acquire = vkAcquireNextImageKHR(
 			device, swapchain.handle(), UINT64_MAX,
-			mImageAvailable[mCurrentFrame], VK_NULL_HANDLE, &imageIndex);
+			frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
 		if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
 			// The window rebuilds its swapchain and its surface FrameBuffer together;
@@ -352,17 +402,23 @@ namespace RDA {
 		if (imageInFlight != VK_NULL_HANDLE) {
 			vkWaitForFences(device, 1, &imageInFlight, VK_TRUE, UINT64_MAX);
 		}
-		imageInFlight = mInFlight[mCurrentFrame];
+		imageInFlight = frame.fence;
 
-		vkResetFences(device, 1, &mInFlight[mCurrentFrame]);
+		vkResetFences(device, 1, &frame.fence);
 
-		updateCamera(mCurrentFrame);
+		// Both run after the fence wait above, so this frame's buffers and descriptor set
+		// are not being read by anything in flight.
+		// This window's set 0 for this frame. Both writes land in buffers nothing else
+		// can reach, and the fence above means nothing in flight is reading them.
+		const Scene& scene = getScene();
+		frame.scene.updateCamera(scene, ShadowPass::viewProjectionFor(scene.sun));
+		frame.scene.updateObjects(scene, mObjectScratch);
 
-		VkCommandBuffer cmd = mCommandBuffers[mCurrentFrame];
+		VkCommandBuffer cmd = frame.command;
 		vkResetCommandBuffer(cmd, 0);
-		recordFrame(cmd, window, imageIndex);
+		recordFrame(cmd, window, imageIndex, frame, frameIndex);
 
-		VkSemaphore waitSemaphores[] = { mImageAvailable[mCurrentFrame] };
+		VkSemaphore waitSemaphores[] = { frame.imageAvailable };
 		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		VkSemaphore signalSemaphores[] = { swapchain.renderFinishedSemaphore(imageIndex) };
 
@@ -376,7 +432,7 @@ namespace RDA {
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = signalSemaphores;
 
-		if (vkQueueSubmit(gpu.graphicsQueue, 1, &submitInfo, mInFlight[mCurrentFrame]) != VK_SUCCESS) {
+		if (vkQueueSubmit(gpu.graphicsQueue, 1, &submitInfo, frame.fence) != VK_SUCCESS) {
 			RDA_LOG_ERROR("Failed to submit draw command buffer");
 			return;
 		}
@@ -397,23 +453,7 @@ namespace RDA {
 			RDA_LOG_ERROR("Failed to present swapchain image");
 		}
 
-		mCurrentFrame = (mCurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-	}
-
-	void Renderer::drawSceneItems(VkCommandBuffer cmd) {
-		mForwardPipeline.bind(cmd);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mForwardPipeline.layout(),
-			0, 1, &mCameraSets[mCurrentFrame], 0, nullptr);
-
-		// One draw per scene item. This flat loop is exactly what batching and
-		// instancing will later replace, without the render pass changing.
-		const Scene& scene = getScene();
-		for (const DrawItem& item : scene.items()) {
-			if (!item.mesh.IsValid() || !item.mesh->isValid()) continue;
-			vkCmdPushConstants(cmd, mForwardPipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT,
-				0, sizeof(glm::mat4), &item.transform);
-			item.mesh->recordDraw(cmd);
-		}
+		frames->currentFrame = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
 	static void beginPass(VkCommandBuffer cmd, VkRenderPass pass, VkFramebuffer framebuffer,
@@ -444,6 +484,9 @@ namespace RDA {
 		// Size follows the window. Recreating drops the cached content, so the layer is
 		// marked invalid and re-rasterised on this frame.
 		vkDeviceWaitIdle(getDevice());
+		// Same as the scene target: the layer's colour texture keeps its address across a
+		// resize, so the descriptor set describing it has to go before the view it names.
+		forgetTexture(&mGuiLayer.colorTexture());
 		mGuiLayer.destroy();
 		if (!mGuiLayer.createOffscreen(extent.width, extent.height, mSceneColorFormat)) {
 			RDA_LOG_ERROR("Failed to create the GUI layer target");
@@ -456,7 +499,8 @@ namespace RDA {
 		return true;
 	}
 
-	void Renderer::recordFrame(VkCommandBuffer cmd, Window& window, uint32_t imageIndex) {
+	void Renderer::recordFrame(VkCommandBuffer cmd, Window& window, uint32_t imageIndex,
+	                           WindowFrames::Frame& frame, uint32_t frameIndex) {
 		Swapchain& swapchain = window.getSwapchain();
 
 		VkCommandBufferBeginInfo beginInfo{};
@@ -466,13 +510,33 @@ namespace RDA {
 			return;
 		}
 
-		mGuiRenderer.beginFrame(mCurrentFrame);
+		// The shadow map is rebuilt first: every later pass samples it, and its render
+		// pass already declares the dependency that makes those writes visible.
+		if (getScene().sun.castsShadows) {
+			mShadowPass.record(cmd, frame.scene.set(),
+			                   ShadowPass::viewProjectionFor(getScene().sun), getScene());
+		}
+
+		if (!mGuiEnabled) {
+			// No GUI: the scene is the frame. One pass, straight to the window surface.
+			beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+			setViewportAndScissor(cmd, swapchain.extent());
+			mForward.record(cmd, frame.scene.set(), getScene());
+			vkCmdEndRenderPass(cmd);
+
+			if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+				RDA_LOG_ERROR("Failed to record command buffer");
+			}
+			return;
+		}
+
+		mGuiRenderer.beginFrame(&window, frameIndex);
 
 		if (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid()) {
 			// Pass 1: the scene into its offscreen target (sampleable afterwards).
 			beginPass(cmd, mSceneTarget.renderPass(), mSceneTarget.framebuffer(0), mSceneTarget.extent());
 			setViewportAndScissor(cmd, mSceneTarget.extent());
-			drawSceneItems(cmd);
+			mForward.record(cmd, frame.scene.set(), getScene());
 			vkCmdEndRenderPass(cmd);
 
 			Gui& gui = window.gui();
@@ -485,7 +549,7 @@ namespace RDA {
 					beginPass(cmd, mGuiLayer.renderPass(), mGuiLayer.framebuffer(0),
 					          mGuiLayer.extent(), /*transparentClear*/ true);
 					setViewportAndScissor(cmd, mGuiLayer.extent());
-					mGuiRenderer.record(cmd, gui.drawData(), mGuiLayer.extent(), mCurrentFrame,
+					mGuiRenderer.record(cmd, &window, gui.drawData(), mGuiLayer.extent(), frameIndex,
 					                    gui.drawVersion(), /*skipTexture*/ sceneTexture(),
 					                    /*intoLayer*/ true);
 					vkCmdEndRenderPass(cmd);
@@ -495,14 +559,14 @@ namespace RDA {
 
 				// Pass 3: two quads — the live scene, then the cached GUI over it.
 				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
-				mGuiRenderer.recordComposite(cmd, swapchain.extent(), mCurrentFrame,
+				mGuiRenderer.recordComposite(cmd, &window, swapchain.extent(), frameIndex,
 				                             sceneTexture(), gui.viewportRect(),
 				                             &mGuiLayer.colorTexture());
 				vkCmdEndRenderPass(cmd);
 			} else {
 				// No layer (allocation failed): fall back to drawing the GUI directly.
 				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
-				mGuiRenderer.record(cmd, gui.drawData(), swapchain.extent(), mCurrentFrame,
+				mGuiRenderer.record(cmd, &window, gui.drawData(), swapchain.extent(), frameIndex,
 				                    gui.drawVersion());
 				vkCmdEndRenderPass(cmd);
 			}
@@ -510,8 +574,8 @@ namespace RDA {
 			// Scene then GUI overlay, both into the surface, in one pass.
 			beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
 			setViewportAndScissor(cmd, swapchain.extent());
-			drawSceneItems(cmd);
-			mGuiRenderer.record(cmd, window.gui().drawData(), swapchain.extent(), mCurrentFrame,
+			mForward.record(cmd, frame.scene.set(), getScene());
+			mGuiRenderer.record(cmd, &window, window.gui().drawData(), swapchain.extent(), frameIndex,
 			                    window.gui().drawVersion());
 			vkCmdEndRenderPass(cmd);
 		}

@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "RendeerAlpha (Visual Studio 2022)",
+      "binaryDir": "${sourceDir}/build/default",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "unix",
+      "displayName": "RendeerAlpha (Ninja)",
+      "binaryDir": "${sourceDir}/build/unix",
+      "generator": "Ninja Multi-Config",
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "remote",
+      "displayName": "RendeerAlpha with out-of-process hosting",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/remote",
+      "cacheVariables": { "RDA_ENABLE_REMOTE": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",        "configurePreset": "default", "configuration": "Debug"   },
+    { "name": "release",      "configurePreset": "default", "configuration": "Release" },
+    { "name": "unix-debug",   "configurePreset": "unix",    "configuration": "Debug"   },
+    { "name": "unix-release", "configurePreset": "unix",    "configuration": "Release" },
+    { "name": "remote-debug", "configurePreset": "remote",  "configuration": "Debug"   }
+  ],
+  "testPresets": [
+    { "name": "debug",      "configurePreset": "default", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "unix-debug", "configurePreset": "unix",    "configuration": "Debug", "output": { "outputOnFailure": true } }
+  ]
+}

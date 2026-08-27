@@ -32,6 +32,13 @@ namespace RDA{
 		uint32_t indexCount() const { return mIndexCount; }
 		bool     isValid()    const { return mVertexBuffer.isValid() && mIndexBuffer.isValid(); }
 
+		// Local-space bounds, measured during upload(). A sphere rather than a box
+		// because it survives rotation without being recomputed: culling only has to
+		// move the centre and scale the radius, where a box would need its eight corners
+		// transformed every frame.
+		const glm::vec3& boundsCenter() const { return mBoundsCenter; }
+		float            boundsRadius() const { return mBoundsRadius; }
+
 		// Picks the render path. The mesh data itself is identical either way, so
 		// this can be changed at any time.
 		MeshKind kind() const { return mKind; }
@@ -42,5 +49,7 @@ namespace RDA{
 		MemoryBuffer mIndexBuffer;
 		uint32_t     mIndexCount = 0;
 		MeshKind     mKind = MeshKind::Opaque;
+		glm::vec3    mBoundsCenter{ 0.0f };
+		float        mBoundsRadius = 0.0f;
 	};
 }

@@ -39,6 +39,9 @@ namespace RDA {
 		bool  down = false;
 		bool  pressed = false;
 		bool  released = false;
+		// How many presses in quick succession this one is: 1 a plain click, 2 a double
+		// click, 3 a triple. Only meaningful on the frame `pressed` is set.
+		int   clickCount = 1;
 		float scroll = 0.0f;
 
 		// Text entry, consumed by whichever widget holds keyboard focus.
@@ -55,6 +58,9 @@ namespace RDA {
 		bool  cut = false;               // Ctrl+X
 		bool  paste = false;             // Ctrl+V
 		bool  selectAll = false;         // Ctrl+A
+		// Ctrl+Enter. An editable field deliberately ignores it rather than inserting a
+		// newline, leaving the application to decide what submitting means.
+		bool  submit = false;
 		float dt = 0.0f;                 // seconds since last frame (caret blink)
 	};
 

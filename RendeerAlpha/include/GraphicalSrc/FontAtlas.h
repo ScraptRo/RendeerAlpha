@@ -34,6 +34,12 @@ namespace RDA {
 		float          pixelHeight() const { return mPixelHeight; }
 		float          ascent()      const { return mAscent; }      // top -> baseline, px
 		float          lineAdvance() const { return mLineAdvance; } // baseline -> baseline
+		float          atlasWidth()  const { return mAtlasW; }
+		float          atlasHeight() const { return mAtlasH; }
+		// The baked table, so the CPU-side metrics can be handed to a process that has no
+		// device and therefore no atlas of its own — a runtime client measuring text.
+		const std::vector<BakedGlyph>& glyphs() const { return mChars; }
+		static constexpr uint32_t kFirstCodepoint = 32; // index 0 of glyphs()
 
 		// Fills `out` for `c` at pen (penX, baselineY) and advances penX. Returns false
 		// for a character outside the baked range (penX still advances by a space).

@@ -89,6 +89,42 @@ namespace RDA {
 		return changed;
 	}
 
+	// ---- splitter -------------------------------------------------------------------
+	bool Gui::splitter(const char* id, float& size, float minSize, float maxSize,
+	                   const Rect& rect, bool vertical) {
+		uint32_t wid = scopedId(id);
+		const bool inside = rect.contains(mInput.pointer);
+		if (inside) mHot = wid;
+		if (mHot == wid && mInput.pressed) {
+			mActive = wid;
+			// The grab offset is stored as the size the pane had when the drag began,
+			// biased by the pointer, so the bar does not jump to the cursor on grab.
+			mTextStates[wid].scrollGrab = (vertical ? mInput.pointer.x : mInput.pointer.y) - size;
+		}
+
+		bool changed = false;
+		if (mActive == wid) {
+			mFocusClaimed = true;
+			const float pointer = vertical ? mInput.pointer.x : mInput.pointer.y;
+			float next = std::clamp(pointer - mTextStates[wid].scrollGrab, minSize, maxSize);
+			if (next != size) { size = next; changed = true; }
+			if (mInput.released) mActive = 0;
+		}
+
+		const bool active = (mActive == wid) || (mHot == wid);
+		addRect(rect, active ? rgba(90, 110, 150) : rgba(52, 58, 70));
+		// A short grip in the middle, so the bar reads as draggable rather than as a rule.
+		const float gripLength = (vertical ? rect.h : rect.w) * 0.25f;
+		if (vertical) {
+			addRect({ rect.x + rect.w * 0.5f - 1.0f, rect.y + (rect.h - gripLength) * 0.5f,
+			          2.0f, gripLength }, rgba(150, 165, 190));
+		} else {
+			addRect({ rect.x + (rect.w - gripLength) * 0.5f, rect.y + rect.h * 0.5f - 1.0f,
+			          gripLength, 2.0f }, rgba(150, 165, 190));
+		}
+		return changed;
+	}
+
 	// ---- text field ---------------------------------------------------------------
 	namespace {
 		// Start index of each line in `s` (split on '\n'); always at least one line.
@@ -128,7 +164,8 @@ namespace RDA {
 		}
 	}
 
-	bool Gui::textField(const char* id, std::string& text, const Rect& rect, const TextFieldStyle& style) {
+	bool Gui::textField(const char* id, std::string& text, const Rect& rect, const TextFieldStyle& style,
+	                    bool* outFocused) {
 		uint32_t wid = scopedId(id);
 		TextState& st = mTextStates[wid];
 
@@ -236,15 +273,50 @@ namespace RDA {
 			if (mFont) {
 				int line, col; lineColAt(mInput.pointer, line, col);
 				int idx = starts[line] + col;
+				// A word- or line-selecting click must not be undone by the drag handler
+				// below, which would collapse it on the slightest mouse movement.
+				st.dragGranularity = (mInput.clickCount >= 2 && !mInput.alt && !mInput.shift)
+					? mInput.clickCount : 1;
+
 				if (mInput.alt && style.multiline) {
 					st.boxMode = true; st.boxAnchorLine = line; st.boxAnchorCol = col; st.selectAnchor = -1;
+					st.caret = idx;
 				} else if (mInput.shift) {
 					st.boxMode = false;
 					if (st.selectAnchor < 0) st.selectAnchor = st.caret; // extend from the old caret
+					st.caret = idx;
+				} else if (mInput.clickCount == 2) {
+					// Double click selects the word under the pointer. Clicking in the run
+					// of spaces between words selects that run, so the gesture always
+					// selects *something* rather than collapsing.
+					st.boxMode = false;
+					const int size = static_cast<int>(text.size());
+					auto isSpace = [&](int i) {
+						return std::isspace(static_cast<unsigned char>(text[i])) != 0;
+					};
+					if (idx < size && !isSpace(idx) && isWordChar(text[idx])) {
+						int begin = idx, end = idx;
+						while (begin > 0 && isWordChar(text[begin - 1])) --begin;
+						while (end < size && isWordChar(text[end])) ++end;
+						st.selectAnchor = begin; st.caret = end;
+					} else if (idx < size && isSpace(idx) && text[idx] != '\n') {
+						int begin = idx, end = idx;
+						while (begin > 0 && isSpace(begin - 1) && text[begin - 1] != '\n') --begin;
+						while (end < size && isSpace(end) && text[end] != '\n') ++end;
+						st.selectAnchor = begin; st.caret = end;
+					} else {
+						// Punctuation, or the end of a line: fall back to a plain caret.
+						st.selectAnchor = idx; st.caret = idx;
+					}
+				} else if (mInput.clickCount >= 3) {
+					// Triple click takes the whole line, newline excluded.
+					st.boxMode = false;
+					st.selectAnchor = starts[line];
+					st.caret = starts[line] + lineLength(starts, text, line);
 				} else {
 					st.boxMode = false; st.selectAnchor = idx; // collapses if the drag doesn't move
+					st.caret = idx;
 				}
-				st.caret = idx;
 			}
 			st.blink = 0.0f;
 		} else if (mInput.pressed && inside) {
@@ -255,7 +327,9 @@ namespace RDA {
 		// Drag to extend the selection (linear or box, per how it began).
 		if (mActive == wid) {
 			mFocusClaimed = true;
-			if (mInput.down && !mInput.pressed && mFont) {
+			// Only a plain click drags the caret; a word or line selection stays as the
+			// click made it until the button is released.
+			if (st.dragGranularity == 1 && mInput.down && !mInput.pressed && mFont) {
 				int line, col; lineColAt(mInput.pointer, line, col);
 				st.caret = starts[line] + col;
 				st.blink = 0.0f;
@@ -263,6 +337,7 @@ namespace RDA {
 			if (mInput.released) mActive = 0;
 		}
 		bool focused = (mFocused == wid);
+		if (outFocused) *outFocused = focused;
 
 		// --- editing ---
 		bool changed = false;
@@ -313,6 +388,10 @@ namespace RDA {
 					if (style.multiline && line + 1 < lineCount) { beginMove(); int len = lineLength(starts, text, line + 1); st.caret = starts[line + 1] + (std::min)(col, len); }
 					break;
 				case GuiEditKey::Enter:
+					// Ctrl+Enter is a submit gesture, not a newline: the application reads
+					// GuiInput::submit and decides what it means (run the cell, commit the
+					// value). Without this the field would swallow it as a line break.
+					if (ctrl) break;
 					if (style.multiline) { deleteSelection(); text.insert(text.begin() + st.caret, '\n'); st.caret++; changed = true; }
 					else { mFocused = 0; }
 					break;
@@ -372,9 +451,16 @@ namespace RDA {
 			}
 		}
 
-		// Mouse wheel over the field scrolls it.
-		if (style.multiline && inside && mInput.scroll != 0.0f) {
+		// Mouse wheel over the field scrolls it — but only while it has somewhere to go.
+		// A field with no overflow, or one already at the end it is being pushed towards,
+		// leaves the wheel alone so an enclosing ScrollView picks it up instead. Without
+		// that, a short cell inside a long notebook would swallow the gesture.
+		if (style.multiline && inside && mInput.scroll != 0.0f && !mScrollConsumed &&
+		    maxScrollY > 0.0f &&
+		    !(mInput.scroll > 0.0f && st.scrollY <= 0.0f) &&
+		    !(mInput.scroll < 0.0f && st.scrollY >= maxScrollY)) {
 			st.scrollY -= mInput.scroll * lineH * 3.0f;
+			mScrollConsumed = true;
 		}
 
 		// Scroll-bar thumb drag.

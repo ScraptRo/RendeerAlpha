@@ -172,12 +172,20 @@ namespace RDA {
 			// matched before a single one; only multi-char delimiters may span lines.
 			{
 				const std::string* delim = nullptr;
-				for (const std::string& d : lang.stringDelims) {
-					if (matchAt(text, i, d)) { delim = &d; break; }
+				bool forcedMultiline = false;
+				// Explicitly multi-line delimiters are checked first, so a single
+				// character can still span lines when the language says it does.
+				for (const std::string& d : lang.multilineStringDelims) {
+					if (matchAt(text, i, d)) { delim = &d; forcedMultiline = true; break; }
+				}
+				if (!delim) {
+					for (const std::string& d : lang.stringDelims) {
+						if (matchAt(text, i, d)) { delim = &d; break; }
+					}
 				}
 				if (delim) {
 					const int len = static_cast<int>(delim->size());
-					const bool multiline = len > 1;
+					const bool multiline = forcedMultiline || len > 1;
 					int j = i + len;
 					while (j < n) {
 						if (lang.escapeWithBackslash && text[j] == '\\' && j + 1 < n) { j += 2; continue; }
@@ -296,6 +304,13 @@ namespace RDA {
 				for (const XMLElement* s = e->FirstChildElement("string"); s;
 				     s = s->NextSiblingElement("string")) {
 					if (const char* v = s->GetText()) lang.stringDelims.push_back(v);
+				}
+			}
+			if (e->FirstChildElement("multilineString")) {
+				lang.multilineStringDelims.clear();
+				for (const XMLElement* s = e->FirstChildElement("multilineString"); s;
+				     s = s->NextSiblingElement("multilineString")) {
+					if (const char* v = s->GetText()) lang.multilineStringDelims.push_back(v);
 				}
 			}
 			if (const XMLElement* p = e->FirstChildElement("preprocessor")) {

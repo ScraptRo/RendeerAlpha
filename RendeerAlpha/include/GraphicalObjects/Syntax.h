@@ -30,6 +30,11 @@ namespace RDA {
 		// A multi-line delimiter (len > 1) may span lines; a single-char one ends at the
 		// newline, so one stray quote cannot swallow the rest of the file.
 		std::vector<std::string> stringDelims{ "\"", "'" };
+		// Delimiters that span lines even though they are a single character —
+		// JavaScript's backtick template literal being the reason this exists. Multi-
+		// character delimiters (Python's triple quote) already span lines by virtue of
+		// their length, so they belong in stringDelims above.
+		std::vector<std::string> multilineStringDelims;
 		bool escapeWithBackslash = true;
 
 		// Optional prefix that marks a preprocessor/decorator run (C's "#", Python's
