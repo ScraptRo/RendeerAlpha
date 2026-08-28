@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Layout/Blueprint.h>
 #include <string>
 #include <vector>
@@ -28,6 +28,7 @@ namespace RDA::Layout {
 		std::vector<uint8_t> bytes;      // the blueprint, when ok
 		std::string          error;      // what went wrong, when not
 		size_t               nodeCount = 0;
+		size_t               bindingCount = 0;
 		double               transformMs = 0.0; // step 1
 		double               evaluateMs  = 0.0; // steps 2 and 3
 	};

@@ -1,5 +1,7 @@
-#include <Layout/LayoutLoader.h>
+﻿#include <Layout/LayoutLoader.h>
+#include <Layout/Bindings.h>
 #include <Layout/WidgetSchema.h>
+#include <RendeerAlpha.h>
 #include <GraphicalObjects/Widget.h>
 #include <Logger/Logger.h>
 #include <cstdlib>
@@ -151,12 +153,86 @@ namespace RDA::Layout {
 		}
 	}
 
+	LayoutInstance& LayoutInstance::operator=(LayoutInstance&& other) noexcept {
+		if (this != &other) {
+			release();
+			mRoot = other.mRoot;
+			mObservers = std::move(other.mObservers);
+			other.mRoot = nullptr;
+			other.mObservers.clear();
+		}
+		return *this;
+	}
+
+	void LayoutInstance::release() {
+		for (const ObserverId observer : mObservers) bindings().remove(observer);
+		mObservers.clear();
+		mRoot = nullptr;
+	}
+
+	namespace {
+		// The signals a program names, resolved against the table. A name nobody declared
+		// is created as a number and reported: silently inventing it would turn a
+		// misspelling into a binding that reads zero forever and looks like it works.
+		std::vector<uint32_t> resolveSignals(const Program& program, const std::string& what) {
+			std::vector<uint32_t> ids;
+			ids.reserve(program.signals.size());
+			for (const std::string& name : program.signals) {
+				uint32_t id = signals().find(name);
+				if (id == kNoSignal) {
+					RDA_LOG_WARNING("layout: " << what << " reads state." << name
+					                << ", which nothing declared - assuming a number");
+					id = signals().define(name, 0.0);
+				}
+				ids.push_back(id);
+			}
+			return ids;
+		}
+
+		// An event handler is a program that runs when the widget says so. It is captured
+		// in the widget's own callback rather than registered with the signal graph: it
+		// answers to input, not to state, and the widget already owns its lifetime.
+		bool attachEvent(Widget& widget, const std::string& event, Program program,
+		                 std::vector<uint32_t> ids) {
+			auto runner = [program = std::move(program), ids = std::move(ids), event]() {
+				const EvalResult result = evaluate(program, signals(), ids);
+				if (!result.ok) {
+					RDA_LOG_WARNING("handler " << event << ": " << result.error);
+					return;
+				}
+				// The writes this handler made have marked their bindings; asking for a
+				// frame is what gets them applied and drawn, since an idle window would
+				// otherwise never look again.
+				rendeerRequestRedraw();
+			};
+
+			if (event == "onClick") {
+				if (auto* button = dynamic_cast<Button*>(&widget)) {
+					button->onClick = std::move(runner);
+					return true;
+				}
+			} else if (event == "onChange") {
+				if (auto* box = dynamic_cast<Checkbox*>(&widget)) {
+					box->onChange = [runner](bool) { runner(); };
+					return true;
+				}
+				if (auto* slider = dynamic_cast<Slider*>(&widget)) {
+					slider->onChange = [runner](float) { runner(); };
+					return true;
+				}
+			}
+			return false;
+		}
+	}
+
 	bool knowsWidgetType(std::string_view type) {
 		return findWidget(type) != nullptr;
 	}
 
-	Widget* instantiate(const Blueprint& blueprint, Widget& parent, const std::string& idPrefix) {
-		if (!blueprint.valid() || blueprint.nodeCount() == 0) return nullptr;
+	LayoutInstance instantiate(const Blueprint& blueprint, Widget& parent,
+	                           const std::string& idPrefix) {
+		LayoutInstance instance;
+		if (!blueprint.valid() || blueprint.nodeCount() == 0) return instance;
 
 		// Where each node's widget ended up, indexed by node. Parents are always earlier
 		// in the array (parse() checks it), so by the time a child is reached its parent
@@ -186,7 +262,29 @@ namespace RDA::Layout {
 			made[i] = into->addChild(std::move(widget));
 			if (!root) root = made[i];
 		}
+		instance.adopt(root);
 
-		return root;
+		// ---- bindings ----------------------------------------------------------------
+		for (size_t i = 0; i < blueprint.bindingCount(); ++i) {
+			const BlueprintBinding& record = blueprint.binding(i);
+			Widget* target = made[record.node];
+			if (!target) continue; // its widget was skipped, so its binding has no subject
+
+			const std::string property(blueprint.string(record.key));
+			const std::string where = property + " on '" + target->id() + "'";
+			Program program = blueprint.programFor(record);
+			std::vector<uint32_t> ids = resolveSignals(program, where);
+
+			if (record.kind == static_cast<uint32_t>(BindingKind::Event)) {
+				if (!attachEvent(*target, property, std::move(program), std::move(ids))) {
+					RDA_LOG_WARNING("layout: nothing answers '" << property << "' on '"
+					                << target->id() << "'");
+				}
+				continue;
+			}
+			instance.track(bindings().add(std::move(program), std::move(ids), target, property));
+		}
+
+		return instance;
 	}
 }

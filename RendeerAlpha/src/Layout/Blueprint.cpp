@@ -1,4 +1,4 @@
-#include <Layout/Blueprint.h>
+﻿#include <Layout/Blueprint.h>
 #include <cstring>
 #include <fstream>
 
@@ -8,24 +8,33 @@ namespace RDA::Layout {
 	// writer produced. Every member is a uint32 or a float, so none of these ever need
 	// padding — but that is a property worth failing the build over rather than
 	// assuming, since a change that broke it would corrupt silently.
-	static_assert(sizeof(BlueprintHeader) == 24, "blueprint header layout changed");
-	static_assert(sizeof(BlueprintNode)   == 28, "blueprint node layout changed");
-	static_assert(sizeof(BlueprintProp)   == 16, "blueprint prop layout changed");
-	static_assert(sizeof(BlueprintString) ==  8, "blueprint string layout changed");
+	static_assert(sizeof(BlueprintHeader)      == 40, "blueprint header layout changed");
+	static_assert(sizeof(BlueprintNode)        == 28, "blueprint node layout changed");
+	static_assert(sizeof(BlueprintProp)        == 16, "blueprint prop layout changed");
+	static_assert(sizeof(BlueprintBinding)     == 44, "blueprint binding layout changed");
+	static_assert(sizeof(BlueprintInstruction) ==  8, "blueprint instruction layout changed");
+	static_assert(sizeof(BlueprintString)      ==  8, "blueprint string layout changed");
 
 	namespace {
 		// Sections follow the header in this order, each tightly packed.
 		struct Sections {
-			size_t nodes, props, strings, text, total;
+			size_t nodes, props, bindings, instructions, refs, numbers, strings, text, total;
 		};
 
 		Sections sectionsFor(const BlueprintHeader& h) {
 			Sections s{};
-			s.nodes   = sizeof(BlueprintHeader);
-			s.props   = s.nodes   + sizeof(BlueprintNode)   * h.nodeCount;
-			s.strings = s.props   + sizeof(BlueprintProp)   * h.propCount;
-			s.text    = s.strings + sizeof(BlueprintString) * h.stringCount;
-			s.total   = s.text    + h.stringBytes;
+			s.nodes        = sizeof(BlueprintHeader);
+			s.props        = s.nodes        + sizeof(BlueprintNode)        * h.nodeCount;
+			s.bindings     = s.props        + sizeof(BlueprintProp)        * h.propCount;
+			s.instructions = s.bindings     + sizeof(BlueprintBinding)     * h.bindingCount;
+			s.refs         = s.instructions + sizeof(BlueprintInstruction) * h.instructionCount;
+			s.numbers      = s.refs         + sizeof(uint32_t)             * h.refCount;
+			// The number pool holds doubles at a four-byte-aligned offset, so it is read
+			// with memcpy rather than by pointing at it. Bindings are materialised once,
+			// so the copy costs nothing worth avoiding.
+			s.strings      = s.numbers      + sizeof(double)               * h.numberCount;
+			s.text         = s.strings      + sizeof(BlueprintString)      * h.stringCount;
+			s.total        = s.text         + h.stringBytes;
 			return s;
 		}
 	}
@@ -33,6 +42,7 @@ namespace RDA::Layout {
 	void Blueprint::reset() {
 		mBytes.clear();
 		mHeader = nullptr; mNodes = nullptr; mProps = nullptr;
+		mBindings = nullptr; mInstructions = nullptr; mRefs = nullptr; mNumbers = nullptr;
 		mStrings = nullptr; mText = nullptr;
 	}
 
@@ -66,11 +76,15 @@ namespace RDA::Layout {
 
 		mBytes  = std::move(bytes);
 		const uint8_t* base = mBytes.data();
-		mHeader  = reinterpret_cast<const BlueprintHeader*>(base);
-		mNodes   = reinterpret_cast<const BlueprintNode*>(base + at.nodes);
-		mProps   = reinterpret_cast<const BlueprintProp*>(base + at.props);
-		mStrings = reinterpret_cast<const BlueprintString*>(base + at.strings);
-		mText    = reinterpret_cast<const char*>(base + at.text);
+		mHeader       = reinterpret_cast<const BlueprintHeader*>(base);
+		mNodes        = reinterpret_cast<const BlueprintNode*>(base + at.nodes);
+		mProps        = reinterpret_cast<const BlueprintProp*>(base + at.props);
+		mBindings     = reinterpret_cast<const BlueprintBinding*>(base + at.bindings);
+		mInstructions = reinterpret_cast<const BlueprintInstruction*>(base + at.instructions);
+		mRefs         = reinterpret_cast<const uint32_t*>(base + at.refs);
+		mNumbers      = base + at.numbers;
+		mStrings      = reinterpret_cast<const BlueprintString*>(base + at.strings);
+		mText         = reinterpret_cast<const char*>(base + at.text);
 
 		// Everything below is checked once, here, so nothing downstream has to. A
 		// caller that got true back may index freely without checking again.
@@ -92,6 +106,29 @@ namespace RDA::Layout {
 				return false;
 			}
 		}
+		for (uint32_t i = 0; i < header.refCount; ++i) {
+			if (mRefs[i] >= header.stringCount) {
+				error = "binding reference " + std::to_string(i) + " names no string";
+				reset();
+				return false;
+			}
+		}
+		for (uint32_t i = 0; i < header.bindingCount; ++i) {
+			const BlueprintBinding& b = mBindings[i];
+			const bool bad =
+				b.node >= header.nodeCount ||
+				b.key >= header.stringCount ||
+				b.kind > static_cast<uint32_t>(BindingKind::Event) ||
+				static_cast<size_t>(b.firstCode)   + b.codeCount   > header.instructionCount ||
+				static_cast<size_t>(b.firstNumber) + b.numberCount > header.numberCount ||
+				static_cast<size_t>(b.firstText)   + b.textCount   > header.refCount ||
+				static_cast<size_t>(b.firstSignal) + b.signalCount > header.refCount;
+			if (bad) {
+				error = "binding " + std::to_string(i) + " is not well formed";
+				reset();
+				return false;
+			}
+		}
 		for (uint32_t i = 0; i < header.nodeCount; ++i) {
 			const BlueprintNode& n = mNodes[i];
 			const bool badStrings  = n.type >= header.stringCount || n.id >= header.stringCount;
@@ -100,7 +137,11 @@ namespace RDA::Layout {
 			// Breadth-first means a parent is always earlier in the array than its
 			// children. The loader leans on that to build the tree in one forward pass,
 			// so it is checked here rather than trusted.
-			const bool badParent = (i == 0) ? n.parent != kNoParent : (n.parent >= i);
+			//
+			// Several roots are allowed. A layout has one, but a compiled theme is a list
+			// of variants with no common parent, and the ordering guarantee is the same
+			// either way: whatever a node's parent is, it came first.
+			const bool badParent = (n.parent != kNoParent) && (n.parent >= i);
 			if (badStrings || badChildren || badProps || badParent) {
 				error = "node " + std::to_string(i) + " is not well formed";
 				reset();
@@ -109,6 +150,30 @@ namespace RDA::Layout {
 		}
 
 		return true;
+	}
+
+	Program Blueprint::programFor(const BlueprintBinding& binding) const {
+		Program program;
+		program.code.reserve(binding.codeCount);
+		for (uint32_t i = 0; i < binding.codeCount; ++i) {
+			const BlueprintInstruction& raw = mInstructions[binding.firstCode + i];
+			program.code.push_back({ static_cast<Op>(raw.op), raw.operand });
+		}
+		program.numbers.resize(binding.numberCount);
+		if (binding.numberCount > 0) {
+			std::memcpy(program.numbers.data(),
+			            mNumbers + sizeof(double) * binding.firstNumber,
+			            sizeof(double) * binding.numberCount);
+		}
+		program.texts.reserve(binding.textCount);
+		for (uint32_t i = 0; i < binding.textCount; ++i) {
+			program.texts.emplace_back(string(mRefs[binding.firstText + i]));
+		}
+		program.signals.reserve(binding.signalCount);
+		for (uint32_t i = 0; i < binding.signalCount; ++i) {
+			program.signals.emplace_back(string(mRefs[binding.firstSignal + i]));
+		}
+		return program;
 	}
 
 	std::string_view Blueprint::string(uint32_t index) const {
@@ -193,14 +258,49 @@ namespace RDA::Layout {
 		++owner.propCount;
 	}
 
+	void BlueprintBuilder::addBinding(uint32_t node, uint32_t keyString, BindingKind kind,
+	                                  const Program& program) {
+		BlueprintBinding record{};
+		record.node = node;
+		record.key  = keyString;
+		record.kind = static_cast<uint32_t>(kind);
+
+		record.firstCode = static_cast<uint32_t>(mInstructions.size());
+		record.codeCount = static_cast<uint32_t>(program.code.size());
+		for (const Instruction& instruction : program.code) {
+			mInstructions.push_back({ static_cast<uint32_t>(instruction.op), instruction.operand });
+		}
+
+		record.firstNumber = static_cast<uint32_t>(mNumbers.size());
+		record.numberCount = static_cast<uint32_t>(program.numbers.size());
+		mNumbers.insert(mNumbers.end(), program.numbers.begin(), program.numbers.end());
+
+		// Texts and signal names go through the same string table as everything else, so
+		// a name that also appears as a widget id or a property is stored once. The
+		// reference pool is what keeps a program's list of them contiguous.
+		record.firstText = static_cast<uint32_t>(mRefs.size());
+		record.textCount = static_cast<uint32_t>(program.texts.size());
+		for (const std::string& text : program.texts) mRefs.push_back(intern(text));
+
+		record.firstSignal = static_cast<uint32_t>(mRefs.size());
+		record.signalCount = static_cast<uint32_t>(program.signals.size());
+		for (const std::string& name : program.signals) mRefs.push_back(intern(name));
+
+		mBindings.push_back(record);
+	}
+
 	std::vector<uint8_t> BlueprintBuilder::finish() const {
 		BlueprintHeader header{};
 		header.magic       = kBlueprintMagic;
 		header.version     = kBlueprintVersion;
-		header.nodeCount   = static_cast<uint32_t>(mNodes.size());
-		header.propCount   = static_cast<uint32_t>(mProps.size());
-		header.stringCount = static_cast<uint32_t>(mStrings.size());
-		header.stringBytes = static_cast<uint32_t>(mText.size());
+		header.nodeCount        = static_cast<uint32_t>(mNodes.size());
+		header.propCount        = static_cast<uint32_t>(mProps.size());
+		header.bindingCount     = static_cast<uint32_t>(mBindings.size());
+		header.instructionCount = static_cast<uint32_t>(mInstructions.size());
+		header.refCount         = static_cast<uint32_t>(mRefs.size());
+		header.numberCount      = static_cast<uint32_t>(mNumbers.size());
+		header.stringCount      = static_cast<uint32_t>(mStrings.size());
+		header.stringBytes      = static_cast<uint32_t>(mText.size());
 
 		const Sections at = sectionsFor(header);
 		std::vector<uint8_t> out(at.total);
@@ -210,6 +310,14 @@ namespace RDA::Layout {
 			std::memcpy(base + at.nodes, mNodes.data(), sizeof(BlueprintNode) * mNodes.size());
 		if (!mProps.empty())
 			std::memcpy(base + at.props, mProps.data(), sizeof(BlueprintProp) * mProps.size());
+		if (!mBindings.empty())
+			std::memcpy(base + at.bindings, mBindings.data(), sizeof(BlueprintBinding) * mBindings.size());
+		if (!mInstructions.empty())
+			std::memcpy(base + at.instructions, mInstructions.data(), sizeof(BlueprintInstruction) * mInstructions.size());
+		if (!mRefs.empty())
+			std::memcpy(base + at.refs, mRefs.data(), sizeof(uint32_t) * mRefs.size());
+		if (!mNumbers.empty())
+			std::memcpy(base + at.numbers, mNumbers.data(), sizeof(double) * mNumbers.size());
 		if (!mStrings.empty())
 			std::memcpy(base + at.strings, mStrings.data(), sizeof(BlueprintString) * mStrings.size());
 		if (!mText.empty())

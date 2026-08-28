@@ -1,4 +1,5 @@
-#include <RendeerAlpha.h>
+﻿#include <RendeerAlpha.h>
+#include <Layout/Bindings.h>
 #include <unordered_map>
 #include <Core/Core.h>
 #include <Core/LoopWork.h>
@@ -15,9 +16,8 @@
 #include <chrono>
 #include <new>
 
-#define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_INCLUDE_VULKAN
-#include <glfw3.h>
+#include <GLFW/glfw3.h>
 
 namespace RDA {
 	RDA::AppInfo applicationInfo;
@@ -418,6 +418,16 @@ namespace RDA {
 				}
 			}
 			if (mainWindow) mainWindow->gui().setSceneTexture(gRenderer.sceneTexture());
+
+			// Bindings whose signals moved since the last frame, applied before the
+			// interface is walked so the walk sees the new values rather than last
+			// frame's. Nothing is compared and no tree is searched: the signal graph
+			// already knows exactly which bindings a change reached, and on almost every
+			// frame that list is empty and this costs one check.
+			//
+			// The redraw request is what makes the change visible in an on-demand window,
+			// which would otherwise have no reason to look again.
+			if (Layout::bindings().applyDirty() > 0) rendeerRequestRedraw();
 
 			for (auto& node : windowList) {
 				Window* window = Window::getRefFromNode(node);

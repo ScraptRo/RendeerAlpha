@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/ForwardPass.h>
 #include <GraphicalSrc/SceneBindings.h>
 #include <GraphicalSrc/Shader.h>

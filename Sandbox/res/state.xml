@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The state this application's interface is written against.
+
+     Declared once, here. The build generates two things from it: the C++ that defines
+     these signals and gives typed access to them, and the TypeScript that a layout is
+     checked against. So `state.count` in hello.tsx and State::count() in C++ are the
+     same signal by construction, and a misspelling on either side is a compile error
+     rather than a signal that quietly holds zero forever. -->
+<state>
+  <number name="count"   value="0"     doc="how many times a button has been pressed"/>
+  <bool   name="details" value="false" doc="whether the arithmetic rows are shown"/>
+</state>

@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/FrameBuffer.h>
 #include <GraphicalSrc/Swapchain.h>
 #include <GraphicalSrc/DeviceHandler.h>

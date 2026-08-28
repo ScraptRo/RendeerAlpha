@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/GuiRenderer.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/Shader.h>

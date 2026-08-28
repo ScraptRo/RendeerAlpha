@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalObjects/Texture.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/MemoryBuffer.h>

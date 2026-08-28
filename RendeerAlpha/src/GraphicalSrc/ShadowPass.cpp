@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/ShadowPass.h>
 #include <GraphicalSrc/Shader.h>
 #include <GraphicalObjects/Scene.h>

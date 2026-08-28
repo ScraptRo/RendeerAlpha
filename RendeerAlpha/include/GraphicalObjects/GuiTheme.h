@@ -1,5 +1,6 @@
-#pragma once
+﻿#pragma once
 #include <GraphicalObjects/GuiTypes.h>
+#include <Layout/Blueprint.h>
 #include <vendor/RDA_Library/string_id.h>
 #include <string>
 #include <string_view>
@@ -62,12 +63,13 @@ namespace RDA {
 		bool hasLabel(Variant variant) const     { return mLabels.count(variant) != 0; }
 		bool hasTextField(Variant variant) const { return mTextFields.count(variant) != 0; }
 
-		// ---- loading variants from XML ----
-		// Merge variants from a theme file / in-memory string into this theme. Returns
-		// false on a parse or file error, leaving already-registered variants intact.
-		// Unknown elements and attributes are ignored, so a newer file stays loadable.
+		// ---- loading variants from a compiled theme ----
+		// A theme is written in TypeScript and compiled to a blueprint by `rda theme`;
+		// see Layout/ThemeCompiler.h. Merging leaves already-registered variants intact,
+		// and an element this build does not know is ignored, so a theme written for a
+		// newer engine still styles everything here.
 		bool loadFromFile(const std::string& path);
-		bool loadFromString(const char* xml);
+		bool loadFromBlueprint(const Layout::Blueprint& blueprint);
 
 	private:
 		// Fallback lookup shared by the typed accessors: exact name, else "default"

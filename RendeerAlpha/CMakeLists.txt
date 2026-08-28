@@ -60,6 +60,9 @@ list(APPEND RDA_SOURCES
 	src/Layout/Blueprint.cpp
 	src/Layout/WidgetSchema.cpp
 	src/Layout/LayoutLoader.cpp
+	src/Layout/LayoutHost.cpp
+	src/Layout/Expression.cpp
+	src/Layout/Bindings.cpp
 )
 
 # ---- out-of-process hosting, off by default ---------------------------------------
@@ -85,7 +88,11 @@ set(RDA_SOURCES_REMOTE_STUDIO
 # carry the compiler or the JavaScript engine behind it.
 list(APPEND RDA_SOURCES
 	src/Layout/LayoutCompiler.cpp
+	src/Layout/ModuleTransform.cpp
+	src/Layout/ThemeCompiler.cpp
 	src/Layout/TypeEmitter.cpp
+	src/Layout/StateSchema.cpp
+	src/Layout/ExpressionParser.cpp
 	src/Scripting/Script.cpp
 	src/Scripting/ScriptBindings.cpp
 	src/Scripting/ScriptQueue.cpp
@@ -137,9 +144,17 @@ if(RDA_ENABLE_REMOTE)
 	target_compile_definitions(rendeer PUBLIC RDA_REMOTE)
 endif()
 
+# _DEBUG is something MSVC defines by itself in a debug configuration; no other compiler
+# does. The logger and the Vulkan validation layers are both gated on it, so without this
+# a Debug build elsewhere would quietly have neither -- and the first thing anyone does
+# on a new platform is look for the log.
+target_compile_definitions(rendeer PUBLIC
+	$<$<AND:$<CONFIG:Debug>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:_DEBUG>)
+
 # Hot reload watches files for changes -- worth the stat() calls while developing, not
-# in a shipped build.
-target_compile_definitions(rendeer PRIVATE $<$<CONFIG:Debug>:RDA_ENABLE_HOT_RELOAD>)
+# in a shipped build. PUBLIC because an application decides whether to watch anything,
+# and because it is what pulls the layout compiler into the binary.
+target_compile_definitions(rendeer PUBLIC $<$<CONFIG:Debug>:RDA_ENABLE_HOT_RELOAD>)
 
 target_link_libraries(rendeer PUBLIC
 	${RDA_VULKAN_LIBS}

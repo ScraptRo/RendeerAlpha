@@ -5,10 +5,22 @@
 // loader reads. If something is missing here it is missing at runtime too,
 // which is the point of generating it rather than writing it.
 //
-// Variant unions come from: RendeerAlpha/res/themes/sandbox.xml
+// Variant unions come from: G:/Fisiere/ProiecteVS/RendeerAlpha/Sandbox/res/themes/sandbox.ts
 
 /** A number of pixels, or a word a layout container understands. */
 type RdaSize = number | "content" | "fill" | `fill:${number}`;
+
+/**
+ * A property value: either a constant, or a binding that computes one.
+ *
+ * A binding is compiled to bytecode at build time, so it may read state and
+ * literals and nothing else -- not a call, and not a variable from the code
+ * around it.
+ */
+type RdaBound<T> = T | (() => T);
+
+/** An event handler. Compiled like a binding, and may write state. */
+type RdaHandler = () => unknown;
 
 type RdaButtonVariant = "default" | "danger" | "ghost" | "primary";
 type RdaCheckboxVariant = "default" | "accent";
@@ -20,36 +32,51 @@ type RdaTextfieldVariant = "default" | "console-out" | "ide" | "ide-cpp" | "ide-
 /** Accepted by every element. */
 interface RdaCommonProps {
 	/** name for this node; the compiler turns it into a path, which is what hover and focus are keyed on */
-	id?: string;
+	id?: RdaBound<string>;
 	/** drawn and interactive when true */
-	visible?: boolean;
+	visible?: RdaBound<boolean>;
 	/** how wide, when a layout container is deciding */
-	width?: RdaSize;
+	width?: RdaBound<RdaSize>;
 	/** how tall, when a layout container is deciding */
-	height?: RdaSize;
+	height?: RdaBound<RdaSize>;
 	/** lower bound on the resolved width */
-	minWidth?: number;
+	minWidth?: RdaBound<number>;
 	/** upper bound on the resolved width */
-	maxWidth?: number;
+	maxWidth?: RdaBound<number>;
 	/** lower bound on the resolved height */
-	minHeight?: number;
+	minHeight?: RdaBound<number>;
 	/** upper bound on the resolved height */
-	maxHeight?: number;
+	maxHeight?: RdaBound<number>;
 	/** left edge, relative to the parent's content origin */
-	x?: number;
+	x?: RdaBound<number>;
 	/** top edge, relative to the parent's content origin */
-	y?: number;
+	y?: RdaBound<number>;
 	/** width, when placed absolutely rather than laid out */
-	w?: number;
+	w?: RdaBound<number>;
 	/** height, when placed absolutely rather than laid out */
-	h?: number;
+	h?: RdaBound<number>;
 	/** distance kept from the parent's right edge when anchored to it */
-	marginRight?: number;
+	marginRight?: RdaBound<number>;
 	/** distance kept from the parent's bottom edge when anchored to it */
-	marginBottom?: number;
+	marginBottom?: RdaBound<number>;
 	/** which parent edges this node follows */
-	anchor?: "fill" | "stretchX" | "stretchY" | "bottomLeft" | "bottomRight";
+	anchor?: RdaBound<"fill" | "stretchX" | "stretchY" | "bottomLeft" | "bottomRight">;
 }
+
+/**
+ * Application state, from G:/Fisiere/ProiecteVS/RendeerAlpha/Sandbox/res/state.xml.
+ *
+ * The same declaration generated the C++ that defines these signals,
+ * so a name that type-checks here exists at runtime.
+ */
+interface RdaState {
+	/** how many times a button has been pressed */
+	count: number;
+	/** whether the arithmetic rows are shown */
+	details: boolean;
+}
+
+declare const state: RdaState;
 
 /** The JSX factory. Rewritten into by esbuild; implemented by the layout compiler. */
 declare function h(
@@ -66,89 +93,95 @@ declare namespace JSX {
 		/** groups children without drawing anything */
 		container: RdaCommonProps & {
 			/** grouping node; draws nothing of its own */
-			visible?: boolean;
+			visible?: RdaBound<boolean>;
 		};
 		/** a framed background that clips its children */
 		panel: RdaCommonProps & {
 			/** theme variant to draw with */
-			variant?: RdaPanelVariant;
+			variant?: RdaBound<RdaPanelVariant>;
 		};
 		/** lays children out in a row or a column */
 		stack: RdaCommonProps & {
 			/** top to bottom when true, left to right when false */
-			vertical?: boolean;
+			vertical?: RdaBound<boolean>;
 			/** gap between children */
-			spacing?: number;
+			spacing?: RdaBound<number>;
 			/** inset around the whole row or column */
-			padding?: number;
+			padding?: RdaBound<number>;
 		};
 		/** a clipped window onto content taller than itself */
 		scrollview: RdaCommonProps & {
 			/** theme variant to draw with */
-			variant?: RdaTextfieldVariant;
+			variant?: RdaBound<RdaTextfieldVariant>;
 			/** gap between stacked children */
-			spacing?: number;
+			spacing?: RdaBound<number>;
 			/** inset around the content */
-			padding?: number;
+			padding?: RdaBound<number>;
 		};
 		/** a draggable bar that resizes what is above it */
 		splitter: RdaCommonProps & {
 			/** a vertical bar dragged left and right when true */
-			vertical?: boolean;
+			vertical?: RdaBound<boolean>;
 			/** the size this splitter controls */
-			value?: number;
+			value?: RdaBound<number>;
 			/** smallest it will drag to */
-			min?: number;
+			min?: RdaBound<number>;
 			/** largest it will drag to */
-			max?: number;
+			max?: RdaBound<number>;
 		};
 		/** draws the 3D scene */
 		viewport: RdaCommonProps & {
 			/** shows the scene; needs ViewportMode::Widget */
-			visible?: boolean;
+			visible?: RdaBound<boolean>;
 		};
 		/** a line of text */
 		label: RdaCommonProps & {
 			/** the text drawn */
-			text?: string;
+			text?: RdaBound<string>;
 			/** theme variant to draw with */
-			variant?: RdaLabelVariant;
+			variant?: RdaBound<RdaLabelVariant>;
 		};
 		/** a clickable button */
 		button: RdaCommonProps & {
 			/** the text drawn on it */
-			text?: string;
+			text?: RdaBound<string>;
 			/** theme variant to draw with */
-			variant?: RdaButtonVariant;
+			variant?: RdaBound<RdaButtonVariant>;
+			/** runs on each completed click */
+			onClick?: RdaHandler;
 		};
 		/** a labelled boolean toggle */
 		checkbox: RdaCommonProps & {
 			/** the text beside the box */
-			label?: string;
+			label?: RdaBound<string>;
 			/** ticked when true */
-			value?: boolean;
+			value?: RdaBound<boolean>;
 			/** theme variant to draw with */
-			variant?: RdaCheckboxVariant;
+			variant?: RdaBound<RdaCheckboxVariant>;
+			/** runs when it is toggled */
+			onChange?: RdaHandler;
 		};
 		/** a draggable value between two bounds */
 		slider: RdaCommonProps & {
 			/** where the knob starts */
-			value?: number;
+			value?: RdaBound<number>;
 			/** value at the left end */
-			min?: number;
+			min?: RdaBound<number>;
 			/** value at the right end */
-			max?: number;
+			max?: RdaBound<number>;
 			/** theme variant to draw with */
-			variant?: RdaSliderVariant;
+			variant?: RdaBound<RdaSliderVariant>;
+			/** runs while it is dragged */
+			onChange?: RdaHandler;
 		};
 		/** an editable text field */
 		textfield: RdaCommonProps & {
 			/** the contents */
-			text?: string;
+			text?: RdaBound<string>;
 			/** single line, a text area, or a code editor with a gutter */
-			mode?: "line" | "document" | "code";
+			mode?: RdaBound<"line" | "document" | "code">;
 			/** theme variant to draw with */
-			variant?: RdaTextfieldVariant;
+			variant?: RdaBound<RdaTextfieldVariant>;
 		};
 	}
 }

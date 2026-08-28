@@ -72,17 +72,51 @@ namespace RDA {
 				return 0.0f; // Fill
 			}
 		}
+
+		// The size a child needs across the stacking axis. A row is as tall as its
+		// tallest child, and no taller.
+		float crossAxisRequest(const Widget& child, Gui& gui, glm::vec2 available, bool vertical) {
+			const SizeSpec& spec = vertical ? child.width : child.height;
+			const float avail = vertical ? available.x : available.y;
+			switch (spec.mode) {
+			case SizeSpec::Mode::Fixed: {
+				const float own = vertical ? child.rect.w : child.rect.h;
+				return spec.clamp(spec.value > 0.0f ? spec.value : own, avail);
+			}
+			case SizeSpec::Mode::Content: {
+				const glm::vec2 content = child.measureContent(gui, available);
+				return spec.clamp(vertical ? content.x : content.y, avail);
+			}
+			default:
+				// A child that fills the cross axis wants whatever the row turns out to
+				// be, so it cannot be what decides how big the row is.
+				return 0.0f;
+			}
+		}
 	}
 
 	glm::vec2 Stack::measureContent(Gui& gui, glm::vec2 available) const {
 		float main = padding * 2.0f;
+		float cross = 0.0f;
 		int counted = 0;
 		for (const auto& child : mChildren) {
 			if (!child || !child->visible) continue;
 			if (counted++) main += spacing;
 			main += mainAxisRequest(*child, gui, available, vertical);
+			cross = (std::max)(cross, crossAxisRequest(*child, gui, available, vertical));
 		}
-		return vertical ? glm::vec2{ available.x, main } : glm::vec2{ main, available.y };
+		cross += padding * 2.0f;
+
+		// Both axes are measured. Reporting `available` across the stacking axis -- which
+		// this used to do -- made height="content" on a row mean "as tall as the space
+		// there is", which is the opposite of what Content means and left a row of
+		// buttons filling the window.
+		//
+		// A stack whose children all fill the cross axis has nothing to measure there, so
+		// it falls back to the space on offer rather than collapsing to nothing.
+		const float measured = (cross > padding * 2.0f) ? cross
+		                                                : (vertical ? available.x : available.y);
+		return vertical ? glm::vec2{ measured, main } : glm::vec2{ main, measured };
 	}
 
 	void Stack::paint(Gui& gui, glm::vec2 origin) {

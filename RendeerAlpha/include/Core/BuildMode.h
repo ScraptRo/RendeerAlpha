@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Optional pieces of the engine, decided when it is compiled.
 //
@@ -30,6 +30,18 @@
 //
 // So it survives for the one case that genuinely wants it: a preview that keeps running
 // when the thing it is previewing crashes. Off unless RDA_REMOTE is defined.
+
+// Hot reload: watching layout files and rebuilding what changed.
+//
+// A development switch, not a deployment one. It costs a stat() per file per frame, and
+// it is what makes an application reference the layout compiler -- so a build with it
+// off contains no compiler and no JavaScript engine, and one with it on does.
+#if defined(RDA_ENABLE_HOT_RELOAD)
+	#define RDA_ENABLE_HOT_RELOAD_BUILD 1
+#else
+	#define RDA_ENABLE_HOT_RELOAD_BUILD 0
+#endif
+
 #if defined(RDA_REMOTE)
 	#define RDA_REMOTE_BUILD 1
 #else

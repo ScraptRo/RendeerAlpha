@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/SceneFrame.h>
 #include <GraphicalObjects/Scene.h>
 #include <GraphicalObjects/Material.h>

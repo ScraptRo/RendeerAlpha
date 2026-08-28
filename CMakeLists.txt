@@ -39,6 +39,12 @@ option(RDA_BUILD_TOOLS   "Build the layout toolchain" ON)
 # to be; this exists for a preview that has to outlive a crash in what it previews.
 option(RDA_ENABLE_REMOTE "Build the out-of-process host and client" OFF)
 
+# Recompiling layouts from their .tsx needs esbuild, and esbuild needs node. A
+# machine building from a source tree may have neither, so this can be turned off:
+# the committed blueprints are used as they are, and the build says so rather than
+# failing on a tool it was never given.
+option(RDA_COMPILE_LAYOUTS "Recompile .tsx layouts during the build" ON)
+
 # Single-config generators need the build type spelled out; multi-config ones ignore it.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 	set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
@@ -52,6 +58,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>")
 
 include(cmake/RdaDependencies.cmake)
 include(cmake/RdaLayouts.cmake)
+include(cmake/RdaState.cmake)
 
 add_subdirectory(RendeerAlpha)
 

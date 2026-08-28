@@ -1,4 +1,4 @@
-#include <Layout/WidgetSchema.h>
+﻿#include <Layout/WidgetSchema.h>
 #include <iterator>
 
 namespace RDA::Layout {
@@ -11,6 +11,7 @@ namespace RDA::Layout {
 		#define PROP_VARIANT(themeElement)     PropDesc{ "variant", PropType::Variant, themeElement, \
 		                                                 "theme variant to draw with" }
 		#define WIDGET(name, props, doc)       WidgetDesc{ #name, props, std::size(props), doc }
+		#define PROP_EVENT(name, doc)          PropDesc{ #name, PropType::Event, nullptr, doc }
 
 		constexpr PropDesc kCommon[] = {
 			PROP(id,      String, "name for this node; the compiler turns it into a path, which is what hover and focus are keyed on"),
@@ -68,17 +69,20 @@ namespace RDA::Layout {
 		constexpr PropDesc kButton[] = {
 			PROP(text, String, "the text drawn on it"),
 			PROP_VARIANT("button"),
+			PROP_EVENT(onClick, "runs on each completed click"),
 		};
 		constexpr PropDesc kCheckbox[] = {
 			PROP(label, String, "the text beside the box"),
 			PROP(value, Bool,   "ticked when true"),
 			PROP_VARIANT("checkbox"),
+			PROP_EVENT(onChange, "runs when it is toggled"),
 		};
 		constexpr PropDesc kSlider[] = {
 			PROP(value, Number, "where the knob starts"),
 			PROP(min,   Number, "value at the left end"),
 			PROP(max,   Number, "value at the right end"),
 			PROP_VARIANT("slider"),
+			PROP_EVENT(onChange, "runs while it is dragged"),
 		};
 		constexpr PropDesc kTextField[] = {
 			PROP(text, String, "the contents"),
@@ -102,6 +106,7 @@ namespace RDA::Layout {
 		};
 
 		#undef PROP
+		#undef PROP_EVENT
 		#undef PROP_ENUM
 		#undef PROP_VARIANT
 		#undef WIDGET
@@ -142,6 +147,7 @@ namespace RDA::Layout {
 		case PropType::Size:    return "size";
 		case PropType::Variant: return "variant";
 		case PropType::Enum:    return "enum";
+		case PropType::Event:   return "event";
 		}
 		return "unknown";
 	}

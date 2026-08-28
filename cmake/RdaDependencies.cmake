@@ -1,25 +1,22 @@
 # Finding what the engine links against.
 #
-# Two paths, deliberately in this order:
+# Two sources, and which one wins depends on the platform.
 #
-#   1. Whatever the system provides. On Linux that is the distribution's Vulkan SDK and
-#      GLFW, which is how a Linux user expects to build anything.
-#   2. The copies vendored under Dep/, which is how this repository has always built on
-#      Windows and why it needs no SDK installed there.
+# On Windows the vendored copies under Dep/ win. That is how this repository has always
+# built there, it needs no SDK installed, and an installed SDK of a different version is
+# the classic way for a build to quietly stop matching the one people have been using.
 #
-# The fallback is not a Windows special case so much as an acknowledgement that vendoring
-# is what made the Windows build reproducible. Where a system package exists it wins,
-# because a distribution's Vulkan loader is the one its drivers agree with.
+# Everywhere else the system packages win, and the vendored copies are not consulted at
+# all. They are Windows binaries -- import libraries, and headers configured for the Win32
+# surface -- so picking them up on Linux does not fail at link time where it would be
+# obvious. It fails while compiling vulkan.h, looking for windows.h.
 
 set(RDA_VENDOR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/Dep/Vulkan/include")
 set(RDA_VULKAN_VENDOR "${RDA_VENDOR_ROOT}/VULKAN")
 set(RDA_GLFW_VENDOR "${RDA_VENDOR_ROOT}/GLFW")
 
 # ---- Vulkan -----------------------------------------------------------------------
-# The vendored copy wins where it exists. Not dogma: this project has always built
-# against it on Windows, and an installed SDK of a different version is the classic way
-# for a CMake build to quietly stop matching the one people have been using.
-if(EXISTS "${RDA_VULKAN_VENDOR}/Lib/vulkan-1.lib")
+if(WIN32 AND EXISTS "${RDA_VULKAN_VENDOR}/Lib/vulkan-1.lib")
 	message(STATUS "Vulkan: vendored (Dep/Vulkan)")
 	set(RDA_VULKAN_INCLUDE "${RDA_VULKAN_VENDOR}")
 	set(RDA_VULKAN_LIBS "${RDA_VULKAN_VENDOR}/Lib/vulkan-1.lib")
@@ -46,9 +43,11 @@ if(glfw3_FOUND)
 	message(STATUS "GLFW: system")
 	set(RDA_GLFW_INCLUDE "")
 	set(RDA_GLFW_LIBS glfw)
-elseif(EXISTS "${RDA_GLFW_VENDOR}/lib-vc2022/glfw3.lib")
+elseif(WIN32 AND EXISTS "${RDA_GLFW_VENDOR}/lib-vc2022/glfw3.lib")
 	message(STATUS "GLFW: vendored (Dep/Vulkan/include/GLFW)")
-	set(RDA_GLFW_INCLUDE "${RDA_GLFW_VENDOR}")
+	# One level above the GLFW directory, so sources can use the standard
+	# <GLFW/glfw3.h> spelling and a system install works unchanged.
+	set(RDA_GLFW_INCLUDE "${RDA_VENDOR_ROOT}")
 	# The static library only. The import library beside it caused duplicate-symbol
 	# warnings when both were linked, and nothing here wants a GLFW DLL.
 	set(RDA_GLFW_LIBS "${RDA_GLFW_VENDOR}/lib-vc2022/glfw3.lib")
@@ -59,7 +58,7 @@ endif()
 # ---- shaderc ----------------------------------------------------------------------
 # Shaders are compiled at runtime and cached, so this is not optional. The combined
 # library bundles glslang and SPIRV-Tools, which is why only one name appears here.
-if(EXISTS "${RDA_VULKAN_VENDOR}/Lib/shaderc_combined.lib")
+if(WIN32 AND EXISTS "${RDA_VULKAN_VENDOR}/Lib/shaderc_combined.lib")
 	set(RDA_SHADERC_RELEASE "${RDA_VULKAN_VENDOR}/Lib/shaderc_combined.lib")
 	set(RDA_SHADERC_DEBUG   "${RDA_VULKAN_VENDOR}/Lib/shaderc_combinedd.lib")
 	if(NOT EXISTS "${RDA_SHADERC_DEBUG}")
@@ -84,7 +83,7 @@ find_package(glm QUIET)
 if(glm_FOUND)
 	message(STATUS "glm: system")
 	set(RDA_GLM_INCLUDE "")
-elseif(EXISTS "${RDA_VULKAN_VENDOR}/glm")
+elseif(WIN32 AND EXISTS "${RDA_VULKAN_VENDOR}/glm")
 	message(STATUS "glm: vendored")
 	set(RDA_GLM_INCLUDE "${RDA_VULKAN_VENDOR}")
 else()

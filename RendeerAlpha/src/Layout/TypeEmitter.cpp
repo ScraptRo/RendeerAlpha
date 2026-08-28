@@ -1,6 +1,7 @@
-#include <Layout/TypeEmitter.h>
+﻿#include <Layout/TypeEmitter.h>
+#include <Layout/StateSchema.h>
+#include <Layout/ThemeCompiler.h>
 #include <Layout/WidgetSchema.h>
-#include <vendor/tinyxml2/tinyxml2.h>
 
 #include <algorithm>
 #include <fstream>
@@ -15,30 +16,21 @@ namespace RDA::Layout {
 	namespace {
 		using VariantsByElement = std::map<std::string, std::set<std::string>>;
 
-		// Theme files name a variant per element: <button name="primary">. Collecting them
-		// is the whole reason a theme is read here — it turns `variant` from "some string"
-		// into the closed set this project actually defines.
-		VariantsByElement readThemeVariants(const std::string& path, bool& found) {
+		// Compiling the theme is how its variants are known. The alternative -- a second
+		// reader that looks for names without evaluating -- is a second answer to the same
+		// question, and the two would disagree the first time anyone used a helper.
+		VariantsByElement readThemeVariants(const std::string& path, bool& found, std::string& error) {
 			VariantsByElement variants;
 			found = false;
 			if (path.empty()) return variants;
 
-			tinyxml2::XMLDocument document;
-			if (document.LoadFile(path.c_str()) != tinyxml2::XML_SUCCESS) return variants;
-
-			const tinyxml2::XMLElement* theme = document.FirstChildElement("theme");
-			if (!theme) return variants;
-
-			found = true;
-			for (const tinyxml2::XMLElement* entry = theme->FirstChildElement();
-			     entry; entry = entry->NextSiblingElement()) {
-				const char* element = entry->Name();
-				if (!element) continue;
-				// A variant with no name= targets "default", which is always present anyway.
-				if (const char* name = entry->Attribute("name")) {
-					variants[element].insert(name);
-				}
+			const ThemeCompileResult theme = compileTheme(path);
+			if (!theme.ok) {
+				error = theme.error;
+				return variants;
 			}
+			found = true;
+			for (const auto& entry : theme.variants) variants[entry.first].insert(entry.second);
 			return variants;
 		}
 
@@ -73,21 +65,40 @@ namespace RDA::Layout {
 			case PropType::Enum:    return unionFromList(prop.values);
 			case PropType::Variant:
 				return variantTypeName(prop.values ? prop.values : "");
+			case PropType::Event:
+				return "RdaHandler";
 			}
 			return "unknown";
 		}
 
 		void writeProp(std::ostream& out, const PropDesc& prop, const char* indent) {
 			if (prop.doc && *prop.doc) out << indent << "/** " << prop.doc << " */\n";
-			out << indent << prop.name << "?: " << typeExpression(prop) << ";\n";
+			out << indent << prop.name << "?: ";
+			// Every value property accepts a binding as well as a constant, because the
+			// compiler accepts one. A type that said otherwise would reject exactly the
+			// code this pipeline exists for. Events are already thunks.
+			if (prop.type == PropType::Event) out << "RdaHandler";
+			else out << "RdaBound<" << typeExpression(prop) << ">";
+			out << ";\n";
 		}
 	}
 
-	TypesResult emitTypeDefinitions(const std::string& outputPath, const std::string& themePath) {
+	TypesResult emitTypeDefinitions(const std::string& outputPath, const std::string& themePath,
+	                                const std::string& statePath) {
 		TypesResult result;
 
 		bool themeFound = false;
-		const VariantsByElement variants = readThemeVariants(themePath, themeFound);
+		std::string themeError;
+		const VariantsByElement variants = readThemeVariants(themePath, themeFound, themeError);
+		if (!themePath.empty() && !themeFound) {
+			result.error = "theme: " + themeError;
+			return result;
+		}
+		const StateSchema state = statePath.empty() ? StateSchema{} : loadStateSchema(statePath);
+		if (!statePath.empty() && !state.ok) {
+			result.error = state.error;
+			return result;
+		}
 
 		size_t commonCount = 0;
 		const PropDesc* common = commonProps(commonCount);
@@ -111,8 +122,19 @@ namespace RDA::Layout {
 		       "/** A number of pixels, or a word a layout container understands. */\n"
 		       "type RdaSize = number | \"content\" | \"fill\" | `fill:${number}`;\n\n";
 
+		out << "/**\n"
+		       " * A property value: either a constant, or a binding that computes one.\n"
+		       " *\n"
+		       " * A binding is compiled to bytecode at build time, so it may read state and\n"
+		       " * literals and nothing else -- not a call, and not a variable from the code\n"
+		       " * around it.\n"
+		       " */\n"
+		       "type RdaBound<T> = T | (() => T);\n\n"
+		       "/** An event handler. Compiled like a binding, and may write state. */\n"
+		       "type RdaHandler = () => unknown;\n\n";
+
 		// One union per theme element that a `variant` prop points at, so a button cannot
-		// be given a text field's variant by accident.
+		// be given a text field variant by accident.
 		std::set<std::string> elementsNeeded;
 		for (size_t w = 0; w < widgetCount; ++w) {
 			for (size_t p = 0; p < widgets[w].propCount; ++p) {
@@ -140,9 +162,38 @@ namespace RDA::Layout {
 		for (size_t i = 0; i < commonCount; ++i) writeProp(out, common[i], "\t");
 		out << "}\n\n";
 
-		// The JSX factory itself. esbuild rewrites <panel/> into a call to this, so a type
-		// checker needs it in scope or every element is an undefined name. The engine
-		// supplies the implementation at compile time; nothing calls it at runtime.
+		if (state.ok && !state.empty()) {
+			out << "/**\n"
+			       " * Application state, from " << statePath << ".\n"
+			       " *\n"
+			       " * The same declaration generated the C++ that defines these signals,\n"
+			       " * so a name that type-checks here exists at runtime.\n"
+			       " */\n"
+			       "interface RdaState {\n";
+			for (const StateField& field : state.fields) {
+				if (!field.doc.empty()) out << "\t/** " << field.doc << " */\n";
+				out << "\t" << field.name << ": ";
+				switch (field.type) {
+				case StateType::Number: out << "number"; break;
+				case StateType::Bool:   out << "boolean"; break;
+				case StateType::Text:   out << "string"; break;
+				}
+				out << ";\n";
+				++result.stateCount;
+			}
+			out << "}\n\n"
+			       "declare const state: RdaState;\n\n";
+		} else {
+			out << "/**\n"
+			       " * Application state. A binding reads it as `state.<name>`.\n"
+			       " *\n"
+			       " * Loosely typed because no state declaration was given. Pass one to\n"
+			       " * `rda types` and a misspelled signal becomes an error here rather than\n"
+			       " * a warning when the layout loads.\n"
+			       " */\n"
+			       "declare const state: Record<string, any>;\n\n";
+		}
+
 		out << "/** The JSX factory. Rewritten into by esbuild; implemented by the layout compiler. */\n"
 		       "declare function h(\n"
 		       "\ttype: string,\n"

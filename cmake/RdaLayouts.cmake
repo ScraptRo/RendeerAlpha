@@ -17,6 +17,13 @@ function(rda_add_layouts target)
 		return()
 	endif()
 
+	if(NOT RDA_COMPILE_LAYOUTS)
+		message(STATUS
+			"Layouts for ${target}: not recompiled (RDA_COMPILE_LAYOUTS is off); "
+			"using the blueprints in the source tree")
+		return()
+	endif()
+
 	if(NOT TARGET rda)
 		# App and Renderer tiers do not build the toolchain. Their .rdab files come from
 		# the source tree, compiled by a Studio build or by CI.

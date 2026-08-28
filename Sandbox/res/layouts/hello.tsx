@@ -1,59 +1,95 @@
-﻿// The first layout that goes all the way through the pipeline.
+﻿// The interface, and everything it does.
 //
-// This file is never read by the application that shows it. `rda layout` runs esbuild
-// over it, evaluates the module once, and writes hello.rdab — a flat array of nodes and
-// a string table. What ships is that file and a loader that walks it.
+// This file is never read by the application that shows it. The build runs esbuild over
+// it, evaluates it once, and writes hello.rdab -- a flat array of nodes plus compiled
+// bytecode for every expression below. What ships is that file and a loader.
 //
-// The default export is the component. It runs exactly once, at compile time, which is
-// what makes everything below free at runtime: the map, the helper function and the
-// string concatenation all happen in the compiler and leave only their results behind.
+// The `{() => ...}` thunks are bindings. They are parsed at build time into stack
+// operations over `state`, so the running program is reactive without containing a
+// JavaScript engine: writing state.count marks exactly the bindings that read it, and
+// the next frame evaluates only those.
+//
+// Try this: change a label, or make a button do something else, and build.
 
 type Props = { title?: string }
 
-// A build-time constant. Nothing about this survives into the blueprint except the
-// three rows it produces.
-// RdaButtonVariant comes from rda.d.ts, which `rda types` generated from the widget
-// schema in C++ and the variants the theme actually defines. Misspell one and the
-// editor says so before anything is compiled.
-const buttons: Array<[string, RdaButtonVariant]> = [
-  ["Primary", "primary"],
-  ["Ghost", "ghost"],
-  ["Danger", "danger"],
-]
-
-// An ordinary function returning markup. Composition like this is the freedom that
-// running a real language buys, and it costs nothing at runtime because it is gone by
-// then — the compiler sees only the <stack> it returned.
-function Row(label: string, variant: RdaButtonVariant) {
-  return (
-    <stack id={"row-" + variant} vertical={false} spacing={6} height="content">
-      <label id="name" text={label} width="fill" height="content" />
-      <button id="pick" text={variant} variant={variant} width={110} />
-    </stack>
-  )
-}
+// One thing a binding cannot do: close over a variable from the code around it.
+//
+// A binding is compiled from its own source text, so `() => state.count += step` inside
+// a .map() is refused -- `step` never comes along. Build-time loops are still free to
+// generate *structure*; it is the expressions inside them that see only state and
+// literals. The two buttons below are written out for that reason.
 
 export default function Hello(props: Props) {
   return (
     <stack id="root" vertical={true} spacing={8} padding={12}>
-      <label id="title" height="content" text={props.title ?? "Compiled from hello.tsx"} />
+      {/* Bound to state.count: the compiler records the dependency, so this label is
+          rewritten when -- and only when -- that signal changes. */}
+      <label
+        id="title"
+        height="content"
+        text={() => `Clicked ${state.count} ${state.count === 1 ? "time" : "times"}`}
+      />
       <label
         id="subtitle"
         height="content"
         variant="muted"
-        text="No parser ran to put this on screen - just a flat node array."
+        text={props.title ?? "Edit this line while it runs - the count above will not reset."}
       />
 
-      {buttons.map(([label, variant]) => Row(label, variant))}
+      <stack id="buttons" vertical={false} spacing={6} height="content">
+        <button
+          id="add-one"
+          text="Add one"
+          variant="primary"
+          width={110}
+          onClick={() => state.count++}
+        />
+        <button
+          id="add-ten"
+          text="Add ten"
+          variant="ghost"
+          width={110}
+          onClick={() => state.count += 10}
+        />
+        <button
+          id="reset"
+          text="Reset"
+          variant="danger"
+          width={110}
+          onClick={() => state.count = 0}
+        />
+        <label id="filler" text="" width="fill" height="content" />
+      </stack>
 
-      <checkbox id="flag" label="Structure decided at compile time" value={true} height="content" />
-      <slider id="amount" variant="warm" min={0} max={1} value={0.35} height="content" />
+      {/* The checkbox drives a signal; the signal drives the checkbox and the two rows
+          below it. Neither knows about the other. */}
+      <checkbox
+        id="details"
+        label="Show the arithmetic"
+        height="content"
+        value={() => state.details}
+        onChange={() => state.details = !state.details}
+      />
+      <label
+        id="detail"
+        height="content"
+        variant="muted"
+        visible={() => state.details}
+        text={() => `${state.count} doubled is ${state.count * 2}, halved is ${state.count / 2}`}
+      />
+      <label
+        id="verdict"
+        height="content"
+        visible={() => state.details}
+        text={() => state.count > 20 ? "that is a lot of clicking" : "keep going"}
+      />
 
       <textfield
         id="notes"
         mode="document"
         variant="notes"
-        text="Edit hello.tsx, run 'rda layout', restart. The engine never sees TypeScript."
+        text="Every expression in this file was compiled to bytecode by the build."
         height="fill"
         minHeight={54}
       />

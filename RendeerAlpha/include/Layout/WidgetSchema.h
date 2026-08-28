@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -27,6 +27,7 @@ namespace RDA::Layout {
 		Size,     // a number, or "content" / "fill" / "fill:2"
 		Variant,  // a theme variant name; `values` says which theme element defines them
 		Enum,     // one of `values`, which is a '|' separated list
+		Event,    // a handler: a program that runs when the widget says so
 	};
 
 	struct PropDesc {

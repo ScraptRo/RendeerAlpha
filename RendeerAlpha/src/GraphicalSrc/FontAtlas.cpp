@@ -1,4 +1,3 @@
-#define VK_USE_PLATFORM_WIN32_KHR
 #include <GraphicalSrc/FontAtlas.h>
 #include <Logger/Logger.h>
 #include <vendor/stb_truetype/stb_truetype.h>

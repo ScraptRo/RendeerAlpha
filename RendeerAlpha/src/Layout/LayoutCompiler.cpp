@@ -1,8 +1,9 @@
-#include <Layout/LayoutCompiler.h>
+﻿#include <Layout/LayoutCompiler.h>
+#include <Layout/ExpressionParser.h>
+#include "ModuleTransform.h"
 #include <Logger/Logger.h>
 #include <vendor/quickjs/quickjs.h>
 
-#include <array>
 #include <chrono>
 #include <cstdio>
 #include <deque>
@@ -17,64 +18,6 @@ namespace RDA::Layout {
 
 		double millisSince(Clock::time_point start) {
 			return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
-		}
-
-		// ---- step 1: esbuild ---------------------------------------------------------
-
-		// A project-local install puts esbuild in node_modules/.bin. Searched upward so
-		// the compiler works from a subdirectory, which is where a build usually runs.
-		std::string findEsbuild() {
-			std::error_code ec;
-			std::filesystem::path dir = std::filesystem::current_path(ec);
-			if (ec) return {};
-			for (int depth = 0; depth < 8 && !dir.empty(); ++depth) {
-				const std::filesystem::path candidate = dir / "node_modules" / ".bin" / "esbuild.cmd";
-				if (std::filesystem::exists(candidate, ec)) return candidate.string();
-				if (!dir.has_parent_path() || dir.parent_path() == dir) break;
-				dir = dir.parent_path();
-			}
-			return {};
-		}
-
-		// Runs a command and captures everything it writes. stderr is folded in because
-		// a failed transform reports there, and that text is the error worth showing.
-		bool runCapturing(const std::string& command, std::string& output) {
-			// cmd.exe strips the outermost pair of quotes, so the whole line is wrapped
-			// in one more than it looks like it needs.
-			const std::string wrapped = "\"" + command + "\" 2>&1";
-			FILE* pipe = _popen(wrapped.c_str(), "r");
-			if (!pipe) return false;
-
-			std::array<char, 4096> buffer{};
-			output.clear();
-			while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
-				output += buffer.data();
-			}
-			return _pclose(pipe) == 0;
-		}
-
-		bool transform(const std::string& sourcePath, const std::string& esbuildPath,
-		               std::string& js, std::string& error) {
-			const std::string exe = esbuildPath.empty() ? findEsbuild() : esbuildPath;
-			if (exe.empty()) {
-				error = "esbuild not found. Run 'npm install' in the project root, or set "
-				        "CompileOptions::esbuildPath.";
-				return false;
-			}
-
-			// IIFE rather than ESM on purpose: the default export arrives as a plain
-			// global, so evaluating it needs no module loader and cannot hand back a
-			// promise to unwrap. The transform itself is identical either way.
-			const std::string command =
-				"\"" + exe + "\" \"" + sourcePath + "\""
-				" --jsx-factory=h --jsx-fragment=Fragment"
-				" --format=iife --global-name=__layout --target=es2020";
-
-			if (!runCapturing(command, js)) {
-				error = js.empty() ? "esbuild failed" : js;
-				return false;
-			}
-			return true;
 		}
 
 		// ---- step 2: evaluate --------------------------------------------------------
@@ -140,16 +83,53 @@ namespace RDA::Layout {
 			uint32_t parent;  // blueprint node index, or kNoParent
 		};
 
-		void readProps(JSContext* ctx, JSValueConst props, BlueprintBuilder& builder,
-		               uint32_t node, const std::string& nodeId) {
-			if (!JS_IsObject(props)) return;
+		// React's convention, and unambiguous: onClick is an event, onward is a property.
+		bool namesAnEvent(const std::string& key) {
+			return key.size() > 2 && key.compare(0, 2, "on") == 0 &&
+			       std::isupper(static_cast<unsigned char>(key[2]));
+		}
+
+		// A function prop is a binding. Its source is recovered from the function itself,
+		// parsed, and compiled; anything the grammar refuses fails the whole layout rather
+		// than being dropped, because a binding that silently does not exist is the one
+		// failure this design cannot afford.
+		bool readBinding(JSContext* ctx, JSValueConst value, BlueprintBuilder& builder,
+		                 uint32_t node, const std::string& key, const std::string& nodeId,
+		                 std::string& error) {
+			const char* raw = JS_ToCString(ctx, value);
+			const std::string source = raw ? raw : "";
+			if (raw) JS_FreeCString(ctx, raw);
+
+			if (source.empty()) {
+				error = "cannot read the source of '" + key + "' on '" + nodeId + "'";
+				return false;
+			}
+
+			const ParseResult parsed = parseBinding(source);
+			if (!parsed.ok) {
+				error = "in '" + key + "' on '" + nodeId + "': " + parsed.error +
+				        "\n  " + pointAt(source, parsed.position);
+				return false;
+			}
+
+			builder.addBinding(node, builder.intern(key),
+			                   namesAnEvent(key) ? BindingKind::Event : BindingKind::Value,
+			                   parsed.program);
+			return true;
+		}
+
+		bool readProps(JSContext* ctx, JSValueConst props, BlueprintBuilder& builder,
+		               uint32_t node, const std::string& nodeId, std::string& error) {
+			if (!JS_IsObject(props)) return true;
 
 			JSPropertyEnum* names = nullptr;
 			uint32_t count = 0;
 			if (JS_GetOwnPropertyNames(ctx, &names, &count, props,
 			                           JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0) {
-				return;
+				return true;
 			}
+
+			bool ok = true;
 
 			for (uint32_t i = 0; i < count; ++i) {
 				const char* rawKey = JS_AtomToCString(ctx, names[i].atom);
@@ -175,17 +155,18 @@ namespace RDA::Layout {
 				} else if (JS_IsBool(value)) {
 					builder.addProp(node, builder.intern(key), PropKind::Bool,
 					                JS_ToBool(ctx, value) ? 1.0f : 0.0f, 0);
+				} else if (JS_IsFunction(ctx, value)) {
+					ok = readBinding(ctx, value, builder, node, key, nodeId, error);
 				} else {
-					// Functions and objects are events and bindings. Both are real, and
-					// neither is in this pipeline yet; saying so beats dropping them
-					// silently and leaving a layout that half works.
-					RDA_LOG_WARNING("layout: '" << key << "' on '" << nodeId
-					                << "' is not a string, number or boolean - skipped "
-					                   "(handlers and bindings are not compiled yet)");
+					error = "'" + key + "' on '" + nodeId + "' is not a string, number, "
+					        "boolean or binding";
+					ok = false;
 				}
 				JS_FreeValue(ctx, value);
+				if (!ok) break;
 			}
 			JS_FreePropertyEnum(ctx, names, count);
+			return ok;
 		}
 
 		bool flatten(JSContext* ctx, JSValue root, BlueprintBuilder& builder, std::string& error) {
@@ -268,7 +249,12 @@ namespace RDA::Layout {
 					++childCount[pending.parent];
 				}
 
-				readProps(ctx, props, builder, index, id);
+				if (!readProps(ctx, props, builder, index, id, error)) {
+					JS_FreeValue(ctx, props);
+					JS_FreeValue(ctx, pending.value);
+					ok = false;
+					break;
+				}
 				JS_FreeValue(ctx, props);
 
 				JSValue children = JS_GetPropertyStr(ctx, pending.value, "children");
@@ -309,7 +295,7 @@ namespace RDA::Layout {
 			if (JS_IsException(result)) {
 				error = exceptionText(ctx);
 			} else {
-				JSValue exports = JS_GetPropertyStr(ctx, global, "__layout");
+				JSValue exports = JS_GetPropertyStr(ctx, global, "__module");
 				JSValue builderFn = JS_GetPropertyStr(ctx, exports, "default");
 
 				if (!JS_IsFunction(ctx, builderFn)) {
@@ -356,7 +342,8 @@ namespace RDA::Layout {
 
 		const Clock::time_point transformStart = Clock::now();
 		std::string js;
-		if (!transform(sourcePath, options.esbuildPath, js, result.error)) return result;
+		if (!transformModule(sourcePath, options.esbuildPath, /*withJsx*/ true, js, result.error))
+			return result;
 		result.transformMs = millisSince(transformStart);
 
 		const Clock::time_point evaluateStart = Clock::now();
@@ -366,6 +353,7 @@ namespace RDA::Layout {
 
 		result.bytes     = builder.finish();
 		result.nodeCount = builder.nodeCount();
+		result.bindingCount = builder.bindingCount();
 		result.ok        = true;
 		return result;
 	}
