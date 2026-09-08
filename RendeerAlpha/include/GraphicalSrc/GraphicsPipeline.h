@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/Shader.h>
 
@@ -39,14 +40,10 @@ namespace RDA {
 
 		PipelineBuilder& addShader(const Shader& shader, const char* entryPoint = "main");
 
-		template<typename V>
-		PipelineBuilder& setVertexType();
 		PipelineBuilder& setVertexInput(const VkVertexInputBindingDescription& binding,
 		                                const std::vector<VkVertexInputAttributeDescription>& attributes);
-		PipelineBuilder& noVertexInput();
 
 		PipelineBuilder& setTopology(VkPrimitiveTopology topology);
-		PipelineBuilder& setPolygonMode(VkPolygonMode mode);
 		PipelineBuilder& setCull(VkCullModeFlags cullMode, VkFrontFace frontFace);
 		PipelineBuilder& setDepth(bool test, bool write, VkCompareOp op = VK_COMPARE_OP_LESS);
 
@@ -86,13 +83,4 @@ namespace RDA {
 		std::vector<VkPushConstantRange>   mPushRanges;
 		VkPipelineLayout                   mExternalLayout = VK_NULL_HANDLE;
 	};
-
-	template<typename V>
-	PipelineBuilder& PipelineBuilder::setVertexType() {
-		mBinding = V::getBindingDescription();
-		auto attributes = V::getAttributeDescriptions();
-		mAttributes.assign(attributes.begin(), attributes.end());
-		mHasVertexInput = true;
-		return *this;
-	}
 }

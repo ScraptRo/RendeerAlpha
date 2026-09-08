@@ -70,5 +70,4 @@ namespace RDA::Layout {
 	                           const std::string& idPrefix = {});
 
 	// Whether this build can make a widget of that type.
-	bool knowsWidgetType(std::string_view type);
 }

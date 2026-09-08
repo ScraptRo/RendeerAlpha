@@ -97,6 +97,19 @@ namespace RDA {
 		return it != mLanguages.end() ? &it->second : nullptr;
 	}
 
+	const Language* SyntaxRegistry::forField(const std::string& name) const {
+		if (name.empty()) return nullptr;
+		if (const Language* found = find(name)) return found;
+		if (std::find(mUnknown.begin(), mUnknown.end(), name) == mUnknown.end()) {
+			mUnknown.push_back(name);
+			RDA_LOG_WARNING("A text field asks to be highlighted as '" << name
+				<< "', which no language here is called; it will draw as plain text. "
+				   "\"python\" is built in, and the rest load from the file named by "
+				   "GuiConfig::languagesPath (res/themes/languages.xml ships with the engine).");
+		}
+		return nullptr;
+	}
+
 	Language SyntaxRegistry::python() {
 		Language lang;
 		lang.name = "python";

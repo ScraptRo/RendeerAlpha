@@ -1,0 +1,31 @@
+# The Python binding as an installable package.
+#
+# Pure Python: the engine is a shared library the package opens with ctypes, so there is
+# no extension module and nothing here compiles. What `pip install` does is make
+# `import rda` resolve; the engine itself is found in the checkout's bin/ (see
+# rda/_engine.py for the order it looks in).
+#
+# Editable is the install that makes sense -- `pip install -e <checkout>/bindings/python`
+# -- because the package stays inside the checkout, beside the bin/ it looks for, and a
+# rebuild of the engine is seen at once. register.py does the same with a .pth file and
+# no pip, which is what the bring-up scripts use.
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rda"
+version = "0.9.0"
+description = "Write a RendeerAlpha backend in Python. The interface is a compiled layout; this is the state behind it."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+[tool.setuptools]
+packages = ["rda"]

@@ -1,4 +1,6 @@
-#include <Layout/Expression.h>
+﻿#include <Layout/Expression.h>
+#include <Core/Commands.h>
+#include <Core/Tables.h>
 #include <Core/Signals.h>
 
 #include <cmath>
@@ -49,7 +51,8 @@ namespace RDA::Layout {
 	}
 
 	EvalResult evaluate(const Program& program, RDA::Signals& table,
-	                    const std::vector<uint32_t>& signalIds) {
+	                    const std::vector<uint32_t>& signalIds,
+	                    const Value* event, const RowRef* row) {
 		EvalResult result;
 
 		if (signalIds.size() != program.signals.size()) {
@@ -105,6 +108,61 @@ namespace RDA::Layout {
 				}
 				break;
 			}
+
+			case Op::PushRowField: {
+				if (instruction.operand >= signalIds.size()) {
+					result.error = "column slot out of range";
+					return result;
+				}
+				if (!row || !row->table) {
+					result.error = "this program reads a row's column, but it is not part "
+					               "of a row template";
+					return result;
+				}
+				const uint32_t column = signalIds[instruction.operand];
+				if (column == kNoColumn) {
+					result.error = "the table has no such column";
+					return result;
+				}
+				switch (row->table->columnType(column)) {
+				case ColumnType::Number:
+					stack.push_back(Value::fromNumber(row->table->number(row->index, column)));
+					break;
+				case ColumnType::Bool:
+					stack.push_back(Value::fromBool(row->table->boolean(row->index, column)));
+					break;
+				case ColumnType::Text:
+					stack.push_back(Value::fromText(std::string(row->table->text(row->index, column))));
+					break;
+				}
+				break;
+			}
+
+			case Op::CallCommand: {
+				if (instruction.operand >= signalIds.size()) {
+					result.error = "command slot out of range";
+					return result;
+				}
+				// The registry is reached directly rather than passed in, because unlike
+				// signals there is one of it: a command names work in this application,
+				// and a second registry would mean two answers for one name.
+				const bool ran = commands().invoke(signalIds[instruction.operand]);
+				if (!ran) {
+					result.error = "nothing is bound to this command";
+					return result;
+				}
+				stack.push_back(Value::fromBool(true));
+				break;
+			}
+
+			case Op::PushEvent:
+				if (!event) {
+					result.error = "this program reads the value it was called with, but "
+					               "nothing passed one";
+					return result;
+				}
+				stack.push_back(*event);
+				break;
 
 			case Op::StoreSignal: {
 				if (instruction.operand >= signalIds.size()) {
@@ -236,13 +294,14 @@ namespace RDA::Layout {
 			"eq", "ne", "lt", "le", "gt", "ge",
 			"and", "or", "not",
 			"select", "concat", "totext", "pop",
+			"push.event", "call", "push.field",
 		};
 
 		std::ostringstream out;
 		for (size_t i = 0; i < program.code.size(); ++i) {
 			const Instruction& instruction = program.code[i];
 			const size_t index = static_cast<size_t>(instruction.op);
-			out << kNames[index < std::size(kNames) ? index : 0];
+			out << (index < std::size(kNames) ? kNames[index] : "op?");
 
 			switch (instruction.op) {
 			case Op::PushNumber:
@@ -259,6 +318,8 @@ namespace RDA::Layout {
 				out << (instruction.operand ? " true" : " false");
 				break;
 			case Op::LoadSignal:
+			case Op::CallCommand:
+			case Op::PushRowField:
 			case Op::StoreSignal:
 				if (instruction.operand < program.signals.size()) {
 					out << " " << program.signals[instruction.operand];

@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The C# binding test.
+
+    It compiles the binding's own two source files rather than referencing a built
+    library, so what the test exercises is the source in this repository and not a stale
+    artefact from an earlier build.
+
+    `RdaGeneratedState` is passed in by CMake, because state.cs is generated into the
+    build tree from the same declaration the other two checks use.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>rda_csharp_check</AssemblyName>
+    <RootNamespace>RdaChecks</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- The generated file is UTF-8 and so is check.cs; say so, or the compiler guesses
+         from a byte-order mark that is not there and mangles the accented literal this
+         test is partly about. -->
+    <CodePage>65001</CodePage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="check.cs" />
+    <Compile Include="../csharp/Engine.cs" />
+    <Compile Include="../csharp/Rda.cs" />
+    <Compile Include="$(RdaGeneratedState)" Condition="'$(RdaGeneratedState)' != ''" />
+  </ItemGroup>
+
+</Project>

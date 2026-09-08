@@ -1,4 +1,5 @@
-#include <GraphicalSrc/Renderer.h>
+﻿#include <GraphicalSrc/Renderer.h>
+#include <GraphicalObjects/Viewports.h>
 #include <GraphicalSrc/SceneBindings.h>
 #include <GraphicalSrc/SceneFrame.h>
 #include <GraphicalSrc/DeviceHandler.h>
@@ -17,7 +18,8 @@ namespace RDA {
 
 	// Set 0's layout lives in SceneBindings.h; the forward technique in ForwardPass.
 
-	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight, ViewportMode mode,
+	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight,
+	                    const std::vector<float>& fontSizes, ViewportMode mode,
 	                    bool guiEnabled) {
 		mGuiEnabled = guiEnabled;
 		// A Viewport widget is the only thing that can display an offscreen scene, so
@@ -64,7 +66,8 @@ namespace RDA {
 		// application has no GUI — that is where the font bake and the GUI pipelines are
 		// paid for, so an application without one never builds them.
 		if (mGuiEnabled) {
-			if (!mGuiRenderer.init(mTarget->renderPass(), fontPath, fontHeight, MAX_FRAMES_IN_FLIGHT)) {
+			if (!mGuiRenderer.init(mTarget->renderPass(), fontPath, fontHeight, fontSizes,
+			                          MAX_FRAMES_IN_FLIGHT)) {
 				return false;
 			}
 		}
@@ -113,6 +116,13 @@ namespace RDA {
 
 		mSceneTarget.createOffscreen(extent.width, extent.height, mSceneColorFormat);
 		mSceneSettleFrames = 0;
+	}
+
+	VkRenderPass Renderer::sceneRenderPass() const {
+		if (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid()) {
+			return mSceneTarget.renderPass();
+		}
+		return VK_NULL_HANDLE;
 	}
 
 	const Texture* Renderer::sceneTexture() const {
@@ -342,7 +352,7 @@ namespace RDA {
 		// flight may still have been reading them until the caller waited.
 		mGuiRenderer.forgetWindow(window);
 		// The target may have been pointing at the framebuffer that is about to go.
-		if (mTarget && !mTargetOverridden) mTarget = nullptr;
+		if (mTarget) mTarget = nullptr;
 	}
 
 	void Renderer::destroyWindowFrames() {
@@ -367,12 +377,20 @@ namespace RDA {
 
 		// Every window draws into its own surface framebuffer. All windows share the
 		// surface format, so the pipelines built against the first one stay compatible.
-		if (!mTargetOverridden) mTarget = &window.getFrameBuffer();
+		mTarget = &window.getFrameBuffer();
 
 		// Minimized: no surface to render to. Idle briefly so the loop doesn't spin.
 		VkExtent2D windowExtent = window.cachedExtent();
 		if (windowExtent.width == 0 || windowExtent.height == 0) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			return;
+		}
+
+		// It has a size now but no swapchain: it was minimised when it was created, or
+		// while a rebuild was refused. This is the frame that gives it one, and there
+		// is nothing to acquire from until it has.
+		if (!swapchain.isValid()) {
+			window.recreateSwapchain();
 			return;
 		}
 
@@ -455,11 +473,24 @@ namespace RDA {
 		frames->currentFrame = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
+	// The colour a viewport's own target starts each frame at, in the same 0xAABBGGRR
+	// packing as every other colour here.
+	static VkClearColorValue unpackClear(uint32_t color) {
+		return VkClearColorValue{ {
+			static_cast<float>( color        & 0xFFu) / 255.0f,
+			static_cast<float>((color >>  8) & 0xFFu) / 255.0f,
+			static_cast<float>((color >> 16) & 0xFFu) / 255.0f,
+			static_cast<float>((color >> 24) & 0xFFu) / 255.0f,
+		} };
+	}
+
 	static void beginPass(VkCommandBuffer cmd, VkRenderPass pass, VkFramebuffer framebuffer,
-	                      VkExtent2D extent, bool transparentClear = false) {
+	                      VkExtent2D extent, bool transparentClear = false,
+	                      const VkClearColorValue* clearColor = nullptr) {
 		std::array<VkClearValue, 2> clearValues{};
 		clearValues[0].color = transparentClear
 			? VkClearColorValue{ { 0.0f, 0.0f, 0.0f, 0.0f } } // GUI layer: nothing drawn = see-through
+			: clearColor ? *clearColor
 			: VkClearColorValue{ { 0.02f, 0.02f, 0.03f, 1.0f } }; // dark slate
 		clearValues[1].depthStencil = { 1.0f, 0 };
 
@@ -531,11 +562,25 @@ namespace RDA {
 
 		mGuiRenderer.beginFrame(&window, frameIndex);
 
+		// What the window starts the frame at, from the theme. Read once: all three of the
+		// surface passes below want the same answer, and the two that draw the GUI over it
+		// only show it where nothing was drawn -- which is exactly what a background is.
+		const VkClearColorValue surfaceClear =
+			unpackClear(window.gui().backgroundColor());
+
 		if (mViewportMode == ViewportMode::Widget && mSceneTarget.isValid()) {
 			// Pass 1: the scene into its offscreen target (sampleable afterwards).
-			beginPass(cmd, mSceneTarget.renderPass(), mSceneTarget.framebuffer(0), mSceneTarget.extent());
+			const VkClearColorValue sceneClear =
+				unpackClear(viewports().clearColor(viewports().gpuViewport()));
+			beginPass(cmd, mSceneTarget.renderPass(), mSceneTarget.framebuffer(0),
+			          mSceneTarget.extent(), /*transparentClear*/ false, &sceneClear);
 			setViewportAndScissor(cmd, mSceneTarget.extent());
 			mForward.record(cmd, frame.scene.set(), getScene());
+			// Then whatever the application records for itself, into the same target and
+			// the same pass. After the scene rather than instead of it: an application
+			// that only wants its own drawing simply adds no meshes, and one that wants
+			// both -- a gizmo over a model -- gets the order it expects.
+			viewports().record(cmd, mSceneTarget.renderPass(), mSceneTarget.extent(), frameIndex);
 			vkCmdEndRenderPass(cmd);
 
 			Gui& gui = window.gui();
@@ -557,21 +602,24 @@ namespace RDA {
 				}
 
 				// Pass 3: two quads — the live scene, then the cached GUI over it.
-				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex),
+				          swapchain.extent(), /*transparentClear*/ false, &surfaceClear);
 				mGuiRenderer.recordComposite(cmd, &window, swapchain.extent(), frameIndex,
 				                             sceneTexture(), gui.viewportRect(),
 				                             &mGuiLayer.colorTexture());
 				vkCmdEndRenderPass(cmd);
 			} else {
 				// No layer (allocation failed): fall back to drawing the GUI directly.
-				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+				beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex),
+				          swapchain.extent(), /*transparentClear*/ false, &surfaceClear);
 				mGuiRenderer.record(cmd, &window, gui.drawData(), swapchain.extent(), frameIndex,
 				                    gui.drawVersion());
 				vkCmdEndRenderPass(cmd);
 			}
 		} else {
 			// Scene then GUI overlay, both into the surface, in one pass.
-			beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex), swapchain.extent());
+			beginPass(cmd, mTarget->renderPass(), mTarget->framebuffer(imageIndex),
+				          swapchain.extent(), /*transparentClear*/ false, &surfaceClear);
 			setViewportAndScissor(cmd, swapchain.extent());
 			mForward.record(cmd, frame.scene.set(), getScene());
 			mGuiRenderer.record(cmd, &window, window.gui().drawData(), swapchain.extent(), frameIndex,

@@ -1,4 +1,5 @@
-#pragma once
+﻿#pragma once
+#include <cstdint>
 #include <GraphicalObjects/Widget.h>
 #include <GraphicalObjects/DockTree.h>
 #include <memory>
@@ -33,13 +34,25 @@ namespace RDA {
 			: Widget(std::move(id)), title(std::move(title)) {}
 
 		std::string title;
+		// Which dock style draws this panel's tab and title bar. The space's own chrome
+		// -- splitters, drop guidance -- uses the default, since it belongs to no panel.
+		Variant     variant = kDefaultVariant;
 		DockSide    dock = DockSide::Floating; // initial placement only; see above
 		Rect        floatingRect{ 40.0f, 40.0f, 240.0f, 220.0f };
 		float       dockSize = 240.0f; // how wide/tall its first pane should be
 		bool        closable = false;  // show a close (x) button; set for spawned instances
 		std::string type;              // the container type it was spawned from ("" if added directly)
 
-		Rect computedRect{}; // on-screen region (incl. tab/title bar), filled each frame
+		// Where it was last *drawn*, which is not always where it was asked to be: a
+		// floating panel still arriving, or still shrinking out of the pane it was pulled
+		// from, is on its way to its rect. Input is tested against this, so what you can
+		// click on is what you can see.
+		Rect computedRect{};
+
+		// Never drawn yet, so the next time it is it arrives -- fading and growing into
+		// place instead of simply being there. A panel dragged out of a pane is not
+		// arriving; it was on the screen a frame ago, and detaching clears this.
+		bool fresh = true;
 
 		void paint(Gui&, glm::vec2) override {} // driven by the DockSpace, not the retained walk
 		void drawContents(Gui& gui, const Rect& body) { paintChildren(gui, glm::vec2(body.x, body.y)); }
@@ -60,6 +73,10 @@ namespace RDA {
 		bool hasPendingWork() const { return !mPendingSpawns.empty() || mPendingRemove != nullptr; }
 
 		DockContainer* add(const char* id, const char* title);
+		// Takes a container built elsewhere. The layout front end constructs its own, so
+		// that the properties and bindings on a <dock> node are applied by exactly the
+		// same code that applies them to every other widget.
+		DockContainer* adopt(std::unique_ptr<DockContainer> container);
 		DockContainer* find(const char* id);
 
 		// ---- container prototypes ----
@@ -74,7 +91,17 @@ namespace RDA {
 		void remove(DockContainer* container);
 		void removeById(const char* id);
 
-		void update(Gui& gui, glm::vec2 viewport);
+		// `area` is where the docking happens. It used to be the window's size, with the
+		// origin assumed to be zero -- which is exactly why docking could only ever be
+		// the whole window. Passing a rectangle is what lets a layout scope it to part
+		// of one, and the full-window case is just the rectangle that covers everything.
+		void update(Gui& gui, const Rect& area);
+
+		// Moves floating containers that have not been placed yet, once. A floating rect
+		// is authored relative to the dock area, so a dock space that is not the whole
+		// window puts its floating panels inside itself rather than at the window's
+		// top-left corner, where they would simply not be visible.
+		void placeFloatingWithin(const Rect& area);
 
 		// The pane arrangement, if the application wants to inspect or drive it directly.
 		DockLayout& tree() { return mTree; }
@@ -105,7 +132,7 @@ namespace RDA {
 		DockNode* largestPane() const;
 		// A drop within a band of the window border docks across that whole edge, rather
 		// than into whichever pane happens to be there.
-		DockDrop windowEdgeAt(glm::vec2 pointer, glm::vec2 viewport, Rect* previewOut) const;
+		DockDrop windowEdgeAt(glm::vec2 pointer, const Rect& area, Rect* previewOut) const;
 		// Bumps the revision and drops any node pointer that a collapse could dangle.
 		void structuralChange();
 
@@ -129,6 +156,27 @@ namespace RDA {
 		// they dragged out to float is not quietly pulled back to its hint next frame.
 		std::unordered_set<std::string> mSeeded;
 		Rect mCenterBody{};
+		bool mFloatingPlaced = false;
+
+		// A panel that has been closed and is still fading out.
+		//
+		// Closing destroys the container, so nothing of it survives to be drawn -- what is
+		// kept here is what it looked like: where it was, what it was called, and which
+		// variant drew it. Enough for a ghost of the chrome, which is what a panel going
+		// away looks like anyway.
+		//
+		// It leaves the tree immediately, so the panes beside it start taking the space at
+		// once and glide into it while this fades over the top. Keeping it in the tree
+		// instead would mean a pane that occupies a fraction of a split, which the tree
+		// has no way to express.
+		struct ClosingPane {
+			std::string id;      // for its place in the animation table
+			std::string title;
+			Variant     variant;
+			Rect        rect{};
+			bool        started = false;
+		};
+		std::vector<ClosingPane> mClosing;
 
 		DockContainer* mDragging = nullptr;      // a floating container being moved
 		DockContainer* mResizingFloat = nullptr; // a floating container being resized
@@ -136,5 +184,40 @@ namespace RDA {
 		DockContainer* mPressTab = nullptr;      // a tab pressed, maybe about to detach
 		glm::vec2      mPressPos{ 0.0f };
 		glm::vec2      mDragOffset{ 0.0f };
+	};
+
+	// A dock space as a widget: docking scoped to a rectangle instead of to the window.
+	//
+	// This is what makes the windowing system optional and placeable. An application that
+	// wants none simply has no dock host; one that wants panels in a corner puts a host
+	// in that corner and everything outside it lays out normally.
+	//
+	// Its DockContainer children are the panels, and they are not ordinary children: a
+	// docked panel is positioned by the dock space, not by the parent's layout, so they
+	// are handed over as they arrive. Anything else stays an ordinary child and paints
+	// underneath, which is how a dock area gets a backdrop.
+	class DockHost : public Widget {
+	public:
+		explicit DockHost(std::string id) : Widget(std::move(id)) {}
+		~DockHost() override;
+
+		DockSpace& space() { return mSpace; }
+
+		// Where the arrangement is remembered between runs. Empty means it is not: the
+		// panels open where the layout says every time.
+		//
+		// This is the split between the two things that both want to decide where a
+		// panel goes. The layout states where a panel starts; once someone drags it, the
+		// arrangement is theirs, and this is where it is kept. A saved file wins, and a
+		// panel it does not mention keeps what the layout said -- so adding a panel to a
+		// layout does not require anyone to delete their arrangement.
+		std::string persist;
+
+		Widget* addChild(std::unique_ptr<Widget> child) override;
+		void    paint(Gui& gui, glm::vec2 origin) override;
+
+	private:
+		DockSpace mSpace;
+		bool      mOpened = false;
 	};
 }

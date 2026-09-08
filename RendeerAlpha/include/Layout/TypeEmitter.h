@@ -13,7 +13,7 @@
 // variants degrade to `string`, so the definitions are still usable before a theme
 // exists.
 //
-// Studio tier: an application has no reason to describe itself.
+// Authoring only: an application has no reason to describe itself.
 namespace RDA::Layout {
 
 	struct TypesResult {

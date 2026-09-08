@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <GraphicalObjects/GuiTypes.h>
 #include <memory>
 #include <string>
@@ -161,6 +162,5 @@ namespace RDA {
 		bool loadV2(const std::string& text);
 
 		std::unique_ptr<DockNode> mRoot;
-		float mThickness = 6.0f; // what the last layout() used, for hit tests
 	};
 }

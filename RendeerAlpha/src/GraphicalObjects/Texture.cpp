@@ -2,7 +2,7 @@
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/MemoryBuffer.h>
 #include <Logger/Logger.h>
-#include <vendor/vma/vk_mem_alloc.h>
+#include <vendor/vma/vma.h>
 #include <vendor/stb_image/stb_image.h>
 #include <atomic>
 #include <functional>
@@ -368,25 +368,6 @@ namespace RDA {
 
 		mLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		return true;
-	}
-
-	void Texture::transitionLayout(VkImageLayout newLayout) {
-		if (!isValid()) return;
-		VkImage image = mImage;
-		VkImageAspectFlags aspect = mAspect;
-		VkImageLayout oldLayout = mLayout;
-		immediateSubmit([=](VkCommandBuffer cmd) {
-			recordTransition(cmd, image, aspect, oldLayout, newLayout);
-		});
-		mLayout = newLayout;
-	}
-
-	VkDescriptorImageInfo Texture::descriptorInfo(VkImageLayout layout) const {
-		VkDescriptorImageInfo info{};
-		info.sampler = mSampler;
-		info.imageView = mView;
-		info.imageLayout = layout;
-		return info;
 	}
 
 	void Texture::destroy() {

@@ -4,9 +4,11 @@
 
 namespace RDA {
 
+	// Never destroyed: an application's global LayoutHost releases its bindings from its
+	// destructor, after this would otherwise be gone. See bindings() in Layout/Bindings.cpp.
 	Signals& signals() {
-		static Signals table;
-		return table;
+		static Signals* table = new Signals;
+		return *table;
 	}
 
 	uint32_t Signals::declare(std::string_view name, SignalType type) {
@@ -55,9 +57,6 @@ namespace RDA {
 		return found == mByName.end() ? kNoSignal : found->second;
 	}
 
-	std::string_view Signals::name(uint32_t signal) const {
-		return valid(signal) ? std::string_view(mSignals[signal].name) : std::string_view();
-	}
 
 	SignalType Signals::type(uint32_t signal) const {
 		return valid(signal) ? mSignals[signal].type : SignalType::Number;

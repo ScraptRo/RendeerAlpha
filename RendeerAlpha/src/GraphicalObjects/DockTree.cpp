@@ -84,7 +84,6 @@ namespace RDA {
 	}
 
 	void DockLayout::layout(Rect area, float thickness) {
-		mThickness = thickness;
 		layoutNode(mRoot.get(), area, thickness);
 	}
 

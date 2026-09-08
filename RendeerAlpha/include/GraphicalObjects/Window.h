@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/BuildMode.h>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/WindownSurface.h>

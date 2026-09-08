@@ -1,4 +1,6 @@
-#include <GraphicalObjects/Gui.h>
+﻿#include <GraphicalObjects/Gui.h>
+#include <GraphicalObjects/Viewports.h>
+#include <Core/Utf8.h>
 #include <Logger/Logger.h>
 #include <algorithm>
 #include <array>
@@ -24,10 +26,20 @@ namespace RDA {
 		// A focused field blinks its caret, which is geometry changing on a timer.
 		if (mFocused != 0) return false;
 
+		// And so is a colour on its way somewhere. The cache decides by looking at input,
+		// and an animation is the one thing that changes without any.
+		if (mMotion.moving()) return false;
+
 		// The layout is measured against the target, and a Viewport widget's quad samples
 		// whatever texture it was given — either changing invalidates the geometry.
 		if (mInput.viewport != mLastViewport) return false;
 		if (mSceneTexture != mLastSceneTexture) return false;
+		// A backend replaced what a <viewport> is drawing. Nothing else about the frame
+		// says so -- same tree, same input -- so the drawings have a revision of their own.
+		if (viewports().revision() != mLastViewportRevision) return false;
+		// And the theme was swapped underneath it. Everything on screen is a different
+		// colour and not one of the checks above can tell.
+		if (mTheme.revision() != mLastThemeRevision) return false;
 
 		// Docks added or closed outside the walk, or queued from inside it and still
 		// waiting to be applied.
@@ -39,6 +51,17 @@ namespace RDA {
 
 	void Gui::begin(const GuiInput& input) {
 		mInput = input;
+		// Before anything asks: a widget's paint reads where a value is *now*, so the
+		// stepping has to have happened. Values nobody asked for last frame are dropped
+		// here too, which is what keeps the table the size of what is on screen.
+		mMotion.step(input.dt);
+		// Before anything is drawn and whether or not the tree is walked: the clear happens
+		// on the render path, and a value that stops being asked for stops moving.
+		{
+			const BackgroundStyle& ground = mTheme.background();
+			mBackgroundColor = mMotion.colour(kMotionBackground, ground.color,
+			                                  ground.motion.seconds, ground.motion.curve);
+		}
 		// Everything handed out last frame is free again. Two stores, no deallocation.
 		mFrameArena.reset();
 		mClipStack.clear();
@@ -51,6 +74,14 @@ namespace RDA {
 			: kFullClip;
 		mCurrentTexture = nullptr;
 		mFocusClaimed = false;
+		mFocusables.clear();
+		// Tab moves the keyboard on. Read here, spent at the end of the frame: a text
+		// field in code mode inserts spaces instead and says so by consuming it.
+		mFocusMove = 0;
+		mFocusMoveConsumed = false;
+		for (const GuiEditKey key : mInput.editKeys) {
+			if (key == GuiEditKey::Tab) mFocusMove = mInput.shift ? -1 : 1;
+		}
 		mScrollConsumed = false;
 
 		// Everything queued from last frame's callbacks lands here, before anything walks
@@ -73,7 +104,16 @@ namespace RDA {
 			return;
 		}
 
+		// Only now: this frame walks the tree, so this is a frame on which every value
+		// still in use will be asked for. Ageing on a reused frame would forget a
+		// colour that is sitting there perfectly visible.
+		mMotion.forget();
+
 		mDraw.clear();
+		mOverlays.clear();
+		mOpacity = 1.0f;
+		mOpacityStack.clear();
+		mInputStack.clear();
 		mViewportRect = Rect{}; // a Viewport widget re-reports it during the walk below
 		mCmdStart = 0;
 		// Hot is recomputed from scratch each frame; active persists (a press-drag keeps
@@ -90,7 +130,22 @@ namespace RDA {
 			mRetainedRoot.paint(*this, glm::vec2(0.0f));
 
 			// Dockable containers sit above the static tree.
-			mDockSpace.update(*this, mInput.viewport);
+			mDockSpace.update(*this, Rect{ 0.0f, 0.0f, mInput.viewport.x, mInput.viewport.y });
+
+			// And anything that asked to draw over the lot -- an open dropdown, which has
+			// to escape the panel that clips the widget it belongs to. The clip goes back
+			// to the whole viewport for these, and they are painted in the order they
+			// asked, so the last one to open is on top.
+			//
+			// Copied first: a paintAbove is allowed to ask again for next frame, and
+			// growing the list being iterated would invalidate the iterator.
+			const std::vector<std::pair<Widget*, glm::vec2>> above = mOverlays;
+			mOverlays.clear();
+			for (const auto& one : above) {
+				pushClip(glm::vec4(0.0f, 0.0f, mInput.viewport.x, mInput.viewport.y));
+				one.first->paintAbove(*this, one.second);
+				popClip();
+			}
 		}
 
 		// Close the in-progress command so the retained portion is a whole number of draw
@@ -102,6 +157,8 @@ namespace RDA {
 		mLastPointer = mInput.pointer;
 		mLastViewport = mInput.viewport;
 		mLastSceneTexture = mSceneTexture;
+		mLastViewportRevision = viewports().revision();
+		mLastThemeRevision = mTheme.revision();
 		mLastDockRevision = mDockSpace.revision();
 		mLayoutDirty = false;
 		mCacheValid = true;
@@ -140,41 +197,50 @@ namespace RDA {
 		}
 	}
 
-	bool Gui::appendDrawData(const GuiDrawData& data) {
-		if (data.vertices.empty() || data.commands.empty()) return true; // nothing to add
-
-		// Indices are 16-bit and are rebased onto the end of this frame's vertices, so
-		// the merged buffer has to stay inside what one can name. Refusing is better than
-		// wrapping silently, which would draw whatever happened to be at the low indices.
-		const size_t base = mDraw.vertices.size();
-		if (base + data.vertices.size() > 0xFFFFu) return false;
-
-		const uint32_t indexBase = static_cast<uint32_t>(mDraw.indices.size());
-		mDraw.vertices.insert(mDraw.vertices.end(), data.vertices.begin(), data.vertices.end());
-		mDraw.indices.reserve(mDraw.indices.size() + data.indices.size());
-		for (uint16_t index : data.indices) {
-			mDraw.indices.push_back(static_cast<uint16_t>(base + index));
-		}
-		for (GuiDrawCmd cmd : data.commands) {
-			cmd.indexOffset += indexBase;
-			mDraw.commands.push_back(cmd);
-		}
-
-		// The appended indices already belong to the commands that came with them, so the
-		// in-progress command has to start *after* them. Without this, end()'s flushCmd()
-		// spans from wherever it was to the new end and emits a second command covering
-		// everything appended — drawing it again with this GUI's own texture, which for an
-		// image batch means sampling the font atlas instead.
-		mCmdStart = static_cast<uint32_t>(mDraw.indices.size());
-		return true;
-	}
-
 	void Gui::end() {
+		// The ring first, and before the flush: it is geometry like everything else, and
+		// added after the last command is closed it would never reach one. Drawn last
+		// among the widgets, so it sits on top of whatever it surrounds.
+		for (const Focusable& f : mFocusables) {
+			if (f.id != mFocused) continue;
+			const FocusStyle& ring = mTheme.focus(f.ring);
+			if (ring.width <= 0.0f) break;
+			const Rect r{ f.rect.x + ring.inset, f.rect.y + ring.inset,
+			              f.rect.w - ring.inset * 2.0f, f.rect.h - ring.inset * 2.0f };
+			// Four edges rather than addFrame: that draws the border as a full rect and
+			// lays the fill on top, so a ring with nothing to fill would come out solid.
+			// This has to leave the widget underneath visible -- it is the thing being
+			// pointed at.
+			const float t = ring.width;
+			addRect({ r.x, r.y, r.w, t }, ring.color);                         // top
+			addRect({ r.x, r.y + r.h - t, r.w, t }, ring.color);               // bottom
+			addRect({ r.x, r.y + t, t, (std::max)(0.0f, r.h - t * 2.0f) }, ring.color);
+			addRect({ r.x + r.w - t, r.y + t, t, (std::max)(0.0f, r.h - t * 2.0f) }, ring.color);
+			break;
+		}
+
 		flushCmd();
 		// A release anywhere ends the interaction if no widget consumed it.
 		if (mInput.released) mActive = 0;
-		// A press that landed on no text field drops keyboard focus.
+		// A press that landed on nothing focusable drops the keyboard.
 		if (mInput.pressed && !mFocusClaimed) mFocused = 0;
+
+		// And Tab, once everything has had its turn to register.
+		if (mFocusMove != 0 && !mFocusMoveConsumed && !mFocusables.empty()) {
+			size_t at = mFocusables.size(); // "nowhere yet"
+			for (size_t i = 0; i < mFocusables.size(); ++i) {
+				if (mFocusables[i].id == mFocused) { at = i; break; }
+			}
+			const size_t count = mFocusables.size();
+			size_t next;
+			if (at == count) {
+				// Nothing had it: forwards starts at the first, backwards at the last.
+				next = (mFocusMove > 0) ? 0 : count - 1;
+			} else {
+				next = (mFocusMove > 0) ? (at + 1) % count : (at + count - 1) % count;
+			}
+			mFocused = mFocusables[next].id;
+		}
 
 		// Fingerprint the frame's geometry. FNV-1a over the raw vertex/index bytes plus
 		// the per-command clip and texture: everything that decides what ends up on
@@ -230,8 +296,12 @@ namespace RDA {
 	void Gui::drawRect(const Rect& rect, uint32_t color) {
 		addRect(rect, color);
 	}
-	void Gui::drawText(const char* text, glm::vec2 topLeft, uint32_t color) {
-		if (mFont && text) addText(topLeft.x, topLeft.y + mFont->ascent(), text, color);
+
+	void Gui::drawRectRounded(const Rect& rect, uint32_t color, float radius) {
+		addRectRounded(rect, color, radius);
+	}
+	void Gui::drawText(const char* text, glm::vec2 topLeft, uint32_t color, TextStyle font) {
+		if (mFont && text) addText(topLeft.x, topLeft.y + baseline(font), text, color, font);
 	}
 	void Gui::image(const Rect& r, const Texture* texture) {
 		if (!texture) return;
@@ -239,6 +309,58 @@ namespace RDA {
 		addQuad(r.x, r.y, r.x + r.w, r.y + r.h, 0.0f, 0.0f, 1.0f, 1.0f, rgba(255, 255, 255));
 		setTexture(nullptr); // the image is its own command; go back to the atlas
 	}
+	void Gui::pushOpacity(float alpha) {
+		mOpacityStack.push_back(mOpacity);
+		// Multiplied, not replaced: a half-faded thing inside a half-faded thing is a
+		// quarter there, which is what nesting has to mean for it to compose.
+		mOpacity *= (alpha < 0.0f ? 0.0f : (alpha > 1.0f ? 1.0f : alpha));
+	}
+
+	void Gui::popOpacity() {
+		if (mOpacityStack.empty()) return;
+		mOpacity = mOpacityStack.back();
+		mOpacityStack.pop_back();
+	}
+
+	Gui::ScrollBarLook Gui::scrollBar(uint32_t key, bool needed, bool hot,
+	                                  float thumbSpan, float trackSpan,
+	                                  const TextFieldStyle& style) {
+		ScrollBarLook look;
+		look.presence = needed ? 1.0f : 0.0f;
+		// A bar nobody needs is one whose handle fills it. Content shrinking to fit ends
+		// with the handle as long as the track, which is what "all of it is showing"
+		// looks like, and the bar fades from there -- rather than the handle collapsing
+		// to nothing on its way out, which reads as a fault.
+		look.thumb = needed ? thumbSpan : trackSpan;
+		look.colour = hot ? style.scrollThumbHover : style.scrollThumb;
+
+		const float seconds = style.motion.seconds;
+		if (seconds <= 0.0f) return look; // no duration asked for, and none stored
+		const Easing curve = style.motion.curve;
+		look.presence = mMotion.value(key + 0u, look.presence, seconds, curve);
+		look.thumb    = mMotion.value(key + 1u, look.thumb, seconds, curve);
+		look.colour   = mMotion.colour(key + 2u, look.colour, seconds, curve);
+		return look;
+	}
+
+	void Gui::pushInert() {
+		mInputStack.push_back(mInput);
+		GuiInput quiet;
+		// What a frame still needs to know while nothing is being done to it: how big the
+		// window is, and how long the frame was. A pointer nowhere near anything is what
+		// makes every hit test fail, and everything else stays at its empty default.
+		quiet.viewport = mInput.viewport;
+		quiet.dt = mInput.dt;
+		quiet.pointer = glm::vec2(-1.0e6f);
+		mInput = quiet;
+	}
+
+	void Gui::popInert() {
+		if (mInputStack.empty()) return;
+		mInput = std::move(mInputStack.back());
+		mInputStack.pop_back();
+	}
+
 	void Gui::pushClipRect(const Rect& rect) {
 		pushClip(glm::vec4(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h));
 	}
@@ -248,12 +370,85 @@ namespace RDA {
 	Rect Gui::currentClipRect() const {
 		return { mCurrentClip.x, mCurrentClip.y, mCurrentClip.z - mCurrentClip.x, mCurrentClip.w - mCurrentClip.y };
 	}
-	float Gui::measureText(const char* text) const {
-		return (mFont && text) ? mFont->textWidth(text) : 0.0f;
+	// Bold is drawn twice, this far apart. It scales with the size so a heading is
+	// emboldened as much as a caption is, proportionally, and it never changes an
+	// advance -- the second pass bleeds a pixel to the right and that is all, which is
+	// what keeps a bold word in the same monospaced column as a regular one.
+	static float boldOffset(float pixelHeight) {
+		return std::max(1.0f, std::round(pixelHeight / 16.0f));
 	}
-	float Gui::lineHeight() const {
-		return mFont ? mFont->lineAdvance() : 16.0f;
+
+	float Gui::measureText(const char* text, TextStyle font) const {
+		if (!mFont || !text) return 0.0f;
+		const int index = mFont->indexForSize(font.size);
+		float width = mFont->textWidth(text, index);
+		// The bleed, once, so a bounding box drawn from this contains what is drawn.
+		if (font.bold && width > 0.0f) width += boldOffset(mFont->pixelHeight(index));
+		return width;
 	}
+	float Gui::lineHeight(TextStyle font) const {
+		return mFont ? mFont->lineAdvance(mFont->indexForSize(font.size)) : 16.0f;
+	}
+	float Gui::baseline(TextStyle font) const {
+		return mFont ? mFont->ascent(mFont->indexForSize(font.size)) : 12.0f;
+	}
+
+	std::vector<std::pair<size_t, size_t>> Gui::wrapText(const std::string& text, float width,
+	                                                     TextStyle font) const {
+		std::vector<std::pair<size_t, size_t>> lines;
+		if (!mFont) { lines.emplace_back(0, text.size()); return lines; }
+		const int index = mFont->indexForSize(font.size);
+
+		// One pass, character by character, remembering the last space. A word that does
+		// not fit on a line of its own is broken rather than allowed to overflow: a long
+		// path or hash has no space in it, and silently running off the edge is worse
+		// than an ugly break.
+		//
+		// The offsets returned are byte offsets, because that is what a caller slices a
+		// std::string with, but the walk advances a codepoint at a time -- so a break
+		// never lands inside a character.
+		size_t lineStart = 0;
+		size_t lastSpace = std::string::npos;
+		float  penX = 0.0f;
+		float  widthAtSpace = 0.0f;
+
+		size_t i = 0;
+		while (i < text.size()) {
+			if (text[i] == '\n') {
+				lines.emplace_back(lineStart, i - lineStart);
+				lineStart = i + 1;
+				lastSpace = std::string::npos;
+				penX = 0.0f;
+				++i;
+				continue;
+			}
+			uint32_t cp = 0;
+			const size_t step = Utf8::decode(text.data() + i, text.data() + text.size(), cp);
+			const float advance = mFont->advance(cp, index);
+			if (cp == ' ') { lastSpace = i; widthAtSpace = penX; }
+
+			if (penX + advance > width && i > lineStart) {
+				if (lastSpace != std::string::npos && lastSpace > lineStart) {
+					lines.emplace_back(lineStart, lastSpace - lineStart);
+					lineStart = lastSpace + 1;
+					penX -= widthAtSpace + mFont->advance(U' ', index);
+				} else {
+					lines.emplace_back(lineStart, i - lineStart);
+					lineStart = i;
+					penX = 0.0f;
+				}
+				lastSpace = std::string::npos;
+			}
+			penX += advance;
+			i += step;
+		}
+		lines.emplace_back(lineStart, text.size() - lineStart);
+		return lines;
+	}
+	void Gui::drawAbove(Widget* widget, glm::vec2 origin) {
+		if (widget) mOverlays.emplace_back(widget, origin);
+	}
+
 	void Gui::pushId(const char* id) {
 		mScopeStack.push_back(scopedId(id));
 	}
@@ -264,6 +459,10 @@ namespace RDA {
 	// ---- geometry -----------------------------------------------------------------
 	void Gui::addQuad(float x0, float y0, float x1, float y1,
 	                  float u0, float v0, float u1, float v1, uint32_t color) {
+		// The one place all GUI geometry passes through, which is why the fade lives here
+		// rather than in each widget: a fill, a glyph and a picture are all a quad with a
+		// colour, so scaling the alpha once covers a whole tree.
+		if (mOpacity < 1.0f) color = fadeTo(color, mOpacity);
 		uint16_t base = static_cast<uint16_t>(mDraw.vertices.size());
 		mDraw.vertices.push_back({ { x0, y0 }, { u0, v0 }, color });
 		mDraw.vertices.push_back({ { x1, y0 }, { u1, v0 }, color });
@@ -275,6 +474,36 @@ namespace RDA {
 		mDraw.indices.push_back(base);
 		mDraw.indices.push_back(base + 2);
 		mDraw.indices.push_back(base + 3);
+	}
+
+	void Gui::addQuadPoints(glm::vec2 p0, glm::vec2 p1, glm::vec2 p2, glm::vec2 p3,
+	                        uint32_t color) {
+		if (mOpacity < 1.0f) color = fadeTo(color, mOpacity);
+		const glm::vec2 uv = mFont ? mFont->whiteUV() : glm::vec2(0.0f);
+		uint16_t base = static_cast<uint16_t>(mDraw.vertices.size());
+		mDraw.vertices.push_back({ { p0.x, p0.y }, { uv.x, uv.y }, color });
+		mDraw.vertices.push_back({ { p1.x, p1.y }, { uv.x, uv.y }, color });
+		mDraw.vertices.push_back({ { p2.x, p2.y }, { uv.x, uv.y }, color });
+		mDraw.vertices.push_back({ { p3.x, p3.y }, { uv.x, uv.y }, color });
+		mDraw.indices.push_back(base);
+		mDraw.indices.push_back(base + 1);
+		mDraw.indices.push_back(base + 2);
+		mDraw.indices.push_back(base);
+		mDraw.indices.push_back(base + 2);
+		mDraw.indices.push_back(base + 3);
+	}
+
+	void Gui::drawLine(glm::vec2 from, glm::vec2 to, uint32_t color, float width) {
+		const glm::vec2 along = to - from;
+		const float length = std::sqrt(along.x * along.x + along.y * along.y);
+		if (length <= 0.0001f || width <= 0.0f) return;
+
+		// Half a thickness out either side of the centre line. A line is its own quad
+		// rather than a rotated rect because there is no transform in this pipeline:
+		// every vertex is already in interface pixels.
+		const glm::vec2 across = glm::vec2{ -along.y, along.x } / length * (width * 0.5f);
+		setTexture(nullptr);
+		addQuadPoints(from - across, from + across, to + across, to - across, color);
 	}
 
 	void Gui::addRect(const Rect& r, uint32_t color) {
@@ -344,18 +573,33 @@ namespace RDA {
 		               fill, (std::max)(0.0f, radius - bw));
 	}
 
-	void Gui::addText(float penX, float baselineY, const char* text, uint32_t color) {
+	void Gui::addText(float penX, float baselineY, const char* text, uint32_t color,
+	                  TextStyle font) {
 		if (!mFont || !text) return;
-		addTextRange(penX, baselineY, text, static_cast<int>(std::strlen(text)), color);
+		addTextRange(penX, baselineY, text, static_cast<int>(std::strlen(text)), color, font);
 	}
 
-	float Gui::addTextRange(float penX, float baselineY, const char* text, int count, uint32_t color) {
+	float Gui::addTextRange(float penX, float baselineY, const char* text, int count,
+	                        uint32_t color, TextStyle font) {
 		if (!mFont || !text) return penX;
+		const int index = mFont->indexForSize(font.size);
+		const float bold = font.bold ? boldOffset(mFont->pixelHeight(index)) : 0.0f;
 		setTexture(nullptr);
-		for (int i = 0; i < count; ++i) {
+		// `count` is a byte count, and a glyph is a codepoint: the walk is over
+		// characters even though the caller measured the string in bytes.
+		const char* p = text;
+		const char* end = text + count;
+		while (p < end) {
+			uint32_t cp = 0;
+			p += Utf8::decode(p, end, cp);
 			GlyphQuad q;
-			if (mFont->quadFor(text[i], penX, baselineY, q)) { // advances penX
+			if (mFont->quadFor(cp, penX, baselineY, q, index)) { // advances penX
 				addQuad(q.x0, q.y0, q.x1, q.y1, q.u0, q.v0, q.u1, q.v1, color);
+				// The second pass is the whole of bold: one glyph, one pixel over.
+				if (bold > 0.0f) {
+					addQuad(q.x0 + bold, q.y0, q.x1 + bold, q.y1,
+					        q.u0, q.v0, q.u1, q.v1, color);
+				}
 			}
 		}
 		return penX;
@@ -395,11 +639,52 @@ namespace RDA {
 	}
 
 	// ---- widgets ------------------------------------------------------------------
+	bool Gui::focusable(uint32_t wid, const Rect& rect, Variant ringVariant) {
+		// Registering is how a widget joins the Tab order and gets a ring; it says
+		// nothing about the pointer. Claiming the press here would mean a widget that
+		// merely *has* focus keeps it no matter where the click landed, which is the
+		// opposite of what a click on empty space should do.
+		mFocusables.push_back(Focusable{ wid, rect, ringVariant });
+		return mFocused == wid;
+	}
+
+	bool Gui::focusActivated(uint32_t wid) const {
+		if (mFocused != wid) return false;
+		for (const GuiEditKey key : mInput.editKeys) {
+			if (key == GuiEditKey::Enter || key == GuiEditKey::Space) return true;
+		}
+		return false;
+	}
+
+	int Gui::focusStep(uint32_t wid) const {
+		if (mFocused != wid) return 0;
+		for (const GuiEditKey key : mInput.editKeys) {
+			if (key == GuiEditKey::Left || key == GuiEditKey::Up) return -1;
+			if (key == GuiEditKey::Right || key == GuiEditKey::Down) return 1;
+		}
+		return 0;
+	}
+
+	bool Gui::focusEscaped(uint32_t wid) const {
+		if (mFocused != wid) return false;
+		for (const GuiEditKey key : mInput.editKeys) {
+			if (key == GuiEditKey::Escape) return true;
+		}
+		return false;
+	}
+
 	void Gui::beginPanel(const char* id, const Rect& rect, Variant variant) {
 		const PanelStyle& s = mTheme.panel(variant);
-		mScopeStack.push_back(scopedId(id));
+		const uint32_t wid = scopedId(id);
+		mScopeStack.push_back(wid);
 		pushClip(glm::vec4(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h));
-		addFrame(rect, s.body, s.border, s.borderWidth, s.radius);          // body
+		// A panel has no hover state, so these move only when its variant does -- which
+		// is the case they exist for, since a variant may be a binding.
+		const uint32_t body = mMotion.colour(wid ^ kMotionFill, s.body,
+		                                     s.motion.seconds, s.motion.curve);
+		const float radius = mMotion.value(wid ^ kMotionRadius, s.radius,
+		                                   s.motion.seconds, s.motion.curve);
+		addFrame(rect, body, s.border, s.borderWidth, radius);              // body
 		if (s.accentHeight > 0.0f) {
 			addRect({ rect.x, rect.y, rect.w, s.accentHeight }, s.accent);  // accent strip
 		}
@@ -410,12 +695,13 @@ namespace RDA {
 		mScopeStack.pop_back();
 	}
 
-	void Gui::label(const char* text, glm::vec2 pos, uint32_t color) {
+	void Gui::label(const char* text, glm::vec2 pos, uint32_t color, TextStyle font) {
 		if (!mFont) return;
-		addText(pos.x, pos.y + mFont->ascent(), text, color);
+		addText(pos.x, pos.y + baseline(font), text, color, font);
 	}
 
-	bool Gui::button(const char* id, const char* text, const Rect& rect, Variant variant) {
+	bool Gui::button(const char* id, const char* text, const Rect& rect, Variant variant,
+	                 TextAlign align, float alignNudge) {
 		const ButtonStyle& s = mTheme.button(variant);
 		uint32_t wid = scopedId(id);
 		bool inside = rect.contains(mInput.pointer);
@@ -427,17 +713,37 @@ namespace RDA {
 			if (mHot == wid) clicked = true;
 			mActive = 0;
 		}
+		// Clicking one points the keyboard at it, the way clicking a field does.
+		if (mHot == wid && mInput.pressed) setFocus(wid);
+		const bool hasFocus = focusable(wid, rect);
+		if (hasFocus && focusActivated(wid)) clicked = true;
 
 		uint32_t color = s.normal;
+		// Pressed-looking while the key that presses it is what activated it. There is
+		// no held state to read for a key, so this is the frame it happens on.
+		if (hasFocus && focusActivated(wid)) color = s.pressed;
 		if (mActive == wid)      color = s.pressed; // pressed
 		else if (mHot == wid)    color = s.hovered; // hovered
-		addFrame(rect, color, s.border, s.borderWidth, s.radius);
+		// On its way there rather than already there, when the theme asks for it. The
+		// three states above are unchanged: what a button *should* look like is still
+		// decided by what is happening to it, and only how it gets there is new.
+		color = mMotion.colour(wid ^ kMotionFill, color, s.motion.seconds, s.motion.curve);
+		// And the corners, for the same reason and over the same time: a button whose
+		// variant changed is a different shape as well as a different colour, and only
+		// one of the two used to travel.
+		const float radius = mMotion.value(wid ^ kMotionRadius, s.radius,
+		                                   s.motion.seconds, s.motion.curve);
+		addFrame(rect, color, s.border, s.borderWidth, radius);
 
 		if (mFont) {
-			float tw = mFont->textWidth(text);
-			float tx = rect.x + (rect.w - tw) * 0.5f;
-			float baseline = rect.y + rect.h * 0.5f + mFont->ascent() * 0.35f;
-			addText(tx, baseline, text, s.text);
+			// Inset by the same padding a button measures itself with, so aligned text
+			// sits where the edge of a centred button's text would be rather than
+			// against the border.
+			const float pad = (align == TextAlign::Center) ? 0.0f : kButtonPadX;
+			const float room = rect.w - pad * 2.0f;
+			const float tx = rect.x + pad + alignOffset(align, room, measureText(text, s.font), alignNudge);
+			float baselineY = rect.y + rect.h * 0.5f + baseline(s.font) * 0.35f;
+			addText(tx, baselineY, text, s.text, s.font);
 		}
 		return clicked;
 	}

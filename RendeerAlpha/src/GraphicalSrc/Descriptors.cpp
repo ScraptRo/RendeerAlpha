@@ -158,10 +158,6 @@ namespace RDA {
 		return *this;
 	}
 
-	DescriptorWriter& DescriptorWriter::writeInputAttachment(uint32_t binding, VkImageView view, VkImageLayout layout) {
-		return writeImage(binding, view, VK_NULL_HANDLE, layout, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
-	}
-
 	void DescriptorWriter::update(VkDescriptorSet set) {
 		if (set == VK_NULL_HANDLE || mWrites.empty()) return;
 		for (VkWriteDescriptorSet& write : mWrites) {

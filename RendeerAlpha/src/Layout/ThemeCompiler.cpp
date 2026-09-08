@@ -1,5 +1,6 @@
-#include <Layout/ThemeCompiler.h>
+﻿#include <Layout/ThemeCompiler.h>
 #include <Layout/Blueprint.h>
+#include <Layout/ThemeSchema.h>
 #include "ModuleTransform.h"
 
 #include <vendor/quickjs/quickjs.h>
@@ -26,18 +27,57 @@ namespace RDA::Layout {
 			return text;
 		}
 
+		// A field the schema does not know is a build failure, not a shrug.
+		//
+		// Before this, a theme could say `borderWith: 1` and get no border and no message:
+		// the reader looks for the fields it knows and never sees the rest. That is the
+		// worst kind of mistake to leave to a person -- a missing border reads as a design
+		// decision, and a wrong colour reads as the colour somebody chose.
+		//
+		// The suggestion is worth the trouble because the mistake is nearly always a
+		// letter, and a field name is not something you can work out from first principles.
+		bool checkField(const ThemeFieldDesc* fields, size_t fieldCount, bool allowCommon,
+		                const std::string& field, const std::string& what, std::string& error) {
+			for (size_t i = 0; i < fieldCount; ++i) {
+				if (field == fields[i].name) return true;
+			}
+			if (allowCommon) {
+				size_t commonCount = 0;
+				const ThemeFieldDesc* common = commonThemeFields(commonCount);
+				for (size_t i = 0; i < commonCount; ++i) {
+					if (field == common[i].name) return true;
+				}
+			}
+			error = what + " has no field called `" + field + "`";
+			// nearestThemeField takes an element, and the list here may be a syntax palette
+			// instead -- so it is handed whichever list this call is checking against. A
+			// palette gets no suggestion from the common fields, because `base` is not a
+			// misspelling of a token kind.
+			const ThemeElementDesc checking{ "", fields, fieldCount, "" };
+			const std::string_view nearest = nearestThemeField(checking, field);
+			if (!nearest.empty()) error += ". Did you mean `" + std::string(nearest) + "`?";
+			return false;
+		}
+
 		// One object of scalars becomes one node's props. A nested object becomes a child
 		// node named for the field it came from -- which is how a text field carries a
 		// whole syntax palette without the format needing to know what a palette is.
-		void readFields(JSContext* ctx, JSValueConst object, BlueprintBuilder& builder,
+		//
+		// `fields` is what the keys are checked against. A nested object is checked against
+		// its own list rather than the element's, which is the whole of what "nested" means
+		// here: `syntax` is not a field with sub-fields, it is a different set of names.
+		bool readFields(JSContext* ctx, JSValueConst object, BlueprintBuilder& builder,
 		                uint32_t node, const std::string& nodeId,
-		                std::vector<uint32_t>& childFirst, std::vector<uint32_t>& childCount) {
+		                std::vector<uint32_t>& childFirst, std::vector<uint32_t>& childCount,
+		                const ThemeFieldDesc* fields, size_t fieldCount, bool allowCommon,
+		                const std::string& what, std::string& error) {
 			JSPropertyEnum* names = nullptr;
 			uint32_t count = 0;
 			if (JS_GetOwnPropertyNames(ctx, &names, &count, object,
 			                           JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0) {
-				return;
+				return true;
 			}
+			bool ok = true;
 
 			// Two passes: scalars first so a node's props stay contiguous, then the nested
 			// objects, which have to become children after this node exists.
@@ -50,6 +90,14 @@ namespace RDA::Layout {
 
 					JSValue value = JS_GetProperty(ctx, object, names[i].atom);
 					const bool nested = JS_IsObject(value) && !JS_IsFunction(ctx, value);
+
+					// Once, on the first pass, so a name is not reported twice.
+					if (pass == 0 && !checkField(fields, fieldCount, allowCommon, key,
+					                             what, error)) {
+						JS_FreeValue(ctx, value);
+						ok = false;
+						break;
+					}
 
 					if (pass == 0 && !nested) {
 						if (JS_IsString(value)) {
@@ -74,12 +122,23 @@ namespace RDA::Layout {
 						childCount.push_back(0);
 						if (childCount[node] == 0) childFirst[node] = child;
 						++childCount[node];
-						readFields(ctx, value, builder, child, childId, childFirst, childCount);
+
+						// The only nested thing a theme has is a syntax palette, so that is
+						// what its keys are checked against. A different field written as an
+						// object is caught by the check above, before this runs.
+						size_t kindCount = 0;
+						const ThemeFieldDesc* kinds = syntaxFields(kindCount);
+						ok = readFields(ctx, value, builder, child, childId, childFirst,
+						                childCount, kinds, kindCount, false,
+						                what + " `" + key + "`", error);
 					}
 					JS_FreeValue(ctx, value);
+					if (!ok) break;
 				}
+				if (!ok) break;
 			}
 			JS_FreePropertyEnum(ctx, names, count);
+			return ok;
 		}
 
 		bool evaluate(const std::string& js, const std::string& name, BlueprintBuilder& builder,
@@ -92,7 +151,10 @@ namespace RDA::Layout {
 
 			bool ok = false;
 			JSValue global = JS_GetGlobalObject(ctx);
-			JSValue result = JS_Eval(ctx, js.c_str(), js.size(), name.c_str(), JS_EVAL_TYPE_GLOBAL);
+			// The colour helpers first, so the module can call them as it is evaluated.
+			const std::string source = std::string(colourPrelude()) + js;
+			JSValue result = JS_Eval(ctx, source.c_str(), source.size(), name.c_str(),
+			                         JS_EVAL_TYPE_GLOBAL);
 
 			if (JS_IsException(result)) {
 				error = exceptionText(ctx);
@@ -121,6 +183,19 @@ namespace RDA::Layout {
 						// esbuild marks its namespace object; not a widget type.
 						if (element == "__esModule") continue;
 
+						// An export nothing is styled by is a mistake worth stopping for:
+						// a theme that says `buttons` gets no buttons and no message.
+						const ThemeElementDesc* described = findThemeElement(element);
+						if (!described) {
+							error = "nothing is styled by `" + element + "`";
+							const std::string_view nearest = nearestThemeElement(element);
+							if (!nearest.empty()) {
+								error += ". Did you mean `" + std::string(nearest) + "`?";
+							}
+							ok = false;
+							break;
+						}
+
 						JSValue byVariant = JS_GetProperty(ctx, exports, elements[e].atom);
 						JSPropertyEnum* names = nullptr;
 						uint32_t nameCount = 0;
@@ -146,13 +221,21 @@ namespace RDA::Layout {
 									builder.intern(element), builder.intern(variant), kNoParent);
 								childFirst.push_back(0);
 								childCount.push_back(0);
-								readFields(ctx, style, builder, node, variant, childFirst, childCount);
+								ok = readFields(ctx, style, builder, node, variant,
+								                childFirst, childCount,
+								                described->fields, described->fieldCount, true,
+								                "`" + element + "." + variant + "`", error);
+								if (!ok) {
+									JS_FreeValue(ctx, style);
+									break;
+								}
 								variants.emplace_back(element, variant);
 							}
 							JS_FreeValue(ctx, style);
 						}
 						JS_FreePropertyEnum(ctx, names, nameCount);
 						JS_FreeValue(ctx, byVariant);
+						if (!ok) break;
 					}
 
 					for (uint32_t i = 0; i < childFirst.size(); ++i) {

@@ -143,7 +143,7 @@ namespace RDA {
             return maintainAlive;
         }
         obj_list() = default;
-        obj_list(size_t pSize) : _poolSize(pSize), _capacity(pSize) {
+        obj_list(size_t pSize) : _capacity(pSize), _poolSize(pSize) {
             // A size of 0 would underflow the loop bound below; treat it as "no pool"
             // and fall back to per-object allocation.
             if (pSize == 0) {

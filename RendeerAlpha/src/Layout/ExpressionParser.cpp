@@ -12,6 +12,23 @@ namespace RDA::Layout {
 		// is what keeps "reactive" meaning something: every dependency is visible in the
 		// source as `state.<name>`, and the compiler can therefore know all of them.
 		constexpr const char* kStateRoot = "state";
+		constexpr const char* kCommandRoot = "commands";
+		// The one name under `state` that is a group rather than a signal: what the
+		// engine knows about itself, `state.rda.width` and so on. Flat everywhere else,
+		// because a signal is a name and a value and nesting it would be a second idea
+		// -- but the engine's own values are not the application's, and putting them in
+		// the same flat pool would mean an application could not call anything `width`.
+		//
+		// The dot survives into the signal name: `state.rda.width` is the signal
+		// literally called "rda.width". Nothing else can produce that name, since an
+		// identifier cannot contain a dot, so the two pools cannot collide.
+		constexpr const char* kEngineNamespace = "rda";
+		// Command names share the pool with signal names, so they carry a mark no
+		// identifier can have. Without it `state.save` and `commands.save()` would intern
+		// to one slot with two meanings.
+		constexpr char kCommandMark = '@';
+		// And column names carry their own, for the same reason.
+		constexpr char kColumnMark = '#';
 
 		struct Failure {
 			std::string message;
@@ -20,7 +37,8 @@ namespace RDA::Layout {
 
 		class Parser {
 		public:
-			explicit Parser(const std::string& source) : mSource(source) {}
+			Parser(const std::string& source, bool isHandler, std::string rowParam)
+				: mSource(source), mIsHandler(isHandler), mRowParam(std::move(rowParam)) {}
 
 			Program parse() {
 				skipArrowPrefix();
@@ -87,27 +105,69 @@ namespace RDA::Layout {
 
 			// ---- structure -------------------------------------------------------
 
+			// Records the one parameter a handler may name. A value binding is called
+			// with nothing, so a parameter there is refused where it is written rather
+			// than becoming a parse error further along.
+			void takeParameter(const std::string& name, size_t at) {
+				if (!mIsHandler) {
+					mAt = at;
+					fail("a value binding takes no parameters -- it is called with nothing. "
+					     "Only an event handler is handed a value");
+				}
+				mParameter = name;
+			}
+
+			// `() => ...`, and for a handler `(value) => ...` or `value => ...`, where the
+			// parameter is whatever the widget passes: the new text of a field, the new
+			// state of a checkbox, the new position of a slider.
 			void skipArrowPrefix() {
 				skipSpace();
 				const size_t start = mAt;
-				if (peek() == '(') {
-					size_t scan = mAt + 1;
-					while (scan < mSource.size() && mSource[scan] != ')') ++scan;
-					if (scan >= mSource.size()) { mAt = start; return; }
-					// Parameters would have to come from somewhere, and a binding is called
-					// with nothing. Saying so beats a parse error further along.
-					for (size_t i = mAt + 1; i < scan; ++i) {
-						if (!std::isspace(static_cast<unsigned char>(mSource[i]))) {
-							mAt = mAt + 1;
-							fail("a binding takes no parameters");
-						}
+
+				// A single parameter needs no parentheses in TypeScript, and esbuild is
+				// free to write it either way.
+				if (isIdentifierStart(peek())) {
+					const size_t nameAt = mAt;
+					const std::string word = readIdentifier();
+					skipSpace();
+					if (mSource.compare(mAt, 2, "=>") == 0) {
+						takeParameter(word, nameAt);
+						mAt += 2;
+						return;
 					}
-					size_t after = scan + 1;
-					while (after < mSource.size() &&
-					       std::isspace(static_cast<unsigned char>(mSource[after]))) ++after;
-					if (mSource.compare(after, 2, "=>") == 0) { mAt = after + 2; return; }
 					mAt = start;
+					return;
 				}
+
+				if (peek() != '(') return;
+
+				size_t scan = mAt + 1;
+				while (scan < mSource.size() && mSource[scan] != ')') ++scan;
+				if (scan >= mSource.size()) { mAt = start; return; }
+
+				size_t at = mAt + 1;
+				while (at < scan && std::isspace(static_cast<unsigned char>(mSource[at]))) ++at;
+				if (at < scan) {
+					const size_t nameAt = at;
+					mAt = at;
+					const std::string word = isIdentifierStart(peek()) ? readIdentifier() : std::string();
+					skipSpace();
+					// One plain name and nothing else: no default, no destructuring, no
+					// second parameter, none of which there is anything to fill in from.
+					const bool onePlainName = !word.empty() && mAt == scan;
+					if (!onePlainName) {
+						mAt = nameAt;
+						fail("a handler takes at most one parameter, naming the value the "
+						     "widget passes it");
+					}
+					takeParameter(word, nameAt);
+				}
+
+				size_t after = scan + 1;
+				while (after < mSource.size() &&
+				       std::isspace(static_cast<unsigned char>(mSource[after]))) ++after;
+				if (mSource.compare(after, 2, "=>") == 0) { mAt = after + 2; return; }
+				mAt = start;
 			}
 
 			void parseBlock() {
@@ -141,6 +201,18 @@ namespace RDA::Layout {
 				skipSpace();
 				if (const std::string name = tryStateName(); !name.empty()) {
 					skipSpace();
+					// Written by the engine every frame, so a write here would be
+					// overwritten before anyone saw it. Said plainly rather than
+					// allowed and ignored.
+					const bool writesToIt =
+						(peek() == '=' && peek(1) != '=') ||   // and not ==
+						startsWith("+=") || startsWith("-=") ||
+						startsWith("*=") || startsWith("/=") ||
+						startsWith("++") || startsWith("--");
+					if (isEngineName(name) && writesToIt) {
+						fail("state." + name + " is the engine's, and read-only: it is "
+						     "rewritten every frame from the window itself");
+					}
 					const char* compound = nullptr;
 					if      (startsWith("+=")) compound = "+";
 					else if (startsWith("-=")) compound = "-";
@@ -263,7 +335,19 @@ namespace RDA::Layout {
 				if (root != kStateRoot || peek() != '.') { mAt = start; return {}; }
 				++mAt;
 				if (!isIdentifierStart(peek())) { mAt = start; return {}; }
-				return readIdentifier();
+				const std::string name = readIdentifier();
+				// The engine's own namespace is the one place a second level is read.
+				if (name == kEngineNamespace && peek() == '.') {
+					++mAt;
+					if (!isIdentifierStart(peek())) { mAt = start; return {}; }
+					return name + "." + readIdentifier();
+				}
+				return name;
+			}
+
+			static bool isEngineName(const std::string& name) {
+				const std::string prefix = std::string(kEngineNamespace) + ".";
+				return name.compare(0, prefix.size(), prefix) == 0;
 			}
 
 			static bool isIdentifierStart(char c) {
@@ -311,13 +395,63 @@ namespace RDA::Layout {
 						fail("calls are not compiled yet -- a binding is an expression over "
 						     "state, so move the work into the backend and bind to the result");
 					}
+					// The handler's parameter. Checked before state, so a handler that
+					// names its parameter `state` reads the parameter -- which is what the
+					// same code would do in TypeScript.
+					if (!mParameter.empty() && word == mParameter) {
+						emit(Op::PushEvent);
+						return;
+					}
+					// commands.<name>() -- asking the application to do the work. Only in
+					// a handler: a value binding is evaluated whenever the interface is
+					// drawn, and something that changes the world cannot live there.
+					// item.<column> -- the row this template is showing. Resolved to a
+					// column index when the layout loads, so nothing is looked up by name
+					// while scrolling.
+					if (!mRowParam.empty() && word == mRowParam && peek() == '.') {
+						++mAt; // the dot
+						skipSpace();
+						if (!isIdentifierStart(peek())) {
+							fail("expected a column name after '" + mRowParam + ".'");
+						}
+						const std::string column = readIdentifier();
+						skipSpace();
+						if (peek() == '.' || peek() == '[') {
+							fail("a row is one level deep: " + mRowParam + ".<column>");
+						}
+						emit(Op::PushRowField, signalSlot(kColumnMark + column));
+						return;
+					}
+					if (word == kCommandRoot && peek() == '.') {
+						if (!mIsHandler) {
+							mAt = start;
+							fail("a value binding cannot call a command -- it is evaluated "
+							     "every time the interface is drawn, and a command changes "
+							     "something. Call it from an event handler instead");
+						}
+						++mAt; // the dot
+						skipSpace();
+						if (!isIdentifierStart(peek())) fail("expected a command name after 'commands.'");
+						const std::string name = readIdentifier();
+						skipSpace();
+						if (!take("(")) fail("a command has to be called: write commands." + name + "()");
+						skipSpace();
+						if (!take(")")) {
+							fail("a command takes no arguments -- write what it needs into "
+							     "state first, and let it read that");
+						}
+						emit(Op::CallCommand, signalSlot(kCommandMark + name));
+						return;
+					}
 					if (word == kStateRoot && peek() == '.') {
 						mAt = start;
 						const std::string name = tryStateName();
 						if (name.empty()) fail("expected a name after 'state.'");
 						skipSpace();
 						if (peek() == '.' || peek() == '[') {
-							fail("only a single level of state is readable: state.<name>");
+							fail("only a single level of state is readable: state.<name>. "
+							     "The exception is state.rda.<name>, which is what the "
+							     "engine knows about itself");
 						}
 						emit(Op::LoadSignal, signalSlot(name));
 						return;
@@ -431,13 +565,21 @@ namespace RDA::Layout {
 			const std::string& mSource;
 			size_t             mAt = 0;
 			Program            mProgram;
+			// A handler is called with the widget's new value; a value binding is not.
+			const bool         mIsHandler = false;
+			// The name the handler gave that value, empty when it named none. Reading it
+			// compiles to PushEvent.
+			std::string        mParameter;
+			// The row template's parameter, when this is one of its bindings.
+			const std::string  mRowParam;
 		};
 	}
 
-	ParseResult parseBinding(const std::string& source) {
+	ParseResult parseBinding(const std::string& source, bool isHandler,
+	                         const std::string& rowParam) {
 		ParseResult result;
 		try {
-			Parser parser(source);
+			Parser parser(source, isHandler, rowParam);
 			result.program = parser.parse();
 			result.ok = true;
 		} catch (const Failure& failure) {

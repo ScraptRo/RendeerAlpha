@@ -1,4 +1,4 @@
-#include "TestHarness.h"
+﻿#include "TestHarness.h"
 #include <Core/Signals.h>
 #include <Layout/Expression.h>
 #include <Layout/ExpressionParser.h>
@@ -252,4 +252,57 @@ TEST(a_program_can_be_read_back) {
 	CHECK(listing.find("load count") != std::string::npos);
 	CHECK(listing.find("push.num 1") != std::string::npos);
 	CHECK(listing.find("add") != std::string::npos);
+}
+
+// ---- the engine's own namespace ------------------------------------------------------
+//
+// state.rda.<name> is the one place a binding reads two levels deep. It is not sugar for
+// anything: the signal is literally called "rda.width", and an identifier cannot contain
+// a dot, so nothing an application declares can collide with it.
+
+TEST(the_engine_namespace_reads_two_levels) {
+	signals().define("rda.width", 1280.0);
+	Run r = run("() => state.rda.width");
+	CHECK(r.parsed);
+	CHECK(r.ran);
+	CHECK_EQ(r.number(), 1280.0);
+}
+
+TEST(the_engine_namespace_interns_as_one_dotted_name) {
+	const ParseResult parsed = parseBinding("() => state.rda.height");
+	CHECK(parsed.ok);
+	CHECK_EQ(parsed.program.signals.size(), size_t(1));
+	CHECK(parsed.program.signals[0] == "rda.height");
+}
+
+TEST(the_engine_namespace_is_read_only) {
+	// Rewritten from the window every frame, so a write would be overwritten before
+	// anyone saw it. Refused where it is written instead.
+	const ParseResult assigned = parseBinding("() => state.rda.width = 10", true);
+	CHECK(!assigned.ok);
+	CHECK(assigned.error.find("read-only") != std::string::npos);
+
+	const ParseResult compound = parseBinding("() => state.rda.width += 10", true);
+	CHECK(!compound.ok);
+
+	const ParseResult increment = parseBinding("() => state.rda.width++", true);
+	CHECK(!increment.ok);
+}
+
+TEST(comparing_the_engine_namespace_is_not_a_write) {
+	// `==` starts with the same character as `=`, and the read-only check has to tell
+	// them apart or every responsive layout stops compiling.
+	Run r = run("() => state.rda.width == 0 ? 1 : 2");
+	CHECK(r.parsed);
+	CHECK(r.ran);
+}
+
+TEST(a_binding_still_refuses_other_nesting) {
+	const ParseResult nested = parseBinding("() => state.user.name");
+	CHECK(!nested.ok);
+	CHECK(nested.error.find("single level") != std::string::npos);
+
+	// And a third level under the engine's namespace is no different.
+	const ParseResult deeper = parseBinding("() => state.rda.width.value");
+	CHECK(!deeper.ok);
 }

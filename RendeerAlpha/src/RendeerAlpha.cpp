@@ -1,19 +1,28 @@
 ﻿#include <RendeerAlpha.h>
 #include <Layout/Bindings.h>
+#include <Core/Signals.h>
 #include <unordered_map>
 #include <Core/Core.h>
 #include <Core/LoopWork.h>
+#include <Core/Utf8.h>
 #include <Logger/Logger.h>
 #include <Core/Framework.h>
 #include <Core/BackendConnector.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/Renderer.h>
 #include <GraphicalObjects/Scene.h>
+#include <GraphicalObjects/Viewports.h>
+#include <GraphicalSrc/FrameBuffer.h>
 #include <GraphicalObjects/Mesh.h>
 #include <GraphicalObjects/Texture.h>
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <cstring>
+#include <Core/Location.h>
+#if !defined(_WIN32)
+	#include <unistd.h>
+#endif
 #include <new>
 
 #define GLFW_INCLUDE_VULKAN
@@ -31,7 +40,13 @@ namespace RDA {
 	// Loop control. gRunning is cleared by rendeerStop(); gLoopThread only exists in
 	// Owned mode, where rendeerWait() joins it.
 	std::atomic<bool> gRunning{ false };
-	std::thread       gLoopThread;
+	// A pointer that is never deleted rather than a std::thread with static storage.
+	// If something calls exit() from the loop thread itself -- Xlib's default error
+	// handler does exactly that, after printing one line -- static destruction runs on
+	// that thread, and destroying a joinable std::thread is std::terminate: the one
+	// readable line is followed by "terminate called without an active exception" and
+	// a core dump. Leaked, the process ends the way exit() meant it to.
+	std::thread*      gLoopThread = nullptr;
 
 	// OnDemand redraw: set by rendeerRequestRedraw(), consumed once per frame. Atomic
 	// because it may be requested from another thread while the loop runs in Owned mode.
@@ -65,6 +80,7 @@ namespace RDA {
 	struct DeferredRendererSetup {
 		std::string  fontPath;
 		float        fontHeight = 18.0f;
+		std::vector<float> fontSizes;
 		ViewportMode viewportMode = ViewportMode::Fullscreen;
 		bool         guiEnabled = true;
 	};
@@ -122,8 +138,16 @@ namespace RDA {
 		// carries key repeats (held backspace/arrows) that the polled edges miss.
 		for (const InputEvent& e : in.events()) {
 			if (e.type == InputEventType::Char) {
-				if (e.codepoint >= 32 && e.codepoint < 127) {
-					gi.typed.push_back(static_cast<char>(e.codepoint));
+				// GLFW reports a codepoint; GuiInput::typed is UTF-8, which is what a
+				// text field stores and what the atlas looks glyphs up by. This used to
+				// keep only 32..126, so a keyboard laid out for any language but English
+				// dropped half of what it typed before anything could draw it.
+				//
+				// Control characters are still dropped -- 0x7F included, which is Delete
+				// arriving as a character on some layouts, and would otherwise be typed
+				// into the field as text.
+				if (e.codepoint >= 32 && e.codepoint != 127) {
+					Utf8::encode(e.codepoint, gi.typed);
 				}
 			} else if (e.type == InputEventType::Key &&
 			           (e.action == InputAction::Press || e.action == InputAction::Repeat)) {
@@ -142,6 +166,11 @@ namespace RDA {
 					gi.editKeys.insert(GuiEditKey::Enter);
 					break;
 				case GLFW_KEY_TAB:       gi.editKeys.insert(GuiEditKey::Tab);        break;
+				case GLFW_KEY_ESCAPE:    gi.editKeys.insert(GuiEditKey::Escape);     break;
+				// Space reaches a text field as typed text and must go on doing so; it is
+				// also how a keyboard presses a button, so it arrives as both and the
+				// widget that has the keyboard decides which one it was.
+				case GLFW_KEY_SPACE:     gi.editKeys.insert(GuiEditKey::Space);      break;
 				case GLFW_KEY_C: if (gi.ctrl) gi.copy = true;      break;
 				case GLFW_KEY_X: if (gi.ctrl) gi.cut = true;       break;
 				case GLFW_KEY_V: if (gi.ctrl) gi.paste = true;     break;
@@ -284,6 +313,19 @@ namespace RDA {
 	static void engineBringUp(const AppConfig& config) {
 		applicationInfo = config.app;
 		gWindowDependent = config.app.windowDependent;
+#if !defined(_WIN32)
+		// Not a refusal, because a root-owned display exists; a warning, because the
+		// common case is `sudo` under an ordinary desktop session. The X server then
+		// runs as the user and cannot attach shared memory a root client created, and
+		// Mesa's software presentation is shared memory -- the first frame ends with
+		// "BadAccess (attempt to access private resource denied)" and exit(1). Nothing
+		// this engine does needs root, so the fix is to run it without.
+		if (geteuid() == 0) {
+			RDA_LOG_WARNING("running as root. If this is `sudo` under a desktop session, "
+			                "the X server will refuse the first frame (BadAccess); run "
+			                "it as the user who owns the session");
+		}
+#endif
 		InitGlfw();
 		gGlfwReady.store(true); // from here on, another thread may post a wake-up event
 		if (!vulkan_Instance_Init(applicationInfo)) {
@@ -292,8 +334,15 @@ namespace RDA {
 		if (!initDeviceHandler()) {
 			RDA_RUNTIME_ERROR("Failed to init the device handler");
 		}
-		gRendererSetup.fontPath = config.gui.fontPath;
+		// The engine's own files: as given if they exist beside the application, and
+		// otherwise beside the engine itself, which is where a staged bin/ keeps them.
+		// Resolved once here so every later use -- a second window's renderer included
+		// -- sees the answer rather than the question.
+		const std::string fontPath = resolveEngineAsset(config.gui.fontPath);
+		const std::string languagesPath = resolveEngineAsset(config.gui.languagesPath);
+		gRendererSetup.fontPath = fontPath;
 		gRendererSetup.fontHeight = config.gui.fontHeight;
+		gRendererSetup.fontSizes = config.gui.fontSizes;
 		gRendererSetup.viewportMode = config.viewportMode;
 		gRendererSetup.guiEnabled = config.gui.enabled;
 
@@ -315,7 +364,8 @@ namespace RDA {
 			}
 
 			gRendererReady = true;
-			if (!gRenderer.init(*mainWindow, config.gui.fontPath, config.gui.fontHeight,
+			if (!gRenderer.init(*mainWindow, fontPath, config.gui.fontHeight,
+			                   config.gui.fontSizes,
 			                    config.viewportMode, config.gui.enabled)) {
 				RDA_RUNTIME_ERROR("Failed to init the renderer");
 			}
@@ -329,8 +379,8 @@ namespace RDA {
 
 				// Load the optional XML widget theme + syntax languages. Languages first,
 				// so a theme variant can reference a language this file defines.
-				if (!config.gui.languagesPath.empty()) {
-					mainWindow->gui().syntax().loadFromFile(config.gui.languagesPath);
+				if (!languagesPath.empty()) {
+					mainWindow->gui().syntax().loadFromFile(languagesPath);
 				}
 				if (!config.gui.themePath.empty()) {
 					mainWindow->gui().theme().loadFromFile(config.gui.themePath);
@@ -348,8 +398,81 @@ namespace RDA {
 		}
 	}
 
+	// What the engine knows about itself, as signals a layout can read: state.rda.width
+	// and state.rda.height, in the same pixels every widget is laid out in.
+	//
+	// Defined here rather than by an application, because they are the engine's answer
+	// and not the application's -- and defined during bring-up, before onStart, so the
+	// first layout to read one finds it instead of inventing it as an undeclared number.
+	//
+	// Updated every frame and not on a resize callback: a callback is one more thing to
+	// keep in step with minimise, maximise, a monitor change and a compositor that
+	// resizes without telling anyone. Signals::set already refuses a write that changes
+	// nothing, so a still window costs two comparisons a frame and wakes no bindings.
+	static uint32_t gWidthSignal = kNoSignal, gHeightSignal = kNoSignal;
+	static uint32_t gWindowSignalWidth = 0, gWindowSignalHeight = 0;
+
+	static void publishWindowSignals() {
+		const uint32_t width = mainWindow ? mainWindow->cachedExtent().width : 0;
+		const uint32_t height = mainWindow ? mainWindow->cachedExtent().height : 0;
+		if (gWidthSignal != kNoSignal &&
+		    width == gWindowSignalWidth && height == gWindowSignalHeight) {
+			return;
+		}
+		gWindowSignalWidth = width;
+		gWindowSignalHeight = height;
+
+		// Created once, at zero, and written only through set() afterwards. define()
+		// carries a value and installs it *without* marking observers dirty -- which is
+		// right for declaring state and wrong for changing it, so calling it every frame
+		// updated the number while no binding ever heard about it. The window resized,
+		// the label did not, and nothing anywhere said so.
+		if (gWidthSignal == kNoSignal) {
+			gWidthSignal = signals().define("rda.width", 0.0);
+			gHeightSignal = signals().define("rda.height", 0.0);
+		}
+		signals().set(gWidthSignal, static_cast<double>(width));
+		signals().set(gHeightSignal, static_cast<double>(height));
+	}
+
+	// A second run in the same process gets its own signal table, so the ids above do
+	// not survive one.
+	static void forgetWindowSignals() {
+		gWidthSignal = kNoSignal;
+		gHeightSignal = kNoSignal;
+		gWindowSignalWidth = 0;
+		gWindowSignalHeight = 0;
+	}
+
 	// Reverse of engineBringUp, on the same thread. Everything GPU-side is released
 	// while the device and allocator are still alive.
+	// Textures whose owner is gone, waiting for a safe moment. See rendeerRetireTexture.
+	static std::vector<std::unique_ptr<Texture>> gRetiredTextures;
+
+	// Drained at the top of a frame: by now the frame that referenced them has been
+	// recorded and submitted, and waiting makes sure it has also finished.
+	static void drainRetiredTextures() {
+		if (gRetiredTextures.empty()) return;
+		gRenderer.waitIdle();
+		for (auto& texture : gRetiredTextures) {
+			if (!texture) continue;
+			gRenderer.forgetTexture(texture.get());
+			texture->destroy();
+		}
+		gRetiredTextures.clear();
+	}
+
+	// The same, for teardown. The GUI is already destroyed by the time the windows are, so
+	// there are no descriptor sets left to release -- only images to free, and only while
+	// there is still an allocator to free them with. A widget tree is destroyed with the
+	// window that owns it, which is after the renderer has gone and before the device has.
+	static void destroyRetiredTextures() {
+		for (auto& texture : gRetiredTextures) {
+			if (texture) texture->destroy();
+		}
+		gRetiredTextures.clear();
+	}
+
 	static void engineTearDown() {
 		if (mainWindow) {
 			gRenderer.waitIdle();
@@ -373,6 +496,12 @@ namespace RDA {
 			delete mainWindow;
 			mainWindow = nullptr;
 		}
+
+		// Closing the windows destroyed the widget trees they own, and anything in one of
+		// those that held a texture has just put it here. This is the last moment the
+		// allocator exists to free it -- past this, VMA rightly asserts that allocations
+		// outlived the block they came from.
+		destroyRetiredTextures();
 
 		destroyDeviceHandler();
 
@@ -402,6 +531,14 @@ namespace RDA {
 	// pumping events, and serviceWhileModal() calls it from inside an OS modal loop where
 	// the pump cannot return. Returns whether anything was drawn.
 	static bool runFrame(const AppConfig& config, float dtSeconds) {
+		// Before anything is walked or drawn, so nothing this frame can still be pointing
+		// at what is about to be destroyed.
+		drainRetiredTextures();
+
+		// Before the walk, so a binding that reads the window's size is evaluated
+		// against this frame's rather than the last one's.
+		publishWindowSignals();
+
 		// Reused across frames: its `typed` string and `editKeys` vector keep their
 		// capacity, so a frame with keyboard activity does not allocate. Function-local
 		// rather than a loop local because the frame is now called from two places.
@@ -409,6 +546,24 @@ namespace RDA {
 
 		// Every window feeds its own input into its own GUI.
 		if (config.gui.enabled) {
+			// Which viewport holds the GPU is settled again every frame, because the
+			// interface may have changed between them -- a route that swapped one
+			// viewport for another has to be able to hand the target over.
+			viewports().beginFrame();
+
+			// A C++ callback needs somewhere to record into, and in Fullscreen mode the
+			// scene goes straight to the window instead. Said once: it is a one-line
+			// config change, and the symptom otherwise is a viewport that stays empty.
+			if (config.viewportMode != ViewportMode::Widget && !viewports().empty()) {
+				static bool warnedAboutMode = false;
+				if (!warnedAboutMode && viewports().drawnByCode(viewports().gpuViewport())) {
+					warnedAboutMode = true;
+					RDA_LOG_WARNING("viewport: a draw callback is registered but viewportMode is "
+					                "Fullscreen, so there is no target to record into. Set "
+					                "config.viewportMode = ViewportMode::Widget.");
+				}
+			}
+
 			// Widget viewport: size the offscreen scene target to the Viewport widget's
 			// rect from last frame. Only the main window shows the scene, so only it asks.
 			if (mainWindow && config.viewportMode == ViewportMode::Widget) {
@@ -427,7 +582,21 @@ namespace RDA {
 			//
 			// The redraw request is what makes the change visible in an on-demand window,
 			// which would otherwise have no reason to look again.
-			if (Layout::bindings().applyDirty() > 0) rendeerRequestRedraw();
+			if (Layout::bindings().applyDirty() > 0) {
+				// The tree has to be walked again, not just presented again.
+				//
+				// The retained cache decides whether to walk by looking at input -- the
+				// pointer moving, a button, a key, a focused caret. A binding writing a
+				// widget property is none of those, so without this the frame renders the
+				// geometry it already had and the change does not appear until something
+				// unrelated happens to move the mouse. That is what "the interface takes
+				// a second or two to catch up" was.
+				for (auto& node : windowList) {
+					Window* window = Window::getRefFromNode(node);
+					if (window && window->windowIsUp()) window->gui().markDirty();
+				}
+				rendeerRequestRedraw();
+			}
 
 			for (auto& node : windowList) {
 				Window* window = Window::getRefFromNode(node);
@@ -483,7 +652,13 @@ namespace RDA {
 				draw = requested || windowRequested || window->wasResized();
 				// With no GUI there is nothing for the engine to detect a change in, so
 				// an on-demand app drives its own frames with rendeerRequestRedraw().
-				if (!draw && config.gui.enabled) draw = window->gui().drawChanged();
+				//
+				// A window with something still moving earns frames until it has arrived,
+				// and then goes quiet again. That is the whole cost of animation in an
+				// on-demand loop: frames while something is happening, none while not.
+				if (!draw && config.gui.enabled) {
+					draw = window->gui().drawChanged() || window->gui().animating();
+				}
 			}
 			if (!draw) { ++gWindowFramesSkipped; continue; }
 
@@ -545,6 +720,7 @@ namespace RDA {
 
 	static void engineMain(AppConfig config) {
 		engineBringUp(config);
+		publishWindowSignals();
 
 		// Before onStart, not after: an application that spawns a thread there can ask for
 		// a resource before the loop has run a single frame, and until this is set such a
@@ -601,8 +777,24 @@ namespace RDA {
 			             << ", reused: " << cache.reused);
 		}
 
+		// The GPU is finished before the application is asked to clean up.
+		//
+		// An application that recorded into a <viewport> owns Vulkan objects -- a
+		// pipeline, a buffer, a descriptor set -- and onShutdown is where it destroys
+		// them. Destroying one a frame in flight is still using is a validation error and
+		// a real hazard, and every such application would have to know to wait first. It
+		// is one call here and a whole class of mistake nobody has to hear about.
+		gRenderer.waitIdle();
 		if (config.onShutdown) config.onShutdown();
 
+		// The application just let go of its widget trees, so anything they owned is in
+		// the queue with no frame left to drain it. Emptied here, while there is still a
+		// device and an allocator to free it with -- left to static teardown, VMA asserts
+		// that allocations outlived the block they came from, which is exactly true.
+		drainRetiredTextures();
+
+		forgetWindowSignals();
+		viewports().forget();
 		engineTearDown();
 	}
 }
@@ -611,7 +803,8 @@ void rendeerRun(const RDA::AppConfig& config) {
 	if (config.threadMode == RDA::ThreadMode::Caller) {
 		RDA::engineMain(config);
 	} else {
-		RDA::gLoopThread = std::thread(RDA::engineMain, config);
+		delete RDA::gLoopThread; // a previous run, already joined by rendeerWait()
+		RDA::gLoopThread = new std::thread(RDA::engineMain, config);
 	}
 }
 
@@ -628,6 +821,14 @@ void rendeerRequestRedraw() {
 	if (RDA::gGlfwReady.load()) glfwPostEmptyEvent();
 }
 
+void rendeerInterfaceChanged() {
+	for (auto& node : RDA::windowList) {
+		RDA::Window* window = RDA::Window::getRefFromNode(node);
+		if (window && window->windowIsUp()) window->gui().markDirty();
+	}
+	rendeerRequestRedraw();
+}
+
 void rendeerRequestRedraw(RDA::Window* window) {
 	if (!window) { rendeerRequestRedraw(); return; } // null means "all of them"
 	window->requestRedraw();
@@ -636,10 +837,12 @@ void rendeerRequestRedraw(RDA::Window* window) {
 }
 
 void rendeerWait() {
-	if (RDA::gLoopThread.joinable()) {
-		RDA::gLoopThread.join();
+	if (RDA::gLoopThread && RDA::gLoopThread->joinable()) {
+		RDA::gLoopThread->join();
 	}
 }
+
+bool rendeerRunning() { return RDA::gRunning.load(); }
 
 RDA::Window* rendeerCreateWindow(uint32_t width, uint32_t height, const char* title,
                                  bool vsync) {
@@ -665,6 +868,7 @@ RDA::Window* rendeerCreateWindow(uint32_t width, uint32_t height, const char* ti
 	// what brings the renderer up. Every window after this shares it.
 	if (!gRendererReady) {
 		if (!gRenderer.init(*window, gRendererSetup.fontPath, gRendererSetup.fontHeight,
+			                   gRendererSetup.fontSizes,
 		                    gRendererSetup.viewportMode, gRendererSetup.guiEnabled)) {
 			RDA_LOG_ERROR("Failed to init the renderer against the first window");
 			window->closeWindow();
@@ -701,9 +905,64 @@ void rendeerForgetTexture(const RDA::Texture* texture) {
 	if (texture) RDA::gRenderer.forgetTexture(texture);
 }
 
+void rendeerRetireTexture(std::unique_ptr<RDA::Texture> texture) {
+	if (texture) RDA::gRetiredTextures.push_back(std::move(texture));
+}
+
+namespace RDA {
+	// The handles a viewport callback needs to build Vulkan work of its own. Read from
+	// the live device rather than cached, so a call before the engine is up returns
+	// nulls instead of something stale.
+	ViewportGpu viewportGpu() {
+		ViewportGpu gpu;
+		GPUInfo& info = getGPU();
+		gpu.instance = appInstance;
+		gpu.physicalDevice = info.PDevice;
+		gpu.device = info.LDevice;
+		gpu.graphicsQueue = info.graphicsQueue;
+		gpu.graphicsFamily = info.graphicsFamily;
+		gpu.allocator = getAllocator();
+		gpu.framesInFlight = Renderer::MAX_FRAMES_IN_FLIGHT;
+		gpu.renderPass = gRenderer.sceneRenderPass();
+		gpu.colorFormat = gRenderer.sceneColorFormat();
+		if (info.PDevice != VK_NULL_HANDLE) gpu.depthFormat = FrameBuffer::findDepthFormat();
+		return gpu;
+	}
+}
+
 RDA::Window* getMainWindow() {
 	return RDA::mainWindow;
 }
+
+// Guarded like the list it filters: validationLayers and the logger only exist in a
+// Debug build, and nothing calls this from a Release one.
+#if _DEBUG
+const std::vector<const char*>& enabledValidationLayers() {
+	static const std::vector<const char*> enabled = [] {
+		uint32_t count = 0;
+		vkEnumerateInstanceLayerProperties(&count, nullptr);
+		std::vector<VkLayerProperties> present(count);
+		if (count) vkEnumerateInstanceLayerProperties(&count, present.data());
+
+		std::vector<const char*> out;
+		for (const char* wanted : validationLayers) {
+			bool found = false;
+			for (const VkLayerProperties& layer : present) {
+				if (std::strcmp(layer.layerName, wanted) == 0) { found = true; break; }
+			}
+			if (found) {
+				out.push_back(wanted);
+			} else {
+				RDA_LOG_WARNING("Validation layer " << wanted << " is not installed; running "
+				                "without it. On Debian and Ubuntu it is the package "
+				                "vulkan-validationlayers; elsewhere it is part of the Vulkan SDK.");
+			}
+		}
+		return out;
+	}();
+	return enabled;
+}
+#endif
 
 static bool vulkan_Instance_Init(RDA::AppInfo& pInfo) {
 	VkApplicationInfo appInfo{};
@@ -729,8 +988,9 @@ static bool vulkan_Instance_Init(RDA::AppInfo& pInfo) {
 	createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
 	RDA_DEBUG_FUNC(
 		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
-		createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-		createInfo.ppEnabledLayerNames = validationLayers.data();
+		const std::vector<const char*>& layers = enabledValidationLayers();
+		createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
+		createInfo.ppEnabledLayerNames = layers.data();
 		populateDebugMessengerCreateInfo(debugCreateInfo);
 		createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
 	);

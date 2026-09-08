@@ -1,9 +1,11 @@
 ﻿#include <Layout/TypeEmitter.h>
 #include <Layout/StateSchema.h>
 #include <Layout/ThemeCompiler.h>
+#include <Layout/ThemeSchema.h>
 #include <Layout/WidgetSchema.h>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <set>
@@ -39,6 +41,11 @@ namespace RDA::Layout {
 			return text;
 		}
 
+		// "products" -> "RdaProductsRow"
+		std::string rowTypeName(const std::string& table) {
+			return "Rda" + capitalise(table) + "Row";
+		}
+
 		std::string variantTypeName(const std::string& element) {
 			return "Rda" + capitalise(element) + "Variant";
 		}
@@ -56,6 +63,26 @@ namespace RDA::Layout {
 			return out.empty() ? "string" : out;
 		}
 
+		// Every word, and every word with an offset after it. The union is written out
+		// rather than named, because each property accepts a different set of words --
+		// a child's alignment has "auto" and a label's has no "stretch".
+		std::string alignUnion(const char* values) {
+			std::string out;
+			std::string word;
+			std::istringstream stream(values ? values : "");
+			while (std::getline(stream, word, '|')) {
+				if (word.empty()) continue;
+				if (!out.empty()) out += " | ";
+				out += "\"" + word + "\"";
+			}
+			std::istringstream again(values ? values : "");
+			while (std::getline(again, word, '|')) {
+				if (word.empty() || word == "auto") continue;   // nudging "auto" means nothing
+				out += " | `" + word + "${\"+\" | \"-\"}${number}`";
+			}
+			return out.empty() ? "string" : out;
+		}
+
 		std::string typeExpression(const PropDesc& prop) {
 			switch (prop.type) {
 			case PropType::String:  return "string";
@@ -63,10 +90,16 @@ namespace RDA::Layout {
 			case PropType::Bool:    return "boolean";
 			case PropType::Size:    return "RdaSize";
 			case PropType::Enum:    return unionFromList(prop.values);
+			case PropType::Align:   return alignUnion(prop.values);
 			case PropType::Variant:
 				return variantTypeName(prop.values ? prop.values : "");
 			case PropType::Event:
-				return "RdaHandler";
+				// An event that hands over a value accepts a handler naming it and one
+				// ignoring it, which is what the runtime does: the value is read only if
+				// the handler asked for it.
+				return (prop.values && *prop.values)
+					? std::string("RdaValueHandler<") + prop.values + ">"
+					: std::string("RdaHandler");
 			}
 			return "unknown";
 		}
@@ -77,7 +110,7 @@ namespace RDA::Layout {
 			// Every value property accepts a binding as well as a constant, because the
 			// compiler accepts one. A type that said otherwise would reject exactly the
 			// code this pipeline exists for. Events are already thunks.
-			if (prop.type == PropType::Event) out << "RdaHandler";
+			if (prop.type == PropType::Event) out << typeExpression(prop);
 			else out << "RdaBound<" << typeExpression(prop) << ">";
 			out << ";\n";
 		}
@@ -119,8 +152,20 @@ namespace RDA::Layout {
 			       "// `rda types` to have them checked against the variants it defines.\n";
 		}
 		out << "\n"
-		       "/** A number of pixels, or a word a layout container understands. */\n"
-		       "type RdaSize = number | \"content\" | \"fill\" | `fill:${number}`;\n\n";
+		       "/**\n"
+		       " * A number of pixels, or a word a layout container understands.\n"
+		       " *\n"
+		       " * `\"fill:2\"` takes twice the share of a plain `fill`. Either word may carry\n"
+		       " * an offset -- `\"content-23\"`, `\"fill-40\"` -- which is applied after the\n"
+		       " * layout has resolved the word, and which a binding may compute:\n"
+		       " *\n"
+		       " *   width={() => `content-${state.gap}`}\n"
+		       " */\n"
+		       "type RdaSize =\n"
+		       "\tnumber | \"content\" | \"fill\" | `fill:${number}`\n"
+		       "\t| `content${\"+\" | \"-\"}${number}`\n"
+		       "\t| `fill${\"+\" | \"-\"}${number}`\n"
+		       "\t| `fill:${number}${\"+\" | \"-\"}${number}`;\n\n";
 
 		out << "/**\n"
 		       " * A property value: either a constant, or a binding that computes one.\n"
@@ -131,7 +176,13 @@ namespace RDA::Layout {
 		       " */\n"
 		       "type RdaBound<T> = T | (() => T);\n\n"
 		       "/** An event handler. Compiled like a binding, and may write state. */\n"
-		       "type RdaHandler = () => unknown;\n\n";
+		       "type RdaHandler = () => unknown;\n\n"
+		       "/**\n"
+		       " * A handler for an event that carries a value -- the new text of a field,\n"
+		       " * the new state of a checkbox. Naming the parameter is optional: a handler\n"
+		       " * that does not want the value simply takes none.\n"
+		       " */\n"
+		       "type RdaValueHandler<T> = ((value: T) => unknown) | (() => unknown);\n\n";
 
 		// One union per theme element that a `variant` prop points at, so a button cannot
 		// be given a text field variant by accident.
@@ -160,7 +211,27 @@ namespace RDA::Layout {
 
 		out << "\n/** Accepted by every element. */\ninterface RdaCommonProps {\n";
 		for (size_t i = 0; i < commonCount; ++i) writeProp(out, common[i], "\t");
+		// Named here because JSX.ElementChildrenAttribute makes TypeScript look for it,
+		// and every element may have children -- a <label> simply has none to give.
+		out << "\t/** Nested elements. */\n\tchildren?: unknown;\n";
 		out << "}\n\n";
+
+		// What the engine publishes about itself. Emitted whether or not the application
+		// declared any state of its own, because it exists either way.
+		out << "/**\n"
+		       " * What the engine knows about itself, under `state.rda`.\n"
+		       " *\n"
+		       " * Read-only, and rewritten every frame from the window -- so a binding\n"
+		       " * that reads one follows a resize without asking for anything:\n"
+		       " *\n"
+		       " *   <stack arrange={() => state.rda.width < 700 ? \"vertical\" : \"horizontal\"}>\n"
+		       " */\n"
+		       "interface RdaEngineState {\n"
+		       "\t/** the window's width in pixels, the same ones a widget is sized in */\n"
+		       "\treadonly width: number;\n"
+		       "\t/** the window's height in pixels */\n"
+		       "\treadonly height: number;\n"
+		       "}\n\n";
 
 		if (state.ok && !state.empty()) {
 			out << "/**\n"
@@ -173,7 +244,15 @@ namespace RDA::Layout {
 			for (const StateField& field : state.fields) {
 				if (!field.doc.empty()) out << "\t/** " << field.doc << " */\n";
 				out << "\t" << field.name << ": ";
-				switch (field.type) {
+				if (!field.choices.empty()) {
+					// A field that can only hold certain words is typed as those words, so
+					// `state.route = "setings"` is an error where it is written rather than
+					// a signal quietly holding a name nothing routes to.
+					for (size_t c = 0; c < field.choices.size(); ++c) {
+						if (c) out << " | ";
+						out << "\"" << field.choices[c] << "\"";
+					}
+				} else switch (field.type) {
 				case StateType::Number: out << "number"; break;
 				case StateType::Bool:   out << "boolean"; break;
 				case StateType::Text:   out << "string"; break;
@@ -181,8 +260,15 @@ namespace RDA::Layout {
 				out << ";\n";
 				++result.stateCount;
 			}
-			out << "}\n\n"
-			       "declare const state: RdaState;\n\n";
+			out << "\t/** The engine's own values, not yours. See RdaEngineState. */\n"
+			       "\treadonly rda: RdaEngineState;\n"
+			       "}\n\n"
+			       "/**\n"
+			       " * Everything declared above, plus whatever a layout declared for itself\n"
+			       " * with signal(). A name this interface knows keeps its type; one it does\n"
+			       " * not is a local, and the layout compiler is what checks those.\n"
+			       " */\n"
+			       "declare const state: RdaState & Record<string, any>;\n\n";
 		} else {
 			out << "/**\n"
 			       " * Application state. A binding reads it as `state.<name>`.\n"
@@ -191,12 +277,185 @@ namespace RDA::Layout {
 			       " * `rda types` and a misspelled signal becomes an error here rather than\n"
 			       " * a warning when the layout loads.\n"
 			       " */\n"
-			       "declare const state: Record<string, any>;\n\n";
+			       "declare const state: { readonly rda: RdaEngineState } & Record<string, any>;\n\n";
 		}
 
+		// A row per declared table, and the union a template's parameter is typed as.
+		// With one table that union is exact. With several, a template narrows it by
+		// annotating its parameter -- which is the price of the element itself not being
+		// generic over the table it names.
+		if (state.ok && !state.tables.empty()) {
+			for (const StateTable& table : state.tables) {
+				if (!table.doc.empty()) out << "/** " << table.doc << " */\n";
+				out << "interface " << rowTypeName(table.name) << " {\n";
+				for (const StateField& column : table.columns) {
+					if (!column.doc.empty()) out << "\t/** " << column.doc << " */\n";
+					out << "\t" << column.name << ": ";
+					switch (column.type) {
+					case StateType::Number: out << "number"; break;
+					case StateType::Bool:   out << "boolean"; break;
+					case StateType::Text:   out << "string"; break;
+					}
+					out << ";\n";
+				}
+				out << "}\n\n";
+			}
+			out << "/** One row of whichever table a list names. */\ntype RdaRow = ";
+			for (size_t i = 0; i < state.tables.size(); ++i) {
+				if (i) out << " | ";
+				out << rowTypeName(state.tables[i].name);
+			}
+			out << ";\n\n";
+		} else {
+			out << "/**\n"
+			       " * One row of whichever table a list names. Loosely typed because no\n"
+			       " * table was declared; declare one and a column becomes an error here.\n"
+			       " */\n"
+			       "type RdaRow = Record<string, any>;\n\n";
+		}
+
+		// Commands are declared only when there are some. A layout that calls one nothing
+		// declared is then a type error naming an undefined `commands`, which is the same
+		// answer the compiler gives and better than a loosely typed object that accepts
+		// anything and fails at run time.
+		if (state.ok && !state.commands.empty()) {
+			out << "/**\n"
+			       " * Work the application can be asked to do, from " << statePath << ".\n"
+			       " *\n"
+			       " * Only callable from an event handler -- a value binding is evaluated\n"
+			       " * whenever the interface is drawn, and a command changes something. They\n"
+			       " * take no arguments: write what one needs into state first.\n"
+			       " */\n"
+			       "interface RdaCommands {\n";
+			for (const StateCommand& command : state.commands) {
+				if (!command.doc.empty()) out << "\t/** " << command.doc << " */\n";
+				out << "\t" << command.name << "(): void;\n";
+			}
+			out << "}\n\n"
+			       "declare const commands: RdaCommands;\n\n";
+		}
+
+		out << "/**\n"
+		       " * Declares a signal this layout owns: a panel being open, which tab is\n"
+		       " * selected. Read it as state.<name>, like any other.\n"
+		       " *\n"
+		       " * Scoped to this file, so two layouts may both have an `open`. Pass\n"
+		       " * { global: true } to put it in the namespace the application shares --\n"
+		       " * then it is the same signal C++ and every other layout see.\n"
+		       " */\n"
+		       "declare function signal(\n"
+		       "\tname: string,\n"
+		       "\tvalue: number | boolean | string,\n"
+		       "\toptions?: { global?: boolean },\n"
+		       "): void;\n\n";
+
+		// The colour helpers the compiler makes ambient. Declared here so a theme or a
+		// layout gets them checked and completed, rather than discovering them by
+		// accident or not at all.
+		out << "/**\n"
+		       " * Colour helpers, available without importing anything. They run while the\n"
+		       " * theme is compiled and are gone afterwards -- what ships is the string one\n"
+		       " * of them returned.\n"
+		       " *\n"
+		       " * A colour is \"#RGB\", \"#RRGGBB\" or \"#RRGGBBAA\". Anything else is a build\n"
+		       " * error naming the value that was not one.\n"
+		       " */\n"
+		       "declare function rgb(r: number, g: number, b: number): string;\n"
+		       "/** As rgb, with alpha from 0 to 1. */\n"
+		       "declare function rgba(r: number, g: number, b: number, a: number): string;\n"
+		       "/** Hue in degrees, saturation and lightness from 0 to 1. */\n"
+		       "declare function hsl(h: number, s: number, l: number): string;\n"
+		       "/** The same colour at a different opacity, 0 to 1. */\n"
+		       "declare function fade(colour: string, alpha: number): string;\n"
+		       "/** Blend two colours; t of 0 is the first, 1 is the second. */\n"
+		       "declare function mix(a: string, b: string, t: number): string;\n"
+		       "/** Toward white. */\n"
+		       "declare function lighten(colour: string, amount: number): string;\n"
+		       "/** Toward black. */\n"
+		       "declare function darken(colour: string, amount: number): string;\n"
+		       "/** The alpha of a colour, 0 to 1. */\n"
+		       "declare function alphaOf(colour: string): number;\n\n";
+
+		out << "/** A function that returns one element: <Card title=\"x\" />.\n"
+		       " *\n"
+		       " * Called while the layout is compiled; what it returns takes its place, so a\n"
+		       " * component leaves no trace in what ships. An id given at the call site wins\n"
+		       " * over the one the component gave its own root, which is what makes two of\n"
+		       " * them two widgets rather than one name twice.\n"
+		       " */\n"
+		       "declare type RdaComponent<P = {}> =\n"
+		       "\t(props: P & { children?: unknown }) => JSX.Element;\n\n";
+
+		// One interface per theme element, from the same table the theme compiler
+		// refuses unknown fields against -- so an editor underlines a typo before the
+		// build gets a chance to, and both are reading one declaration.
+		//
+		// Every field is optional: a variant overrides what it cares about and inherits
+		// the rest, which is the whole point of `base`.
+		out << "\n// ---- theme ----------------------------------------------------------\n"
+		       "//\n"
+		       "// Annotate a theme export with one of these and a misspelled field is an\n"
+		       "// error where it is written:\n"
+		       "//\n"
+		       "//   export const button: RdaButtonTheme = { primary: { normal: \"#3A6AD0\" } }\n"
+		       "\n";
+		size_t themeElements = 0;
+		const ThemeElementDesc* elements = themeSchema(themeElements);
+		size_t themeCommonCount = 0;
+		const ThemeFieldDesc* themeCommon = commonThemeFields(themeCommonCount);
+		size_t kindCount = 0;
+		const ThemeFieldDesc* kinds = syntaxFields(kindCount);
+
+		auto writeThemeField = [&out](const ThemeFieldDesc& field) {
+			if (field.doc && *field.doc) out << "\t/** " << field.doc << " */\n";
+			out << "\t" << field.name << "?: ";
+			switch (field.type) {
+			case ThemeFieldType::Colour: out << "string"; break;
+			case ThemeFieldType::Number: out << "number"; break;
+			case ThemeFieldType::Bool:   out << "boolean"; break;
+			case ThemeFieldType::Text:   out << "string"; break;
+			case ThemeFieldType::Syntax: out << "RdaSyntaxTheme"; break;
+			case ThemeFieldType::Enum: {
+				std::string_view rest = field.values ? field.values : "";
+				bool first = true;
+				while (!rest.empty()) {
+					const size_t bar = rest.find('|');
+					const std::string_view word = rest.substr(0, bar);
+					if (!first) out << " | ";
+					out << "\"" << word << "\"";
+					first = false;
+					if (bar == std::string_view::npos) break;
+					rest.remove_prefix(bar + 1);
+				}
+				if (first) out << "string";
+				break;
+			}
+			}
+			out << ";\n";
+		};
+
+		out << "/** One colour per token kind. */\ninterface RdaSyntaxTheme {\n";
+		for (size_t i = 0; i < kindCount; ++i) writeThemeField(kinds[i]);
+		out << "}\n\n";
+
+		for (size_t e = 0; e < themeElements; ++e) {
+			const ThemeElementDesc& element = elements[e];
+			std::string capitalised = element.name;
+			if (!capitalised.empty()) {
+				capitalised[0] = static_cast<char>(std::toupper(capitalised[0]));
+			}
+			if (element.doc && *element.doc) out << "/** " << element.doc << " */\n";
+			out << "interface Rda" << capitalised << "Style {\n";
+			for (size_t i = 0; i < element.fieldCount; ++i) writeThemeField(element.fields[i]);
+			for (size_t i = 0; i < themeCommonCount; ++i) writeThemeField(themeCommon[i]);
+			out << "}\n"
+			       "/** Variants of " << element.name << ", by name. */\n"
+			       "type Rda" << capitalised << "Theme = Record<string, Rda"
+			    << capitalised << "Style>;\n\n";
+		}
 		out << "/** The JSX factory. Rewritten into by esbuild; implemented by the layout compiler. */\n"
 		       "declare function h(\n"
-		       "\ttype: string,\n"
+		       "\ttype: string | RdaComponent<any>,\n"
 		       "\tprops: Record<string, unknown> | null,\n"
 		       "\t...children: unknown[]\n"
 		       "): JSX.Element;\n\n";
@@ -204,6 +463,11 @@ namespace RDA::Layout {
 		out << "declare namespace JSX {\n"
 		       "\t/** What an element expression evaluates to. Opaque on purpose. */\n"
 		       "\tinterface Element {}\n\n"
+		       "\t/** Which prop nested children arrive in, for a component that takes them. */\n"
+		       "\tinterface ElementChildrenAttribute { children: {} }\n\n"
+		       "\t/** Accepted on any element, component or not: the compiler reads it, so a\n"
+		       "\t *  component neither declares it nor ever sees it. */\n"
+		       "\tinterface IntrinsicAttributes { id?: string }\n\n"
 		       "\tinterface IntrinsicElements {\n";
 		for (size_t w = 0; w < widgetCount; ++w) {
 			const WidgetDesc& widget = widgets[w];
@@ -215,6 +479,14 @@ namespace RDA::Layout {
 			}
 			out << " & {\n";
 			for (size_t p = 0; p < widget.propCount; ++p) writeProp(out, widget.props[p], "\t\t\t");
+			if (std::string(widget.name) == "list") {
+				// Not in the widget schema because it is not a property: it is called once
+				// when the layout is compiled, and what it returns becomes the template.
+				// A function so that `item` is a real parameter with a real type.
+				out << "\t\t\t/** The template one row is built from. Called once, at build "
+				       "time. */\n"
+				       "\t\t\trow?: (item: RdaRow) => JSX.Element;\n";
+			}
 			out << "\t\t};\n";
 		}
 		out << "\t}\n}\n";

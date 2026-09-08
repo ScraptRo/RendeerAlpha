@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/MemoryBuffer.h>
 #include <GraphicalSrc/Descriptors.h>

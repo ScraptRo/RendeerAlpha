@@ -4,7 +4,17 @@
 
 #if _DEBUG
 
+// The validation layers a Debug build asks for.
 extern const std::vector<const char*> validationLayers;
+
+// The ones it gets: those of the above that are actually installed, enumerated once on
+// first use. A layer is a separate package on Linux (vulkan-validationlayers) and a
+// separate SDK component elsewhere, and a Debug build on a machine without it used to
+// stop at "Failed to create vulkan instance" -- which named neither the layer nor the
+// fix. Now it runs without validation and says which layer it went without. Defined in
+// RendeerAlpha.cpp rather than beside the list, because the test runner compiles
+// Logger.cpp with no Vulkan loader to enumerate anything from.
+const std::vector<const char*>& enabledValidationLayers();
 
 class Logger {
 private:
@@ -110,7 +120,9 @@ extern Logger logger;
 #define RDA_RUNTIME_ERROR(x) logger.~Logger();throw std::runtime_error(x);
 
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
+// Defined in a header, so every translation unit that logs gets a copy and only the
+// one that installs the messenger uses it. GCC points that out per file; it is meant.
+[[maybe_unused]] static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
    // The Vulkan loader reports a begin "error" when an implicit layer's manifest
    // can't be opened (e.g. a stale NVIDIA Nsight install left a dangling JSON path
    // in the registry). It's an environment issue, not ours, so swallow it.
@@ -149,6 +161,5 @@ RDA_DEBUG_FUNC(void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreate
 #define RDA_LOG_SUCCES(x)
 #define RDA_LOG_INFO(x)
 #define RDA_RUNTIME_ERROR(x)
-#define RDA_OUTPUT_FILE_DEBUG(x)
 
 #endif // _DEBUG

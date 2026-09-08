@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The C# binding, as a library.
+
+    net8.0 rather than something newer because it is the oldest runtime that has
+    everything this needs and is still supported; nothing here uses a feature past it.
+    The whole binding is two source files, so a project that must target something else
+    can include them directly rather than reference this.
+
+    There is nothing to install: the engine is a shared library and this is a description
+    of it. What an application needs beside it is `rendeer_c.dll`, from the checkout's
+    bin/ -- copied by the application's own .csproj, or named in RDA_ENGINE.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Rda</AssemblyName>
+    <RootNamespace>Rendeer</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Warnings are errors: this is a binding, and a marshalling warning here is a
+         corruption in somebody's application. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

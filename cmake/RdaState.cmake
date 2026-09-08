@@ -1,11 +1,11 @@
-# Generating the C++ side of a state declaration.
+﻿# Generating the C++ side of a state declaration.
 #
 # The declaration is the source of truth for both sides of the boundary: this produces
 # the header an application includes, and the same file is handed to `rda types` so the
 # TypeScript a layout is checked against describes the same signals. A name that exists
 # on one side exists on the other, or neither builds.
 #
-#   rda_add_state(sandbox res/state.xml)
+#   rda_add_state(sandbox res/state.ts)
 
 function(rda_add_state target declaration)
 	get_filename_component(absolute "${declaration}" ABSOLUTE)
@@ -18,9 +18,12 @@ function(rda_add_state target declaration)
 		return()
 	endif()
 
+	# Wrapped like the others now that a declaration is TypeScript: generating the header
+	# means transforming it, which means esbuild. And spelled $<TARGET_FILE:rda> because
+	# once a command starts with something else CMake stops substituting the target name.
 	add_custom_command(
 		OUTPUT  "${header}"
-		COMMAND rda state "${absolute}" "${header}"
+		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> state "${absolute}" "${header}"
 		DEPENDS "${absolute}" rda
 		COMMENT "Generating state for ${target}"
 		VERBATIM
@@ -40,10 +43,13 @@ endfunction()
 # them moves. A committed .d.ts that has drifted from the engine is worse than none: it
 # reports errors that are not real and misses ones that are.
 #
-#   rda_add_types(sandbox res/layouts/rda.d.ts res/themes/sandbox.xml res/state.xml)
+#   rda_add_types(sandbox res/layouts/rda.d.ts res/themes/sandbox.ts res/state.ts)
 
 function(rda_add_types target output theme declaration)
-	if(NOT TARGET rda)
+	# Reading the theme means compiling it, so this needs esbuild for the same reason the
+	# theme rule does. Without one, the .d.ts already in the tree is left alone.
+	if(NOT TARGET rda OR NOT RDA_ESBUILD_EXECUTABLE)
+		message(STATUS "Types for ${target}: not regenerated; using the .d.ts in the source tree")
 		return()
 	endif()
 	get_filename_component(out_abs "${output}" ABSOLUTE)
@@ -52,7 +58,7 @@ function(rda_add_types target output theme declaration)
 
 	add_custom_command(
 		OUTPUT  "${out_abs}"
-		COMMAND rda types "${out_abs}" "${theme_abs}" "${state_abs}"
+		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> types "${out_abs}" "${theme_abs}" "${state_abs}"
 		DEPENDS "${theme_abs}" "${state_abs}" rda
 		COMMENT "Generating layout types for ${target}"
 		VERBATIM
@@ -71,7 +77,7 @@ endfunction()
 #   rda_add_theme(sandbox res/themes/sandbox.ts)
 
 function(rda_add_theme target source)
-	if(NOT TARGET rda OR NOT RDA_COMPILE_LAYOUTS)
+	if(NOT TARGET rda OR NOT RDA_COMPILE_LAYOUTS OR NOT RDA_ESBUILD_EXECUTABLE)
 		message(STATUS "Theme for ${target}: not recompiled; using the compiled theme in the source tree")
 		return()
 	endif()
@@ -83,7 +89,7 @@ function(rda_add_theme target source)
 
 	add_custom_command(
 		OUTPUT  "${compiled}"
-		COMMAND rda theme "${absolute}" "${compiled}"
+		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> theme "${absolute}" "${compiled}"
 		DEPENDS "${absolute}" rda
 		COMMENT "Compiling theme ${stem}.ts"
 		VERBATIM

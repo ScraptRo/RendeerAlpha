@@ -1,4 +1,5 @@
-#pragma once
+﻿#pragma once
+#include <cstdint>
 #include <Core/BuildMode.h>
 #include <Layout/LayoutLoader.h>
 #include <string>
@@ -49,8 +50,6 @@ namespace RDA::Layout {
 		const LayoutInstance& instance() const { return mInstance; }
 		RDA::Widget* root() const { return mInstance.root(); }
 
-		size_t      reloads() const { return mReloads; }
-		double      lastReloadMs() const { return mLastReloadMs; }
 		const std::string& lastError() const { return mLastError; }
 
 		// Whether this build can turn a source file back into a blueprint.
@@ -58,6 +57,8 @@ namespace RDA::Layout {
 
 	private:
 		bool sourceChanged();
+		void rediscover();          // refill mWatched from the source's imports
+		int64_t stampAll() const;   // one number for every watched file
 		bool blueprintChanged();
 
 		RDA::Widget*   mParent = nullptr;
@@ -65,10 +66,11 @@ namespace RDA::Layout {
 		std::string    mSourcePath;
 		LayoutInstance mInstance;
 
+		// The source and everything it imports. A module may be split across files now,
+		// so watching only the one that was named would miss an edit to any of the rest.
+		std::vector<std::string> mWatched;
 		int64_t     mSourceStamp = 0;
 		int64_t     mBlueprintStamp = 0;
-		size_t      mReloads = 0;
-		double      mLastReloadMs = 0.0;
 		std::string mLastError;
 	};
 }

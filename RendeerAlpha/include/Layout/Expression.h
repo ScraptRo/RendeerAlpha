@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace RDA {
 	class Signals;
+	class Table;
 }
 
 // A compiled expression: what a binding actually is.
@@ -42,6 +43,19 @@ namespace RDA::Layout {
 		ToText,      // converts the top of the stack to text
 
 		Pop,         // discards the top; how a handler's statements are separated
+
+		// Appended rather than filed with the other pushes, so every opcode above keeps
+		// the number it already had and a blueprint compiled before this existed still
+		// decodes to the instructions it was written with.
+		PushEvent,   // pushes the value the handler was called with
+		// operand: a slot in `signals` -- the pool holds every name a program refers to,
+		// and which registry a name belongs to is decided by the opcode that reads it.
+		// Pushes whether the command ran, so a statement still leaves one value behind.
+		CallCommand,
+		// operand: a slot in `signals` holding a marked column name, resolved to a column
+		// index when the layout loads. Reads that column of whichever row the template is
+		// showing at the moment it is evaluated.
+		PushRowField,
 	};
 
 	struct Instruction {
@@ -68,6 +82,10 @@ namespace RDA::Layout {
 		std::string asText() const;
 	};
 
+	// The names a program refers to are pooled once, and resolved to ids when it is
+	// loaded. Most are signals; a slot named by CallCommand is a command instead. Sharing
+	// one pool is what lets a compiled layout carry commands without the file format
+	// growing a section for them.
 	struct Program {
 		std::vector<Instruction> code;
 		std::vector<double>      numbers; // constant pool
@@ -78,6 +96,13 @@ namespace RDA::Layout {
 		std::vector<std::string> signals;
 
 		bool empty() const { return code.empty(); }
+	};
+
+	// Which row a row template's bindings are showing while they are evaluated. Supplied
+	// by the list, once per row it rebinds -- which is the whole of what recycling is.
+	struct RowRef {
+		RDA::Table* table = nullptr;
+		size_t      index = 0;
 	};
 
 	struct EvalResult {
@@ -93,8 +118,13 @@ namespace RDA::Layout {
 	// Failure is a bad program rather than a bad input: a stack underflow or an
 	// out-of-range operand means the compiler emitted something wrong, so it reports
 	// rather than pretending a value.
+	// `event` is the value a handler was called with: the new text of a field, the new
+	// state of a checkbox, the new position of a slider. A value binding is called with
+	// nothing, and a program that reads an event value when there is none fails rather
+	// than quietly reading zero.
 	EvalResult evaluate(const Program& program, RDA::Signals& table,
-	                    const std::vector<uint32_t>& signalIds);
+	                    const std::vector<uint32_t>& signalIds,
+	                    const Value* event = nullptr, const RowRef* row = nullptr);
 
 	// The program as text, one instruction per line. For diagnostics and for tests that
 	// would otherwise assert on opcode numbers nobody can read.

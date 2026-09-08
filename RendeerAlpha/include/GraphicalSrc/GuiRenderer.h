@@ -1,4 +1,5 @@
-#pragma once
+﻿#pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/FontAtlas.h>
 #include <GraphicalSrc/GraphicsPipeline.h>
@@ -25,8 +26,11 @@ namespace RDA {
 	// and it is the window being drawn.
 	class GuiRenderer {
 	public:
+		// `fontSizes` are baked alongside `fontHeight` into the one atlas, so a theme can
+		// ask for a size other than the base one without a second texture or a second draw.
 		bool init(VkRenderPass targetRenderPass, const std::string& fontPath,
-		          float fontHeight, uint32_t framesInFlight);
+		          float fontHeight, const std::vector<float>& fontSizes,
+		          uint32_t framesInFlight);
 		void destroy();
 
 		// Prepares `owner`'s buffers for this frame. Call once per window per frame,

@@ -366,6 +366,18 @@ RDA_DEBUG.txt
 shader_cache/
 dock_layout.ini
 
+# bin/ at the root is where `stage` (and the bring-up scripts) lay out the built engine
+# for backends that are not C++ -- covered by [Bb]in/ above, and listed here so nobody
+# wonders. bindings/node gets a node_modules and a lockfile when the bring-up installs
+# koffi into it; the package is consumed from the checkout, so neither is anyone's to
+# commit.
+bin/
+bindings/node/package-lock.json
+
+# An Ollama Modelfile is generated from skills/rendeer-alpha/SKILL.md by the snippet in
+# that folder's README; the skill is the source, so the generated file is not.
+Modelfile
+
 # CMake
 # The build tree, and the caches CMake and the IDEs drop beside it. Generated project
 # files are deliberately not committed: the CMakeLists are the build description, and a
@@ -375,3 +387,16 @@ CMakeUserPresets.json
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+
+# A local mirror of the Vulkan SDK, if you keep one.
+#
+# This used to be tracked, and it was 1.2 GB of the repository's 1.22 GB -- 1.19 GB of it
+# MSVC import libraries, including one file of 425 MB, which is over four times what
+# GitHub accepts in a single file. They were also useless to anyone not building with
+# that exact toolchain on that exact platform.
+#
+# Nothing needs them now: cmake/RdaDependencies.cmake takes Vulkan, shaderc and glm from
+# an installed SDK, and builds GLFW from source when it is not already there. Keep a
+# directory here if you like -- the build still prefers a mirror over fetching -- but it
+# belongs to your machine, not to the history.
+Dep/

@@ -1,4 +1,5 @@
-#pragma once
+﻿#pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 #include <GraphicalObjects/Window.h>
 #include <GraphicalObjects/Mesh.h>
@@ -6,10 +7,12 @@
 #include <GraphicalObjects/Texture.h>
 #include <GraphicalObjects/Material.h>
 #include <functional>
+#include <memory>
+#include <vector>
 
 namespace RDA {
 
-	// GUI setup: which font to bake the atlas from, and at what pixel height.
+	// GUI setup: which font to bake the atlas from, and at which pixel heights.
 	struct GuiConfig {
 		// Whether this application has a GUI at all. Turning it off is not just "draw
 		// nothing": the engine skips baking the font atlas, skips building the GUI
@@ -21,6 +24,17 @@ namespace RDA {
 
 		std::string fontPath = "res/fonts/CascadiaMono.ttf";
 		float       fontHeight = 18.0f;
+
+		// The other sizes a theme may ask for, baked alongside fontHeight at startup.
+		//
+		// They are baked rather than scaled, so a heading is as crisp as a caption, and
+		// they all share one atlas texture, so text of every size still batches into a
+		// single draw. A theme that names a size not listed here is drawn at the
+		// nearest one that is -- and says so once, in the log, naming both.
+		//
+		// The default is a type scale rather than a range: sizes far enough apart to
+		// read as different, which is what a scale is for.
+		std::vector<float> fontSizes = { 12.0f, 15.0f, 22.0f, 28.0f, 36.0f };
 
 		// Optional XML theme loaded at startup into the main window's Gui::theme().
 		// Empty = the built-in look only. Variants can also be added later from code
@@ -56,16 +70,16 @@ namespace RDA {
 		//
 		// The engine needs a window to pick a device against and to build its pipelines
 		// from — a Vulkan surface is what decides the format everything else is compatible
-		// with. A process whose job is to serve *other* processes' windows has no use for
-		// one of its own, so it can ask for that window to exist without ever being shown.
-		// It is never drawn or presented either, so it costs a swapchain and nothing more.
+		// with. A program that has no use for that particular window can ask for it to
+		// exist without ever being shown; it is never drawn or presented either, so it
+		// costs a swapchain and nothing more.
 		//
-		// This is what makes the runtime windowless from a user's point of view: the only
-		// windows on screen belong to the applications it serves.
+		// What that leaves is a process whose only visible windows are ones it opened
+		// itself with rendeerCreateWindow, and a headless run that still has a device.
 		bool         hiddenMainWindow = false;
 		ThreadMode   threadMode = ThreadMode::Caller;
 		ViewportMode viewportMode = ViewportMode::Fullscreen; // scene to surface, or to a Viewport widget
-		RedrawMode   redrawMode = RedrawMode::Continuous;     // every frame, or only on change
+		RedrawMode   redrawMode = RedrawMode::OnDemand;     // every frame, or only on change
 
 		// ViewportMode::Widget only. With an animating scene the engine must produce a
 		// frame every tick, and that re-rasterises the whole GUI — every panel, glyph and
@@ -108,6 +122,11 @@ void rendeerStop();
 // Caller mode. Call this before the process exits when using Owned mode.
 void rendeerWait();
 
+// Whether the loop is still going. In Caller mode this is only ever asked from inside a
+// callback, where the answer is always true; it exists for Owned mode, where the thread
+// that started the engine has no other way to find out that every window has closed.
+bool rendeerRunning();
+
 // Ask for one more frame to be rendered. Only meaningful in RedrawMode::OnDemand,
 // where the engine otherwise skips rendering when nothing it can see has changed —
 // call this while the scene is animating, or after changing anything the GUI's own
@@ -124,6 +143,18 @@ void rendeerRequestRedraw();
 // serving several applications that is the difference between one window's worth of
 // work per frame and everyone's.
 void rendeerRequestRedraw(RDA::Window* window);
+
+// Something rebuilt the retained interface: a layout hot-reloaded, a screen swapped.
+//
+// The retained cache decides whether to walk the widget tree by looking at input -- the
+// pointer moving, a key, a focused caret. Replacing the tree is none of those, so
+// without this the next frame presents the geometry it already had and the new screen
+// does not appear until something unrelated moves the mouse. Same failure the binding
+// path had, and the same fix.
+//
+// Called for you by LayoutHost and Router. An application only needs it if it rebuilds
+// a retained tree by hand.
+void rendeerInterfaceChanged();
 
 RDA::Window* getMainWindow();
 
@@ -152,6 +183,22 @@ void rendeerWaitIdle();
 // descriptor set. Pair it with rendeerWaitIdle(), since a frame may still be sampling
 // the texture. Harmless for a texture that was never drawn with.
 void rendeerForgetTexture(const RDA::Texture* texture);
+
+// Hands a texture to the engine to destroy at the start of a frame, once the GPU is
+// idle and the GUI has forgotten it.
+//
+// A widget that owns a texture cannot destroy it when it is destroyed. The frame's draw
+// list is built before the application's update runs, so a widget torn down there -- a
+// screen swapped, a layout reloaded -- leaves this frame's commands pointing at it, and
+// they are recorded after the update returns. Destroying it there is a use-after-free
+// that a validation layer reports as an invalid image view and a release build does not
+// report at all.
+//
+// So the texture outlives the frame that drew it: ownership moves here, the address
+// stays valid until the next frame begins, and the destruction happens where it is safe.
+// Taking a unique_ptr is what keeps that address stable -- a texture moved into a queue
+// would move out from under the very pointers this exists to protect.
+void rendeerRetireTexture(std::unique_ptr<RDA::Texture> texture);
 
 namespace RDA {
 	// The scene the renderer draws each frame (also RDA::getScene(), from Scene.h).
