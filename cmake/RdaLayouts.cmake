@@ -1,4 +1,4 @@
-# Compiling layouts as part of the build.
+﻿# Compiling layouts as part of the build.
 #
 # A .tsx layout is a source file that produces an artefact, exactly like a shader. Nobody
 # should have to remember to run the compiler by hand, and a demo that begins with
@@ -25,10 +25,17 @@ function(rda_add_layouts target)
 	endif()
 
 	if(NOT TARGET rda)
-		# App and Renderer tiers do not build the toolchain. Their .rdab files come from
-		# the source tree, compiled by a Studio build or by CI.
+		# A build with RDA_BUILD_TOOLS off has no compiler to run. Its .rdab files come
+		# from the source tree, compiled by a build that had one, or by CI.
 		message(STATUS
-			"Layouts for ${target}: not compiled here (the toolchain is Studio-tier); "
+			"Layouts for ${target}: not compiled here (the rda tool was not built); "
+			"using the blueprints already in the source tree")
+		return()
+	endif()
+
+	if(NOT RDA_ESBUILD_EXECUTABLE)
+		message(STATUS
+			"Layouts for ${target}: not recompiled (no esbuild); "
 			"using the blueprints already in the source tree")
 		return()
 	endif()
@@ -42,7 +49,7 @@ function(rda_add_layouts target)
 
 		add_custom_command(
 			OUTPUT  "${blueprint}"
-			COMMAND rda layout "${absolute}" "${blueprint}"
+			COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> layout "${absolute}" "${blueprint}"
 			DEPENDS "${absolute}" rda
 			COMMENT "Compiling layout ${stem}.tsx"
 			VERBATIM

@@ -1,29 +1,29 @@
-# The test runner. Not a product, which is why it survives the trimming: it is the only
-# executable proof that the wire format and the signal graph behave as documented.
+﻿# The test runner. Not a product, which is why it survives the trimming: it is the only
+# executable proof that the signal graph, the expression VM and the animation layer
+# behave as documented.
 #
-# It compiles the sources it tests directly rather than linking the library, so the
-# wire protocol stays testable even in a build that does not include it.
+# It compiles the sources it tests directly rather than linking the library, so what is
+# tested stays testable in a build that does not include it -- and so a source only has
+# to be device-independent to be covered, not part of any particular configuration.
 set(RDA_TEST_SOURCES
+	Main.cpp
 	SignalTests.cpp
 	ExpressionTests.cpp
+	FeatureTests.cpp
+	LayoutTests.cpp
+	TextTests.cpp
 	../RendeerAlpha/src/Layout/Expression.cpp
+	../RendeerAlpha/src/Layout/ThemeSchema.cpp
+	../RendeerAlpha/src/GraphicalObjects/Motion.cpp
+	../RendeerAlpha/src/GraphicalObjects/Syntax.cpp
+	../RendeerAlpha/src/vendor/tinyxml2/tinyxml2.cpp
 	../RendeerAlpha/src/Layout/ExpressionParser.cpp
 	../RendeerAlpha/src/Core/Signals.cpp
+	../RendeerAlpha/src/Core/Commands.cpp
+	../RendeerAlpha/src/Core/Tables.cpp
+	../RendeerAlpha/src/Core/Utf8.cpp
 	../RendeerAlpha/src/Logger/Logger.cpp
 )
-
-# The wire protocol is carried over Windows named pipes, so its tests are too. They stay
-# out of the build elsewhere rather than being ported to a transport that does not exist
-# yet -- the format itself is platform-independent, and it is the transport that is not.
-if(WIN32)
-	list(APPEND RDA_TEST_SOURCES
-		RuntimeTests.cpp
-		../RendeerAlpha/src/Runtime/Host.cpp
-		../RendeerAlpha/src/Runtime/Transport.cpp
-	)
-else()
-	message(STATUS "Tests: the wire-protocol cases need named pipes and are skipped here")
-endif()
 
 add_executable(rendeer_tests ${RDA_TEST_SOURCES})
 target_include_directories(rendeer_tests PRIVATE
@@ -36,5 +36,11 @@ target_include_directories(rendeer_tests PRIVATE
 if(WIN32)
 	target_compile_definitions(rendeer_tests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
+
+# The syntax languages the engine ships are data, and data can be wrong in ways a
+# compiler cannot see. The tests read the real file rather than a copy of it, so a typo
+# in it fails here rather than in an editor that quietly draws plain text.
+target_compile_definitions(rendeer_tests PRIVATE
+	RDA_ENGINE_RES_DIR="${CMAKE_SOURCE_DIR}/RendeerAlpha/res")
 
 add_test(NAME rendeer_tests COMMAND rendeer_tests)

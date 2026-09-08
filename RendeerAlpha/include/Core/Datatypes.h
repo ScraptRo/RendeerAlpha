@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Framework.h>
 #include <vendor/RDA_Library/stack_list.h>
 #include <vendor/RDA_Library/obj_ref.h>

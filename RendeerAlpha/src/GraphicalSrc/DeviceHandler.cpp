@@ -3,7 +3,7 @@
 #include <GraphicalSrc/DeviceHandler.h>
 #include <Logger/Logger.h>
 #include <Core/BackendConnector.h>
-#include <vendor/vma/vk_mem_alloc.h>
+#include <vendor/vma/vma.h>
 
 namespace RDA {
 
@@ -130,8 +130,9 @@ namespace RDA {
         createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
         createInfo.ppEnabledExtensionNames = deviceExtensions.data();
         RDA_DEBUG_FUNC(
-            createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-            createInfo.ppEnabledLayerNames = validationLayers.data();
+            const std::vector<const char*>& layers = enabledValidationLayers();
+            createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
+            createInfo.ppEnabledLayerNames = layers.data();
         )
 
         if (vkCreateDevice(best, &createInfo, nullptr, &gGPU.LDevice) != VK_SUCCESS) {

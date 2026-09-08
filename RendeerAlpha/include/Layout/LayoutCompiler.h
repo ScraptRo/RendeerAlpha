@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <cstdint>
 #include <Layout/Blueprint.h>
 #include <string>
 #include <vector>
@@ -20,7 +21,8 @@
 // at runtime cannot be expressed this way, and will need the For/Show primitives; that
 // is a deliberate consequence of running once, not an oversight.
 //
-// This whole file is Studio-tier. An application links the loader and never this.
+// Authoring only. An application links the loader and never this -- and because the
+// engine is a static library, one that never calls it does not carry it.
 namespace RDA::Layout {
 
 	struct CompileResult {

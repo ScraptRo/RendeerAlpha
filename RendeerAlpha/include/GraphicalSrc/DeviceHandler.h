@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 
 // Forward declare the VMA allocator handle so we don't pull the heavy

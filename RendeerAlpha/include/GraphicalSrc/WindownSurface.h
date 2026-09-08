@@ -14,10 +14,6 @@ namespace RDA{
 
         VkSurfaceKHR Get() const { return surface; }
 
-        // Query surface capabilities, formats, etc. (optional)
-        VkSurfaceCapabilitiesKHR GetCapabilities(VkPhysicalDevice physicalDevice) const;
-        std::vector<VkSurfaceFormatKHR> GetFormats(VkPhysicalDevice physicalDevice) const;
-        std::vector<VkPresentModeKHR> GetPresentModes(VkPhysicalDevice physicalDevice) const;
     private:
         VkSurfaceKHR surface = VK_NULL_HANDLE;
         VkInstance instance = VK_NULL_HANDLE;

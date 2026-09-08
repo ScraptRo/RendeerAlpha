@@ -59,9 +59,20 @@ namespace RDA {
 
 		// Registers or replaces a language under lang.name.
 		void define(const Language& lang);
-		// The named language, or nullptr when it was never registered.
+		// The named language, or nullptr when it was never registered. Quiet: a miss is
+		// an ordinary answer here, and `base=` on a language that has not loaded yet is
+		// allowed to miss.
 		const Language* find(const std::string& name) const;
 		bool has(const std::string& name) const { return find(name) != nullptr; }
+
+		// The same lookup, for a text field about to draw. A field that names a language
+		// nobody registered used to fall back to plain text and say nothing, which reads
+		// as "this language has no keywords" rather than as "that language is not here" --
+		// and the two look identical on screen.
+		//
+		// Complains once per name, not once per frame: a field redraws constantly and a
+		// warning per frame is a log nobody can read.
+		const Language* forField(const std::string& name) const;
 
 		// Merge language definitions from an XML file / string (see Syntax.cpp for the
 		// format). Returns false on a parse or file error.
@@ -76,5 +87,9 @@ namespace RDA {
 
 	private:
 		std::unordered_map<std::string, Language> mLanguages;
+		// Names already complained about. Mutable because asking is a const question and
+		// the complaint is a side effect of asking it; the same shape FontAtlas uses for
+		// a text size it did not bake.
+		mutable std::vector<std::string> mUnknown;
 	};
 }

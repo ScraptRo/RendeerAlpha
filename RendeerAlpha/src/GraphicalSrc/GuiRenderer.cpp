@@ -1,4 +1,4 @@
-#include <GraphicalSrc/GuiRenderer.h>
+﻿#include <GraphicalSrc/GuiRenderer.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/Shader.h>
 #include <GraphicalObjects/Texture.h>
@@ -59,8 +59,16 @@ namespace RDA {
 	}
 
 	bool GuiRenderer::init(VkRenderPass targetRenderPass, const std::string& fontPath,
-	                       float fontHeight, uint32_t framesInFlight) {
-		if (!mFont.bake(fontPath, fontHeight)) {
+	                       float fontHeight, const std::vector<float>& fontSizes,
+	                       uint32_t framesInFlight) {
+		// The base size first, because index 0 is what anything with no opinion is drawn
+		// at, and only sizes nobody asked for twice.
+		std::vector<float> sizes{ fontHeight };
+		for (float size : fontSizes) {
+			if (size <= 0.0f) continue;
+			if (std::find(sizes.begin(), sizes.end(), size) == sizes.end()) sizes.push_back(size);
+		}
+		if (!mFont.bake(fontPath, sizes)) {
 			RDA_LOG_ERROR("GUI: failed to bake font atlas");
 			return false;
 		}
@@ -187,6 +195,15 @@ namespace RDA {
 	}
 
 	VkDescriptorSet GuiRenderer::imageSetFor(const Texture* texture) {
+		// Asked first, and on its own. It used to be checked after a set had been
+		// allocated and folded into the same condition as the allocation failing, which
+		// meant an invalid texture leaked a set and -- worse -- got as far as being
+		// written from, one line later, with whatever its view happened to hold.
+		//
+		// An image that will not draw is a missing picture. Writing a descriptor from a
+		// texture that is not there is undefined behaviour, which is not a trade.
+		if (!texture || !texture->isValid()) return VK_NULL_HANDLE;
+
 		auto it = mImageSets.find(texture);
 		if (it != mImageSets.end()) {
 			// Still describing the same image: the ordinary hit.
@@ -213,7 +230,7 @@ namespace RDA {
 		allocInfo.descriptorSetCount = 1;
 		allocInfo.pSetLayouts = &mSetLayout;
 		VkDescriptorSet set = VK_NULL_HANDLE;
-		if (vkAllocateDescriptorSets(getDevice(), &allocInfo, &set) != VK_SUCCESS || !texture->isValid()) {
+		if (vkAllocateDescriptorSets(getDevice(), &allocInfo, &set) != VK_SUCCESS) {
 			return VK_NULL_HANDLE;
 		}
 		DescriptorWriter()

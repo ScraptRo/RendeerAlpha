@@ -1,4 +1,5 @@
-#pragma once
+﻿#pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/FrameBuffer.h>
 #include <GraphicalSrc/GraphicsPipeline.h>
@@ -41,7 +42,8 @@ namespace RDA {
 		// With `guiEnabled` false the GUI backend is never built (no font atlas, no GUI
 		// pipelines) and no frame records a GUI pass; `mode` is forced to Fullscreen,
 		// since without widgets there is nothing to display an offscreen scene.
-		bool init(Window& window, const std::string& fontPath, float fontHeight, ViewportMode mode,
+		bool init(Window& window, const std::string& fontPath, float fontHeight,
+		          const std::vector<float>& fontSizes, ViewportMode mode,
 		          bool guiEnabled = true);
 
 		// Whether this renderer has a GUI backend at all.
@@ -55,6 +57,12 @@ namespace RDA {
 		// Viewport widget to display); nullptr in Fullscreen mode.
 		const Texture* sceneTexture() const;
 
+		// The offscreen target's colour format and render pass. A C++ application that
+		// records into a viewport builds its pipelines against these; both outlive every
+		// resize, so it builds them once.
+		VkFormat sceneColorFormat() const { return mSceneColorFormat; }
+		VkRenderPass sceneRenderPass() const;
+
 		// Widget mode: (re)size the offscreen scene target to `extent` (the Viewport
 		// widget's size), so the scene is rendered at the viewport's resolution/aspect.
 		// A no-op if the size is unchanged.
@@ -63,13 +71,6 @@ namespace RDA {
 		// Renders one frame into the current target and presents it to the window.
 		void drawWindow(Window& window);
 
-		// Point the renderer at a different target. The swap is valid as long as the new
-		// target's render pass is compatible with the one the pipeline was built against
-		// (same color format) — which is the case for any FrameBuffer sharing the window
-		// surface's format. Pass the window's own FrameBuffer to go back to the default.
-		void setTarget(FrameBuffer& target) { mTarget = &target; mTargetOverridden = true; }
-		// Hands the target back to whichever window is being drawn.
-		void clearTargetOverride() { mTargetOverridden = false; }
 		FrameBuffer* target() const { return mTarget; }
 
 		void waitIdle();
@@ -174,7 +175,6 @@ namespace RDA {
 		// Whether an application redirected the target. Without an override each window
 		// draws into its own surface framebuffer, which is what lets one renderer serve
 		// several windows; with one, the redirect wins and stays put.
-		bool mTargetOverridden = false;
 
 		// The shape of set 0 and the pool the per-window sets come from. The buffers and
 		// sets themselves live in WindowFrames; only what every window shares is here.

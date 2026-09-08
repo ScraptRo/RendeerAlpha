@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Signals.h>
 #include <Layout/Expression.h>
 #include <string>
@@ -42,8 +43,6 @@ namespace RDA::Layout {
 		// Evaluates the bindings whose signals changed, and clears the dirty list.
 		// Returns how many were applied, which is zero on almost every frame.
 		size_t applyDirty();
-
-		size_t count() const { return mLive; }
 
 	private:
 		struct Binding {

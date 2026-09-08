@@ -1,7 +1,7 @@
 #include <GraphicalSrc/MemoryBuffer.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <Logger/Logger.h>
-#include <vendor/vma/vk_mem_alloc.h>
+#include <vendor/vma/vma.h>
 #include <cstring>
 
 namespace RDA {

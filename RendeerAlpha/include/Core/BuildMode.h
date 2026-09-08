@@ -20,17 +20,6 @@
 // What is left is a feature that genuinely is optional, because it changes how an
 // application is *deployed* rather than what it can do.
 
-// Out-of-process hosting: a host process owning the device, with applications as clients
-// of it over a pipe.
-//
-// It was once how every application ran. That is the wrong default for a framework whose
-// point is giving an application's own backend direct access to the GPU — across a
-// process boundary that access is a pipe — and it costs the single-binary distribution
-// story that makes this worth choosing over Electron.
-//
-// So it survives for the one case that genuinely wants it: a preview that keeps running
-// when the thing it is previewing crashes. Off unless RDA_REMOTE is defined.
-
 // Hot reload: watching layout files and rebuilding what changed.
 //
 // A development switch, not a deployment one. It costs a stat() per file per frame, and
@@ -42,8 +31,3 @@
 	#define RDA_ENABLE_HOT_RELOAD_BUILD 0
 #endif
 
-#if defined(RDA_REMOTE)
-	#define RDA_REMOTE_BUILD 1
-#else
-	#define RDA_REMOTE_BUILD 0
-#endif

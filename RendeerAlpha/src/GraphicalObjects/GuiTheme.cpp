@@ -100,6 +100,28 @@ namespace RDA {
 				if (p->kind != static_cast<uint32_t>(PropKind::String)) out = p->number != 0.0f;
 			}
 		}
+		// `fontSize` and `weight` on anything that draws text. Weight is a word rather
+		// than a boolean because "weight: bold" is what a designer writes, and because a
+		// real second face can be added later without the field having lied.
+		void readFont(const Blueprint& bp, const BlueprintNode& node, TextStyle& out) {
+			readFloat(bp, node, "fontSize", out.size);
+			const std::string_view weight = bp.text(node, "weight");
+			if (!weight.empty()) out.bold = (weight == "bold");
+		}
+		// `transitionMs` and `easing` on anything whose colours follow what it is doing.
+		// Milliseconds because that is the unit a designer thinks in; seconds is what the
+		// animation wants, and converting once here is cheaper than converting per frame.
+		void readMotion(const Blueprint& bp, const BlueprintNode& node, MotionStyle& out) {
+			float ms = out.seconds * 1000.0f;
+			readFloat(bp, node, "transitionMs", ms);
+			out.seconds = ms / 1000.0f;
+
+			const std::string_view curve = bp.text(node, "easing");
+			if (curve == "linear")     out.curve = Easing::Linear;
+			else if (curve == "in")    out.curve = Easing::In;
+			else if (curve == "inOut") out.curve = Easing::InOut;
+			else if (curve == "out")   out.curve = Easing::Out;
+		}
 		void readString(const Blueprint& bp, const BlueprintNode& node, const char* key, std::string& out) {
 			const std::string_view text = bp.text(node, key);
 			if (!text.empty()) out = std::string(text);
@@ -127,6 +149,33 @@ namespace RDA {
 		// Each applier bases the new variant on the theme's current same-named variant
 		// (which falls back to "default"), overrides the listed fields, then re-registers
 		// it. Going through the public define*/accessor API keeps Theme's maps private.
+		void applyDock(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
+			const std::string name = variantName(bp, node);
+			DockStyle s = t.dock(asVariant(inheritFrom(bp, node, name)));
+			readColor(bp, node, "pane", s.pane);
+			readColor(bp, node, "tabStrip", s.tabStrip);
+			readColor(bp, node, "tab", s.tab);
+			readColor(bp, node, "tabActive", s.tabActive);
+			readColor(bp, node, "tabText", s.tabText);
+			readColor(bp, node, "titleBar", s.titleBar);
+			readColor(bp, node, "titleBarActive", s.titleBarActive);
+			readColor(bp, node, "close", s.close);
+			readColor(bp, node, "closeHover", s.closeHover);
+			readColor(bp, node, "grip", s.grip);
+			readColor(bp, node, "splitter", s.splitter);
+			readColor(bp, node, "splitterHover", s.splitterHover);
+			readColor(bp, node, "dropBand", s.dropBand);
+			readColor(bp, node, "dropBandHot", s.dropBandHot);
+			readColor(bp, node, "dropPane", s.dropPane);
+			readColor(bp, node, "dropPreview", s.dropPreview);
+			readFloat(bp, node, "tabHeight", s.tabHeight);
+			readFloat(bp, node, "tabPadding", s.tabPadding);
+			readFloat(bp, node, "closeWidth", s.closeWidth);
+			readFloat(bp, node, "radius", s.radius);
+			readMotion(bp, node, s.motion);
+			t.defineDock(asVariant(name), s);
+		}
+
 		void applyButton(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
 			const std::string name = variantName(bp, node);
 			ButtonStyle s = t.button(asVariant(inheritFrom(bp, node, name)));
@@ -137,6 +186,8 @@ namespace RDA {
 			readColor(bp, node, "border", s.border);
 			readFloat(bp, node, "borderWidth", s.borderWidth);
 			readFloat(bp, node, "radius", s.radius);
+			readFont(bp, node, s.font);
+			readMotion(bp, node, s.motion);
 			t.defineButton(asVariant(name), s);
 		}
 		void applyCheckbox(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
@@ -150,6 +201,8 @@ namespace RDA {
 			readFloat(bp, node, "borderWidth", s.borderWidth);
 			readFloat(bp, node, "radius", s.radius);
 			readFloat(bp, node, "checkInset", s.checkInset);
+			readFont(bp, node, s.font);
+			readMotion(bp, node, s.motion);
 			t.defineCheckbox(asVariant(name), s);
 		}
 		void applySlider(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
@@ -161,6 +214,7 @@ namespace RDA {
 			readColor(bp, node, "knobActive", s.knobActive);
 			readFloat(bp, node, "knobWidth", s.knobWidth);
 			readFloat(bp, node, "radius", s.radius);
+			readMotion(bp, node, s.motion);
 			t.defineSlider(asVariant(name), s);
 		}
 		void applyPanel(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
@@ -172,12 +226,29 @@ namespace RDA {
 			readColor(bp, node, "border", s.border);
 			readFloat(bp, node, "borderWidth", s.borderWidth);
 			readFloat(bp, node, "radius", s.radius);
+			readMotion(bp, node, s.motion);
 			t.definePanel(asVariant(name), s);
+		}
+		void applyFocus(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
+			const std::string name = variantName(bp, node);
+			FocusStyle s = t.focus(asVariant(inheritFrom(bp, node, name)));
+			readColor(bp, node, "color", s.color);
+			readFloat(bp, node, "width", s.width);
+			readFloat(bp, node, "inset", s.inset);
+			t.defineFocus(asVariant(name), s);
+		}
+		void applyBackground(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
+			const std::string name = variantName(bp, node);
+			BackgroundStyle s = t.background(asVariant(inheritFrom(bp, node, name)));
+			readColor(bp, node, "color", s.color);
+			readMotion(bp, node, s.motion);
+			t.defineBackground(asVariant(name), s);
 		}
 		void applyLabel(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
 			const std::string name = variantName(bp, node);
 			LabelStyle s = t.label(asVariant(inheritFrom(bp, node, name)));
 			readColor(bp, node, "color", s.color);
+			readFont(bp, node, s.font);
 			t.defineLabel(asVariant(name), s);
 		}
 
@@ -241,6 +312,7 @@ namespace RDA {
 			readBool(bp, node, "highlightCurrentLine", s.highlightCurrentLine);
 			readString(bp, node, "language", s.language);
 			readSyntax(bp, node, s.syntax);
+			readMotion(bp, node, s.motion);
 			t.defineTextField(asVariant(name), s);
 		}
 
@@ -255,8 +327,11 @@ namespace RDA {
 				else if (element == "checkbox")  applyCheckbox(theme, bp, node);
 				else if (element == "slider")    applySlider(theme, bp, node);
 				else if (element == "panel")     applyPanel(theme, bp, node);
+				else if (element == "focus")     applyFocus(theme, bp, node);
+				else if (element == "background") applyBackground(theme, bp, node);
 				else if (element == "label")     applyLabel(theme, bp, node);
 				else if (element == "textfield") applyTextField(theme, bp, node);
+				else if (element == "dock")      applyDock(theme, bp, node);
 				// Anything else is ignored on purpose: a theme written for a newer engine
 				// still styles everything this one knows about.
 			}
@@ -264,21 +339,57 @@ namespace RDA {
 		}
 	}
 
-	Theme::Theme() {
+	Theme::Theme() { reset(); }
+
+	void Theme::reset() {
+		mButtons.clear();
+		mCheckboxes.clear();
+		mSliders.clear();
+		mPanels.clear();
+		mFocusRings.clear();
+		mBackgrounds.clear();
+		mLabels.clear();
+		mTextFields.clear();
+		mDocks.clear();
+
 		// Seed the always-present "default" variant of every widget type from the
 		// struct defaults (the engine's built-in look).
 		mButtons[kDefaultVariant]    = ButtonStyle{};
 		mCheckboxes[kDefaultVariant] = CheckboxStyle{};
 		mSliders[kDefaultVariant]    = SliderStyle{};
 		mPanels[kDefaultVariant]     = PanelStyle{};
+		mFocusRings[kDefaultVariant] = FocusStyle{};
+		mBackgrounds[kDefaultVariant] = BackgroundStyle{};
 		mLabels[kDefaultVariant]     = LabelStyle{};
 		mTextFields[kDefaultVariant] = TextFieldStyle{};
+		mDocks[kDefaultVariant]      = DockStyle{};
+		++mRevision;
+	}
+
+	bool Theme::replaceWithFile(const std::string& path) {
+		// Read before the reset, so a path that does not load leaves the interface wearing
+		// the theme it already had rather than the built-in look.
+		Blueprint blueprint;
+		std::string error;
+		if (!loadBlueprintFile(path, blueprint, error)) {
+			RDA_LOG_WARNING("Theme not changed (" << path << "): " << error);
+			return false;
+		}
+		reset();
+		const bool ok = applyBlueprint(*this, blueprint);
+		if (ok) {
+			RDA_LOG_INFO("Changed GUI theme: " << path);
+		}
+		return ok;
 	}
 
 	const ButtonStyle&    Theme::button(Variant v)    const { return resolve(mButtons, v); }
+	const DockStyle&      Theme::dock(Variant v)      const { return resolve(mDocks, v); }
 	const CheckboxStyle&  Theme::checkbox(Variant v)  const { return resolve(mCheckboxes, v); }
 	const SliderStyle&    Theme::slider(Variant v)    const { return resolve(mSliders, v); }
 	const PanelStyle&     Theme::panel(Variant v)     const { return resolve(mPanels, v); }
+	const FocusStyle&     Theme::focus(Variant v)     const { return resolve(mFocusRings, v); }
+	const BackgroundStyle& Theme::background(Variant v) const { return resolve(mBackgrounds, v); }
 	const LabelStyle&     Theme::label(Variant v)     const { return resolve(mLabels, v); }
 	const TextFieldStyle& Theme::textField(Variant v) const { return resolve(mTextFields, v); }
 

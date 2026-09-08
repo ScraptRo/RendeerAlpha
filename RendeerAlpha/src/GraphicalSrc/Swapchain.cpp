@@ -6,15 +6,28 @@
 
 namespace RDA {
 
-	void Swapchain::create(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
-		createSwapchain(surface, fallbackExtent);
+	bool Swapchain::create(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+		if (!createSwapchain(surface, fallbackExtent)) return false;
 		createImageViews();
 		createSyncObjects();
+		return true;
 	}
 
-	void Swapchain::recreate(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+	bool Swapchain::recreate(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+		// Asked before destroy(), not after: a window that cannot be drawn keeps the
+		// swapchain it has rather than being left with none. Otherwise a minimise
+		// tears down a working swapchain and then fails to build its replacement,
+		// and every frame until the window comes back has nothing to present to.
+		if (!surfaceIsDrawable(surface, fallbackExtent)) return false;
 		destroy();
-		create(surface, fallbackExtent);
+		return create(surface, fallbackExtent);
+	}
+
+	bool Swapchain::surfaceIsDrawable(VkSurfaceKHR surface, VkExtent2D fallbackExtent) const {
+		const SwapChainSupportDetails support =
+			querySwapChainSupport(getPhysicalDevice(), surface);
+		const VkExtent2D extent = chooseExtent(support.capabilities, fallbackExtent);
+		return extent.width != 0 && extent.height != 0;
 	}
 
 	void Swapchain::destroy() {
@@ -39,13 +52,19 @@ namespace RDA {
 		mImages.clear();
 	}
 
-	void Swapchain::createSwapchain(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+	bool Swapchain::createSwapchain(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
 		VkPhysicalDevice physicalDevice = getPhysicalDevice();
 		SwapChainSupportDetails support = querySwapChainSupport(physicalDevice, surface);
 
 		VkSurfaceFormatKHR surfaceFormat = chooseFormat(support.formats);
 		VkPresentModeKHR   presentMode   = choosePresentMode(support.presentModes);
 		VkExtent2D         extent        = chooseExtent(support.capabilities, fallbackExtent);
+
+		// Not an error, and not logged as one: a minimised window has no area, and the
+		// caller builds this again when it is restored. Vulkan requires both dimensions
+		// to be non-zero, so reaching vkCreateSwapchainKHR with this is a validation
+		// error and an unusable swapchain rather than a smaller one.
+		if (extent.width == 0 || extent.height == 0) return false;
 
 		uint32_t imageCount = support.capabilities.minImageCount + 1;
 		if (support.capabilities.maxImageCount > 0 && imageCount > support.capabilities.maxImageCount) {
@@ -90,6 +109,7 @@ namespace RDA {
 
 		mFormat = surfaceFormat.format;
 		mExtent = extent;
+		return true;
 	}
 
 	void Swapchain::createImageViews() {
@@ -162,6 +182,12 @@ namespace RDA {
 		// framebuffer size instead of us asking GLFW (main-thread only).
 		if (caps.currentExtent.width != (std::numeric_limits<uint32_t>::max)()) {
 			return caps.currentExtent;
+		}
+		// A window with no area cannot be clamped into one. minImageExtent is at least
+		// 1x1, so clamping here would turn "minimised" into a 1x1 swapchain that draws
+		// nothing and reports no problem; the caller has to be able to see the zero.
+		if (fallback.width == 0 || fallback.height == 0) {
+			return fallback;
 		}
 		VkExtent2D extent = fallback;
 		extent.width  = std::clamp(extent.width,  caps.minImageExtent.width,  caps.maxImageExtent.width);

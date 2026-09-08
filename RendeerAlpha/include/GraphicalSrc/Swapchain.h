@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 
 namespace RDA {
@@ -13,9 +14,21 @@ namespace RDA {
 	public:
 		Swapchain() = default;
 
-		void create(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
-		void recreate(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
+		// Both answer false when the surface has no area to draw into -- a minimised
+		// window -- and recreate() then leaves the swapchain it already had alone.
+		// Vulkan refuses a zero extent outright, so this is the difference between
+		// "try again when it is back" and a validation error followed by a 0x0 depth
+		// attachment that cannot be allocated.
+		bool create(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
+		bool recreate(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
 		void destroy();
+
+		// Whether a swapchain could be made for this surface right now. Asked before
+		// anything is torn down, because the caller's cached window size is one event
+		// pump behind the surface itself: minimise a window between the last poll and
+		// the present that notices, and the cache still says 1280x800 while the
+		// surface already says nothing at all.
+		bool surfaceIsDrawable(VkSurfaceKHR surface, VkExtent2D fallbackExtent) const;
 
 		// Selects the present mode used by (re)create: true = FIFO (vsync, cap to
 		// refresh), false = prefer Mailbox (uncapped). Set once before create();
@@ -44,7 +57,7 @@ namespace RDA {
 		VkExtent2D mExtent{};
 		bool       mVsync = true; // FIFO when set, Mailbox-if-available when not
 
-		void createSwapchain(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
+		bool createSwapchain(VkSurfaceKHR surface, VkExtent2D fallbackExtent);
 		void createImageViews();
 		void createSyncObjects();
 

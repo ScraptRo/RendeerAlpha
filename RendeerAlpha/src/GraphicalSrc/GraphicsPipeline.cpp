@@ -98,19 +98,8 @@ namespace RDA {
 		return *this;
 	}
 
-	PipelineBuilder& PipelineBuilder::noVertexInput() {
-		mAttributes.clear();
-		mHasVertexInput = false;
-		return *this;
-	}
-
 	PipelineBuilder& PipelineBuilder::setTopology(VkPrimitiveTopology topology) {
 		mTopology = topology;
-		return *this;
-	}
-
-	PipelineBuilder& PipelineBuilder::setPolygonMode(VkPolygonMode mode) {
-		mPolygonMode = mode;
 		return *this;
 	}
 

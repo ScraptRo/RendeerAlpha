@@ -1,4 +1,5 @@
 ﻿#include <Layout/LayoutHost.h>
+#include "ModuleTransform.h"
 #include <Layout/Bindings.h>
 #include <GraphicalObjects/Widget.h>
 #include <Logger/Logger.h>
@@ -43,16 +44,41 @@ namespace RDA::Layout {
 
 		// Recorded after the first load, so the first check does not report a change that
 		// is only "this has not been looked at before" and recompile for nothing.
-		mSourceStamp = stampOf(mSourcePath);
+		rediscover();
+		mSourceStamp = stampAll();
 		mBlueprintStamp = stampOf(mBlueprintPath);
 		return true;
 	}
 
+	// The list is rebuilt only when something in it changed: an import can only be added
+	// by editing a file that is already watched, so the moment a new one appears is a
+	// moment this is running anyway.
+	void LayoutHost::rediscover() {
+		if (mSourcePath.empty()) { mWatched.clear(); return; }
+		mWatched = importedFiles(mSourcePath);
+		if (mWatched.empty()) mWatched.push_back(mSourcePath);
+	}
+
+	int64_t LayoutHost::stampAll() const {
+		int64_t combined = static_cast<int64_t>(mWatched.size());
+		for (const std::string& path : mWatched) {
+			// Mixed rather than summed: two files whose times move in opposite directions
+			// by the same amount would otherwise look like nothing happened.
+			combined = combined * 31 + stampOf(path);
+		}
+		return combined;
+	}
+
 	bool LayoutHost::sourceChanged() {
 		if (mSourcePath.empty()) return false;
-		const int64_t stamp = stampOf(mSourcePath);
+		const int64_t stamp = stampAll();
 		if (stamp == mSourceStamp) return false;
-		mSourceStamp = stamp;
+
+		// Whatever changed may have added or removed an import, so the set is found
+		// again before the new stamp is taken -- otherwise a file added in this edit
+		// would be reported as another change on the very next check.
+		rediscover();
+		mSourceStamp = stampAll();
 		return true;
 	}
 
@@ -92,7 +118,6 @@ namespace RDA::Layout {
 
 	bool LayoutHost::reload() {
 		if (!mParent) return false;
-		const Clock::time_point started = Clock::now();
 
 		Blueprint blueprint;
 		std::string error;
@@ -123,11 +148,12 @@ namespace RDA::Layout {
 		bindings().applyAll();
 
 		mBlueprintStamp = stampOf(mBlueprintPath);
-		mLastReloadMs = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-		++mReloads;
 		mLastError.clear();
 
-		rendeerRequestRedraw();
+		// Not just a redraw: the tree was replaced, and the retained cache decides
+		// whether to walk it by looking at input. Presenting again would present the
+		// geometry the old tree left behind.
+		rendeerInterfaceChanged();
 		return true;
 	}
 }

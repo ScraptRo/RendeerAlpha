@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -9,8 +9,8 @@
 //
 // Signals live in C++, not in the scripting runtime. That is the decision the whole
 // layout pipeline hangs off: because the value is here, a compiled binding can read it
-// without a JavaScript engine in the process, which is what lets an App-tier build ship
-// with no interpreter at all. Had they lived in JS, every application that showed a
+// without a JavaScript engine in the process, which is what lets a shipped application
+// carry no interpreter at all. Had they lived in JS, every application that showed a
 // changing number would have had to carry one.
 //
 // Nothing here walks a tree or diffs anything. A write marks the observers of that one
@@ -48,7 +48,6 @@ namespace RDA {
 		uint32_t find(std::string_view name) const;
 		size_t   count() const { return mSignals.size(); }
 
-		std::string_view name(uint32_t signal) const;
 		SignalType       type(uint32_t signal) const;
 		bool             valid(uint32_t signal) const { return signal < mSignals.size(); }
 

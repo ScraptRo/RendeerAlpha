@@ -24,7 +24,11 @@ namespace RDA::Layout {
 		String,   // "hello"
 		Number,   // 24
 		Bool,     // true
-		Size,     // a number, or "content" / "fill" / "fill:2"
+		Size,     // a number, or "content" / "fill" / "fill:2", either with an offset
+		// One of `values`, each of which may carry an offset: "center+20". Its own type
+		// rather than an Enum because the accepted set is no longer finite, and a .d.ts
+		// that listed only the bare words would reject exactly what the loader accepts.
+		Align,
 		Variant,  // a theme variant name; `values` says which theme element defines them
 		Enum,     // one of `values`, which is a '|' separated list
 		Event,    // a handler: a program that runs when the widget says so
@@ -60,5 +64,4 @@ namespace RDA::Layout {
 	const PropDesc* findProp(const WidgetDesc& widget, std::string_view prop);
 
 	// For diagnostics and for the type emitter.
-	const char* propTypeName(PropType type);
 }

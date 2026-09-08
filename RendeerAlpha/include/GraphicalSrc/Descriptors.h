@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 #include <deque>
 #include <unordered_map>
@@ -53,9 +54,6 @@ namespace RDA {
 
 		void destroy();
 		bool isValid() const { return !mPools.empty(); }
-		// How many blocks are open. Useful for confirming a size is sensible rather than
-		// assuming it: a pool count that climbs with every window means the block is small.
-		size_t poolCount() const { return mPools.size(); }
 
 	private:
 		bool addPool();
@@ -74,7 +72,6 @@ namespace RDA {
 		                              VkDeviceSize offset, VkDescriptorType type);
 		DescriptorWriter& writeImage(uint32_t binding, VkImageView view, VkSampler sampler,
 		                             VkImageLayout layout, VkDescriptorType type);
-		DescriptorWriter& writeInputAttachment(uint32_t binding, VkImageView view, VkImageLayout layout);
 
 		void update(VkDescriptorSet set);
 

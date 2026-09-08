@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <Core/Datatypes.h>
 
 // Forward declare VMA handles to keep the heavy header out of this interface.
@@ -51,10 +52,6 @@ namespace RDA{
 		// Copy tightly-packed pixel data in and leave the image ready to sample.
 		bool uploadPixels(const void* pixels, VkDeviceSize sizeBytes);
 
-		// Immediate (blocking) layout transition. For per-frame work, prefer
-		// recording a barrier into your own command buffer instead.
-		void transitionLayout(VkImageLayout newLayout);
-
 		VkImage        image()   const { return mImage; }
 		VkImageView    view()    const { return mView; }
 		VkSampler      sampler() const { return mSampler; }
@@ -80,10 +77,6 @@ namespace RDA{
 		// recycled VkImageView handle cannot promise. Zero means "holds no image", and no
 		// live texture ever has revision 0.
 		uint64_t       revision() const { return mRevision; }
-
-		// Ready-to-bind descriptor for a combined image sampler.
-		VkDescriptorImageInfo descriptorInfo(
-			VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) const;
 
 		void destroy();
 

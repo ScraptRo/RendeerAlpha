@@ -1,4 +1,5 @@
-#include <GraphicalObjects/Gui.h>
+﻿#include <GraphicalObjects/Gui.h>
+#include <Core/Utf8.h>
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -45,19 +46,34 @@ namespace RDA {
 			if (mHot == wid) clicked = true;
 			mActive = 0;
 		}
+		if (mHot == wid && mInput.pressed) setFocus(wid);
+		focusable(wid, rect);
+		if (focusActivated(wid)) clicked = true;
 		if (clicked) value = !value;
 
 		float box = rect.h;
 		Rect boxRect{ rect.x, rect.y, box, box };
-		addFrame(boxRect, (mHot == wid) ? s.boxHover : s.box, s.border, s.borderWidth, s.radius);
-		if (value) {
-			float inset = box * s.checkInset;
-			addRectRounded({ rect.x + inset, rect.y + inset, box - 2 * inset, box - 2 * inset },
-			               s.check, (std::max)(0.0f, s.radius - inset));
+		const uint32_t boxColour = motion().colour(wid ^ kMotionFill,
+			(mHot == wid) ? s.boxHover : s.box, s.motion.seconds, s.motion.curve);
+		const float radius = motion().value(wid ^ kMotionRadius, s.radius,
+		                                    s.motion.seconds, s.motion.curve);
+		addFrame(boxRect, boxColour, s.border, s.borderWidth, radius);
+
+		// The mark grows and fades rather than appearing. Ticking a box is the smallest
+		// thing an interface confirms, and it is the one most worth confirming visibly.
+		const float shown = motion().value(wid ^ kMotionMark, value ? 1.0f : 0.0f,
+		                                   s.motion.seconds, s.motion.curve);
+		if (shown > 0.004f) {
+			const float inset = box * s.checkInset;
+			const float full = box - 2.0f * inset;
+			const float size = full * shown;
+			const float centre = (full - size) * 0.5f;
+			addRectRounded({ rect.x + inset + centre, rect.y + inset + centre, size, size },
+			               fadeTo(s.check, shown), (std::max)(0.0f, radius - inset));
 		}
 		if (mFont && label && label[0]) {
-			float baseline = rect.y + rect.h * 0.5f + mFont->ascent() * 0.35f;
-			addText(rect.x + box + 8.0f, baseline, label, s.label);
+			float baselineY = rect.y + rect.h * 0.5f + baseline(s.font) * 0.35f;
+			addText(rect.x + box + 8.0f, baselineY, label, s.label, s.font);
 		}
 		return clicked;
 	}
@@ -79,13 +95,25 @@ namespace RDA {
 			if (mInput.released) mActive = 0;
 		}
 
+		if (mHot == wid && mInput.pressed) setFocus(wid);
+		focusable(wid, rect);
+		// A twentieth of the range per press, which is a usable number of presses to
+		// cross it and small enough to land on a particular value.
+		if (const int step = focusStep(wid); step != 0) {
+			const float span = maxValue - minValue;
+			const float next = std::clamp(value + step * span * 0.05f, minValue, maxValue);
+			if (next != value) { value = next; changed = true; }
+		}
+
 		float t = (maxValue > minValue) ? (value - minValue) / (maxValue - minValue) : 0.0f;
 		t = std::clamp(t, 0.0f, 1.0f);
-		addRectRounded(rect, s.track, s.radius);                                  // track
-		addRectRounded({ rect.x, rect.y, rect.w * t, rect.h }, s.fill, s.radius); // fill
+		const float radius = motion().value(wid ^ kMotionRadius, s.radius,
+		                                    s.motion.seconds, s.motion.curve);
+		addRectRounded(rect, s.track, radius);                                  // track
+		addRectRounded({ rect.x, rect.y, rect.w * t, rect.h }, s.fill, radius); // fill
 		float knob = s.knobWidth;
 		addRectRounded({ rect.x + rect.w * t - knob * 0.5f, rect.y - 2.0f, knob, rect.h + 4.0f },
-		               (mActive == wid) ? s.knobActive : s.knob, s.radius);
+		               (mActive == wid) ? s.knobActive : s.knob, radius);
 		return changed;
 	}
 
@@ -148,7 +176,14 @@ namespace RDA {
 			                                                       : static_cast<int>(s.size());
 			return end - start;
 		}
-		bool isWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+		// A byte at 0x80 or above is part of a UTF-8 sequence, and every codepoint this
+		// engine draws above ASCII is a letter or a mark on one. Counting them as word
+		// characters is what stops Ctrl+Left from halting in the middle of "café", and it
+		// needs no decoding: a continuation byte is as much part of the word as its lead.
+		bool isWordChar(char c) {
+			const unsigned char b = static_cast<unsigned char>(c);
+			return b >= 0x80 || std::isalnum(b) != 0 || b == '_';
+		}
 		// Previous / next word boundary from index i (Ctrl+Left / Ctrl+Right).
 		int wordLeft(const std::string& s, int i) {
 			if (i > 0) --i;
@@ -165,7 +200,7 @@ namespace RDA {
 	}
 
 	bool Gui::textField(const char* id, std::string& text, const Rect& rect, const TextFieldStyle& style,
-	                    bool* outFocused) {
+	                    bool* outFocused, uint64_t version) {
 		uint32_t wid = scopedId(id);
 		TextState& st = mTextStates[wid];
 
@@ -175,13 +210,24 @@ namespace RDA {
 		// Gutter (Code line numbers) sits inside the field on the left. `starts` aliases
 		// the per-field scratch buffer, so the repeated recomputes below reuse capacity.
 		std::vector<int>& starts = st.lineStarts;
-		computeLineStarts(text, starts);
+
+		// Rebuilding this walks the whole string, and it used to happen twice per frame
+		// regardless of whether anything had changed -- on a large document that dwarfs
+		// the cost of drawing the forty lines actually on screen. A caller that can say
+		// its text is unchanged keeps the index instead.
+		bool textEdited = false;
+		const bool versioned = version != 0;
+		if (!versioned || version != st.indexedVersion || text.size() != st.indexedSize) {
+			computeLineStarts(text, starts);
+			st.indexedVersion = version;
+			st.indexedSize = text.size();
+		}
 		int lineCount = static_cast<int>(starts.size());
 
 		float gutterW = 0.0f;
 		if (style.showLineNumbers && mFont) {
 			int digits = 1; for (int n = lineCount; n >= 10; n /= 10) ++digits;
-			gutterW = mFont->advance('0') * (std::max)(digits, 2) + 12.0f;
+			gutterW = mFont->advance(U'0') * (std::max)(digits, 2) + 12.0f;
 		}
 		const float scrollBarW = style.multiline ? 12.0f : 0.0f; // right strip for the scroll bar
 		float contentLeft = rect.x + gutterW + style.padding;
@@ -189,13 +235,17 @@ namespace RDA {
 		float contentRight = rect.x + rect.w - style.padding - scrollBarW;
 
 		// Helper: caret X within its line (pixels from contentLeft, pre-scroll).
-		auto caretXInLine = [&](int lineStart, int col) {
-			float x = 0.0f;
-			for (int i = 0; i < col; ++i) x += mFont ? mFont->advance(text[lineStart + i]) : 0.0f;
-			return x;
+		//
+		// A column is a byte offset -- which is what the rest of this field indexes with
+		// -- but its width is the width of the characters those bytes spell, so this asks
+		// the atlas to measure the range rather than summing byte by byte.
+		auto caretXInLine = [&](int lineStart, int col) -> float {
+			if (!mFont) return 0.0f;
+			return mFont->textWidth(text.data() + lineStart, text.data() + lineStart + col);
 		};
 
-		// Map a pointer position to a (line, col) within the text.
+		// Map a pointer position to a (line, col) within the text. The column it returns
+		// is always on a character boundary, because it only ever moves by whole ones.
 		auto lineColAt = [&](glm::vec2 p, int& outLine, int& outCol) {
 			int line = 0;
 			if (style.multiline) {
@@ -204,10 +254,15 @@ namespace RDA {
 			}
 			int len = lineLength(starts, text, line);
 			float targetX = p.x - contentLeft + st.scrollX;
+			const char* lineBegin = text.data() + starts[line];
+			const char* lineEnd = lineBegin + len;
 			int col = 0; float acc = 0.0f; float best = std::fabs(targetX);
-			for (int i = 0; i < len; ++i) {
-				acc += mFont ? mFont->advance(text[starts[line] + i]) : 0.0f;
-				if (std::fabs(acc - targetX) < best) { best = std::fabs(acc - targetX); col = i + 1; }
+			int i = 0;
+			while (i < len) {
+				uint32_t cp = 0;
+				i += static_cast<int>(Utf8::decode(lineBegin + i, lineEnd, cp));
+				acc += mFont ? mFont->advance(cp) : 0.0f;
+				if (std::fabs(acc - targetX) < best) { best = std::fabs(acc - targetX); col = i; }
 			}
 			outLine = line; outCol = col;
 		};
@@ -336,11 +391,18 @@ namespace RDA {
 			}
 			if (mInput.released) mActive = 0;
 		}
+		// In the Tab order like everything else that takes the keyboard. It draws its own
+		// caret, so the ring is the only thing this adds -- and a field reached by Tab
+		// with no ring would be a field nobody can see they are in.
+		focusable(wid, rect);
 		bool focused = (mFocused == wid);
 		if (outFocused) *outFocused = focused;
 
 		// --- editing ---
-		bool changed = false;
+		// A reference to the frame-scoped flag, so what the edits below report is still
+		// readable after this block ends -- which is where the index is brought back into
+		// step with the text.
+		bool& changed = textEdited;
 		bool activity = false;
 		if (focused && !style.readOnly) {
 			// Typed text replaces any selection.
@@ -363,21 +425,34 @@ namespace RDA {
 					else { st.selectAnchor = -1; st.boxMode = false; }
 				};
 				switch (key) {
+				// Backspace, Delete, Left and Right move by a character rather than by a
+				// byte. Typing 'ă' and pressing Backspace once has to remove the letter,
+				// not half of it -- and half of it is a broken sequence the rest of this
+				// field would then have to survive.
 				case GuiEditKey::Backspace:
 					if (hasLinearSel() || st.boxMode) deleteSelection();
-					else if (st.caret > 0) { text.erase(text.begin() + st.caret - 1); st.caret--; }
+					else if (st.caret > 0) {
+						const int from = static_cast<int>(Utf8::prev(text, static_cast<size_t>(st.caret)));
+						text.erase(text.begin() + from, text.begin() + st.caret);
+						st.caret = from;
+					}
 					changed = true; break;
 				case GuiEditKey::Delete:
 					if (hasLinearSel() || st.boxMode) deleteSelection();
-					else if (st.caret < size) text.erase(text.begin() + st.caret);
+					else if (st.caret < size) {
+						const int to = static_cast<int>(Utf8::next(text, static_cast<size_t>(st.caret)));
+						text.erase(text.begin() + st.caret, text.begin() + to);
+					}
 					changed = true; break;
 				case GuiEditKey::Left:
 					if (!shift && !ctrl && hasLinearSel()) { st.caret = (std::min)(st.selectAnchor, st.caret); st.selectAnchor = -1; }
-					else { beginMove(); st.caret = ctrl ? wordLeft(text, st.caret) : (std::max)(0, st.caret - 1); }
+					else { beginMove(); st.caret = ctrl ? wordLeft(text, st.caret)
+					                                   : static_cast<int>(Utf8::prev(text, static_cast<size_t>(st.caret))); }
 					break;
 				case GuiEditKey::Right:
 					if (!shift && !ctrl && hasLinearSel()) { st.caret = (std::max)(st.selectAnchor, st.caret); st.selectAnchor = -1; }
-					else { beginMove(); st.caret = ctrl ? wordRight(text, st.caret) : (std::min)(size, st.caret + 1); }
+					else { beginMove(); st.caret = ctrl ? wordRight(text, st.caret)
+					                                   : static_cast<int>(Utf8::next(text, static_cast<size_t>(st.caret))); }
 					break;
 				case GuiEditKey::Home: beginMove(); st.caret = starts[line]; break;
 				case GuiEditKey::End:  beginMove(); st.caret = starts[line] + lineLength(starts, text, line); break;
@@ -396,8 +471,23 @@ namespace RDA {
 					else { mFocused = 0; }
 					break;
 				case GuiEditKey::Tab:
-					if (style.mode == TextFieldMode::Code) { deleteSelection(); for (int i = 0; i < 4; ++i) { text.insert(text.begin() + st.caret, ' '); st.caret++; } changed = true; }
+					// A code field indents with it, and then it is not a focus move: the
+					// walk is told so rather than both happening.
+					if (style.mode == TextFieldMode::Code) {
+						deleteSelection();
+						for (int i = 0; i < 4; ++i) { text.insert(text.begin() + st.caret, ' '); st.caret++; }
+						changed = true;
+						consumeFocusMove();
+					}
 					break;
+				case GuiEditKey::Escape:
+					// Leaves the field rather than the application: a field is the one
+					// thing on screen that swallows every other key, so it owes the
+					// reader a way out that does not involve the mouse.
+					mFocused = 0;
+					break;
+				case GuiEditKey::Space:
+					break; // arrives as typed text too, and that is where it is inserted
 				}
 				activity = true;
 			}
@@ -424,13 +514,52 @@ namespace RDA {
 			if (changed || activity) st.blink = 0.0f;
 		}
 
-		// Recompute line layout after edits and clamp caret + selection anchor.
-		computeLineStarts(text, starts);
+		// Bring the line layout back into step, but only if something actually edited the
+		// text: this is the second of the two full scans that used to run every frame.
+		if (textEdited) {
+			computeLineStarts(text, starts);
+			st.indexedSize = text.size();
+		}
 		lineCount = static_cast<int>(starts.size());
 		st.caret = std::clamp(st.caret, 0, static_cast<int>(text.size()));
 		if (st.selectAnchor > static_cast<int>(text.size())) st.selectAnchor = static_cast<int>(text.size());
+		// A caret is a byte offset, and the things that move it without decoding -- Up and
+		// Down keeping a column, a box selection keeping a rectangle, the clamp above
+		// against a string that just got shorter -- can land it inside a character.
+		// Snapping here, in the one place they all pass through, is what lets everything
+		// else go on treating it as a plain index.
+		st.caret = static_cast<int>(Utf8::floorBoundary(text, static_cast<size_t>(st.caret)));
+		if (st.selectAnchor > 0) {
+			st.selectAnchor = static_cast<int>(Utf8::floorBoundary(text, static_cast<size_t>(st.selectAnchor)));
+		}
 		int caretLine, caretCol; caretToLineCol(starts, st.caret, caretLine, caretCol);
 		float caretX = caretXInLine(starts[caretLine], caretCol);
+
+		// Where the caret is, and where it is drawn on its way there.
+		//
+		// Eased in the *content*, not on the screen: scrolling the view moves the caret
+		// across the window without moving it through the text, and easing the screen
+		// position would have it drift out of the line it is in every time the view moved.
+		// Subtracting the scroll afterwards keeps it welded to the character it is beside.
+		//
+		// Not while the pointer is doing it. A click puts the caret where you pointed and
+		// a drag carries it with you; easing either means the caret trails the hand. Same
+		// rule as a scroll bar's thumb -- and tracked rather than skipped, because a value
+		// nobody asks for is dropped and the next keystroke would glide from nowhere.
+		float drawnCaretX = caretX;
+		float drawnCaretY = static_cast<float>(caretLine) * lineH;
+		if (style.motion.seconds > 0.0f) {
+			const uint32_t caretKey = wid ^ kMotionPlace;
+			if (mActive == wid) {
+				mMotion.reset(caretKey + 0u, drawnCaretX);
+				mMotion.reset(caretKey + 1u, drawnCaretY);
+			} else {
+				drawnCaretX = mMotion.value(caretKey + 0u, drawnCaretX,
+				                            style.motion.seconds, style.motion.curve);
+				drawnCaretY = mMotion.value(caretKey + 1u, drawnCaretY,
+				                            style.motion.seconds, style.motion.curve);
+			}
+		}
 
 		// --- scrolling ---
 		float viewW = contentRight - contentLeft;
@@ -453,7 +582,7 @@ namespace RDA {
 
 		// Mouse wheel over the field scrolls it — but only while it has somewhere to go.
 		// A field with no overflow, or one already at the end it is being pushed towards,
-		// leaves the wheel alone so an enclosing ScrollView picks it up instead. Without
+		// leaves the wheel alone so an enclosing Scroll picks it up instead. Without
 		// that, a short cell inside a long notebook would swallow the gesture.
 		if (style.multiline && inside && mInput.scroll != 0.0f && !mScrollConsumed &&
 		    maxScrollY > 0.0f &&
@@ -490,8 +619,16 @@ namespace RDA {
 		// --- syntax highlighting ---
 		// Re-lex only when the text or the language actually changed; an idle editor
 		// reuses the cached spans.
-		const Language* lang = style.language.empty() ? nullptr : mSyntax.find(style.language);
-		if (lang) {
+		const Language* lang = mSyntax.forField(style.language);
+		if (lang && versioned) {
+			// Hashing the text to notice a change is itself a walk of the whole string,
+			// so a caller that knows is asked rather than measured.
+			if (textEdited || version != st.tokenVersion || lang != st.tokenLang) {
+				SyntaxRegistry::tokenize(*lang, text, st.tokens);
+				st.tokenVersion = version;
+				st.tokenLang = lang;
+			}
+		} else if (lang) {
 			size_t hash = std::hash<std::string>{}(text);
 			if (hash != st.tokenHash || lang != st.tokenLang) {
 				SyntaxRegistry::tokenize(*lang, text, st.tokens);
@@ -505,7 +642,9 @@ namespace RDA {
 		}
 
 		// --- render ---
-		addFrame(rect, style.background, style.border, style.borderWidth, style.radius);
+		const float fieldRadius = motion().value(wid ^ kMotionRadius, style.radius,
+		                                         style.motion.seconds, style.motion.curve);
+		addFrame(rect, style.background, style.border, style.borderWidth, fieldRadius);
 		if (gutterW > 0.0f) addRect({ rect.x, rect.y, gutterW, rect.h }, style.gutter);
 		if (style.highlightCurrentLine && focused) {
 			float y = contentTop + caretLine * lineH - st.scrollY;
@@ -521,8 +660,49 @@ namespace RDA {
 				: 0;
 
 			// Selection highlight, drawn under the text.
-			if (st.boxMode || hasLinearSel()) {
+			//
+			// How much of it is there. Asked for on every frame, selection or not: a
+			// value nobody asks for is dropped, and one that had been dropped would put
+			// the next selection on the screen at full strength instead of fading it in.
+			//
+			// Nothing fades while the pointer is drawing it out. A drag is the hand, and
+			// a highlight that lagged the hand would trail the words being swept over.
+			// The same reason a double-clicked word arrives solid: that is a pointer
+			// gesture too. What fades is a selection asked for from the keyboard --
+			// select-all, or shift and a movement key.
+			//
+			// There is no fade *out*. A selection going is the one moment you need to be
+			// certain it has gone, because the next thing typed either replaces it or
+			// does not; a highlight lingering over text about to be overwritten says the
+			// opposite of what is true. The value still runs down to zero while nothing
+			// is drawn from it, so the next selection starts from where this one left.
+			float selShown = 1.0f;
+			if (style.motion.seconds > 0.0f) {
+				const uint32_t selKey = wid ^ kMotionFill;
+				const float wanted = (st.boxMode || hasLinearSel()) ? 1.0f : 0.0f;
+				if (mActive == wid) {
+					mMotion.reset(selKey, wanted);
+					selShown = wanted;
+				} else {
+					selShown = mMotion.value(selKey, wanted, style.motion.seconds,
+					                         style.motion.curve);
+				}
+			}
+
+			if ((st.boxMode || hasLinearSel()) && selShown > 0.004f) {
 				int caretL, caretC; caretToLineCol(starts, st.caret, caretL, caretC);
+				// The edge that moves is the caret's, and the caret is already being
+				// eased -- so the highlight is drawn to the same value. Left to compute
+				// its own, the caret glides to its new column while the block it bounds
+				// jumps there, and for the length of the glide the caret sits inside its
+				// own selection.
+				//
+				// Only along the line it is on: part-way through a move between lines the
+				// drawn x belongs to a line it is passing over, not to either end. And
+				// not in box mode, whose edges are a rectangle rather than a caret.
+				const bool caretOnItsLine = std::fabs(drawnCaretY -
+					static_cast<float>(caretL) * lineH) < 0.5f;
+				const bool caretLeads = st.caret >= st.selectAnchor;
 				int loLine, hiLine, colA, colB;
 				if (st.boxMode) {
 					loLine = (std::min)(st.boxAnchorLine, caretL); hiLine = (std::max)(st.boxAnchorLine, caretL);
@@ -538,9 +718,15 @@ namespace RDA {
 					int c1 = st.boxMode ? (std::min)(colB, ll) : ((ln == hiLine) ? colB : ll);
 					float x0 = caretXInLine(starts[ln], c0);
 					float x1 = caretXInLine(starts[ln], c1);
+					if (!st.boxMode && caretOnItsLine && ln == caretL) {
+						if (caretLeads) x1 = drawnCaretX; else x0 = drawnCaretX;
+					}
 					float w = x1 - x0 + ((!st.boxMode && ln != hiLine) ? 4.0f : 0.0f); // newline sliver
 					float y = contentTop + ln * lineH - st.scrollY;
-					if (w > 0.0f) addRect({ contentLeft + x0 - st.scrollX, y, w, lineH }, style.selection);
+					if (w > 0.0f) {
+						addRect({ contentLeft + x0 - st.scrollX, y, w, lineH },
+						        fadeTo(style.selection, selShown));
+					}
 				}
 			}
 
@@ -581,11 +767,27 @@ namespace RDA {
 				drawLine(starts[ln], lineLength(starts, text, ln), contentLeft - st.scrollX, y);
 			}
 			// caret
-			bool caretOn = focused && std::fmod(st.blink, 1.0f) < 0.5f;
-			if (caretOn) {
-				float cx = contentLeft + caretX - st.scrollX;
-				float cy = contentTop + caretLine * lineH - st.scrollY;
-				addRect({ cx, cy + 1.0f, style.caretWidth, lineH - 2.0f }, style.caret);
+			//
+			// The blink was a square wave: solid for half a second, gone for half a
+			// second, and the change between them instant. It still keeps that time; what
+			// it no longer does is arrive and leave in one frame, which is the difference
+			// between a cursor and something flashing at you.
+			float caretAlpha = (std::fmod(st.blink, 1.0f) < 0.5f) ? 1.0f : 0.0f;
+			if (style.motion.seconds > 0.0f) {
+				// Clamped: the fade cannot be longer than the half-second it is a fade of,
+				// or the caret would never reach either end and would only ever pulse.
+				const float fade = (std::min)(style.motion.seconds, 0.2f);
+				const float phase = std::fmod(st.blink, 1.0f);
+				if (phase < 0.5f - fade)      caretAlpha = 1.0f;
+				else if (phase < 0.5f)        caretAlpha = (0.5f - phase) / fade;
+				else if (phase < 1.0f - fade) caretAlpha = 0.0f;
+				else                          caretAlpha = (phase - (1.0f - fade)) / fade;
+			}
+			if (focused && caretAlpha > 0.004f) {
+				float cx = contentLeft + drawnCaretX - st.scrollX;
+				float cy = contentTop + drawnCaretY - st.scrollY;
+				addRect({ cx, cy + 1.0f, style.caretWidth, lineH - 2.0f },
+				        fadeTo(style.caret, caretAlpha));
 			}
 		}
 		popClip();
@@ -600,22 +802,34 @@ namespace RDA {
 				// std::to_string would construct a string per visible line.
 				char number[16];
 				int digits = std::snprintf(number, sizeof(number), "%d", ln + 1);
-				float w = 0.0f;
-				for (int i = 0; i < digits; ++i) w += mFont->advance(number[i]);
+				float w = mFont->textWidth(number, number + digits);
 				float y = contentTop + ln * lineH - st.scrollY + mFont->ascent();
 				addTextRange(rect.x + gutterW - 6.0f - w, y, number, digits, style.lineNumber);
 			}
 			popClip();
 		}
 
-		// Scroll bar on the right strip.
-		if (style.multiline && maxScrollY > 0.0f) {
-			addRect(scrollTrack, style.scrollTrack);
-			float thumbY = scrollTrack.y + (st.scrollY / maxScrollY) * trackRange;
-			Rect thumb{ scrollTrack.x, thumbY, scrollTrack.w, thumbH };
-			bool thumbHot = (mActive == scrollId) || thumb.contains(mInput.pointer);
-			addRectRounded(thumb, thumbHot ? style.scrollThumbHover : style.scrollThumb,
-			               scrollTrack.w * 0.5f);
+		// Scroll bar on the right strip. Asked for on every frame of a multiline field,
+		// scrollable this frame or not, so that typing past the bottom fades one in
+		// rather than making one appear.
+		if (style.multiline) {
+			const bool needed = maxScrollY > 0.0f;
+			const float frac = needed ? (st.scrollY / maxScrollY) : 0.0f;
+			const Rect real{ scrollTrack.x, scrollTrack.y + frac * trackRange,
+			                 scrollTrack.w, thumbH };
+			const bool thumbHot = (mActive == scrollId) ||
+			                      (needed && real.contains(mInput.pointer));
+			const ScrollBarLook bar = scrollBar(wid ^ kMotionKnob, needed, thumbHot,
+			                                    thumbH, scrollTrack.h, style);
+			if (bar.presence > 0.004f) {
+				pushOpacity(bar.presence);
+				addRect(scrollTrack, style.scrollTrack);
+				const float span = (std::max)(0.0f, scrollTrack.h - bar.thumb);
+				addRectRounded(Rect{ scrollTrack.x, scrollTrack.y + frac * span,
+				                     scrollTrack.w, bar.thumb },
+				               bar.colour, scrollTrack.w * 0.5f);
+				popOpacity();
+			}
 		}
 
 		st.blink += mInput.dt;

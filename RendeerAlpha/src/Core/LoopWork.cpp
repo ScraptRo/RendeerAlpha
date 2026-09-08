@@ -14,11 +14,6 @@ namespace RDA {
 		mStopped = false;
 	}
 
-	bool LoopWork::onServiceThread() const {
-		std::lock_guard<std::mutex> lock(mMutex);
-		return mHasServiceThread && mServiceThread == std::this_thread::get_id();
-	}
-
 	bool LoopWork::request(const std::function<void()>& work,
 	                       std::chrono::milliseconds timeout) {
 		if (!work) return false;

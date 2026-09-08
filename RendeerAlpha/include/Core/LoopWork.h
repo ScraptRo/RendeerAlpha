@@ -29,7 +29,6 @@ namespace RDA {
 		// Names the calling thread as the one that services requests. The engine calls
 		// this as its loop starts.
 		void setServiceThread();
-		bool onServiceThread() const;
 
 		// Runs `work` on the service thread and returns once it has finished.
 		//
