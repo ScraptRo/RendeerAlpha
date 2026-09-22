@@ -1,4 +1,6 @@
 ﻿#include <Layout/LayoutLoader.h>
+#include <GraphicalObjects/Motion.h>
+#include <algorithm>
 #include <Layout/Bindings.h>
 #include <Core/Commands.h>
 #include <Core/Tables.h>
@@ -48,6 +50,16 @@ namespace RDA::Layout {
 		}
 		// The word may carry a nudge: "center+20". Split first, so the words below are
 		// compared against the word alone.
+		// "below" | "above" | "right" | "left" | "over", for a <popup>.
+		Popup::Placement popupPlacementFrom(std::string_view word, Popup::Placement fallback) {
+			if (word == "below") return Popup::Placement::Below;
+			if (word == "above") return Popup::Placement::Above;
+			if (word == "right") return Popup::Placement::Right;
+			if (word == "left")  return Popup::Placement::Left;
+			if (word == "over")  return Popup::Placement::Over;
+			return fallback;
+		}
+
 		Alignment alignFrom(std::string_view text, Alignment fallback) {
 			float offset = 0.0f;
 			const std::string_view word = splitAlignOffset(text, offset);
@@ -98,6 +110,8 @@ namespace RDA::Layout {
 			// is applied below, once, for every type.
 			if (type == "container") return std::make_unique<Container>(id);
 			if (type == "panel")     return std::make_unique<Panel>(id);
+			if (type == "stream")    return std::make_unique<Stream>(id);
+			if (type == "popup")     return std::make_unique<Popup>(id);
 			if (type == "stack")     return std::make_unique<Stack>(id);
 			if (type == "scroll")    return std::make_unique<Scroll>(id);
 			if (type == "splitter")  return std::make_unique<Splitter>(id);
@@ -133,6 +147,9 @@ namespace RDA::Layout {
 			};
 			widget.visible      = bp.boolean(node, "visible", true);
 			widget.animateMs    = bp.number(node, "animate", 0.0f);
+			widget.dragWindow   = bp.boolean(node, "dragWindow", widget.dragWindow);
+			widget.route        = std::string(bp.text(node, "route"));
+			widget.pace         = paceFrom(std::string(bp.text(node, "pace")), widget.pace);
 			widget.marginRight  = bp.number(node, "marginRight", 0.0f);
 			widget.marginBottom = bp.number(node, "marginBottom", 0.0f);
 			widget.hAlignSelf   = alignFrom(bp.text(node, "hAlignSelf"), Alignment{ Align::Auto, 0.0f });
@@ -160,7 +177,15 @@ namespace RDA::Layout {
 
 			if (auto* w = dynamic_cast<Panel*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
+			} else if (auto* w = dynamic_cast<Stream*>(&widget)) {
+				w->name = std::string(bp.text(node, "name"));
+				w->fit = bp.text(node, "fit") == "stretch" ? Stream::Fit::Stretch
+				                                           : Stream::Fit::Contain;
 			} else if (auto* w = dynamic_cast<Image*>(&widget)) {
+				if (const std::string_view tint = bp.text(node, "tint"); !tint.empty()) {
+					uint32_t parsed = 0;
+					if (parseColor(std::string(tint).c_str(), parsed)) w->tint = parsed;
+				}
 				w->fit = bp.text(node, "fit") == "stretch" ? Image::Fit::Stretch
 				                                          : Image::Fit::Contain;
 			} else if (auto* w = dynamic_cast<Tabs*>(&widget)) {
@@ -172,9 +197,15 @@ namespace RDA::Layout {
 				w->value = std::string(bp.text(node, "value"));
 				const std::string_view placeholder = bp.text(node, "placeholder");
 				if (!placeholder.empty()) w->placeholder = std::string(placeholder);
+				w->of = std::string(bp.text(node, "of"));
+				const std::string_view textCol = bp.text(node, "textColumn");
+				const std::string_view valueCol = bp.text(node, "valueColumn");
+				if (!textCol.empty())  w->textColumn = std::string(textCol);
+				if (!valueCol.empty()) w->valueColumn = std::string(valueCol);
 			} else if (auto* w = dynamic_cast<Label*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->wrap = bp.boolean(node, "wrap", false);
+				w->spans = std::string(bp.text(node, "spans"));
 				w->hAlign = textAlignFrom(bp.text(node, "hAlign"), w->hAlign, w->hAlignOffset);
 				w->vAlign = textAlignFrom(bp.text(node, "vAlign"), w->vAlign, w->vAlignOffset);
 			} else if (auto* w = dynamic_cast<Button*>(&widget)) {
@@ -193,6 +224,9 @@ namespace RDA::Layout {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->setText(std::string(bp.text(node, "text")));
 				w->setPlaceholder(std::string(bp.text(node, "placeholder")));
+				w->setSuggestion(std::string(bp.text(node, "suggestion")));
+				w->language = std::string(bp.text(node, "language"));
+				w->submitKey = submitFrom(bp.text(node, "submitKey"), w->submitKey);
 			} else if (auto* w = dynamic_cast<Stack*>(&widget)) {
 				w->vertical = verticalFrom(bp.text(node, "arrange"), w->vertical);
 				w->spacing  = bp.number(node, "spacing", 4.0f);
@@ -200,13 +234,24 @@ namespace RDA::Layout {
 				w->hAlign   = alignFrom(bp.text(node, "hAlign"), w->hAlign);
 				w->vAlign   = alignFrom(bp.text(node, "vAlign"), w->vAlign);
 				w->spread   = spreadFrom(bp.text(node, "spread"), w->spread);
+			} else if (auto* w = dynamic_cast<Popup*>(&widget)) {
+				if (!variant.empty()) w->variant = Variant(variant);
+				w->open     = bp.boolean(node, "open", w->open);
+				w->anchor   = std::string(bp.text(node, "anchor"));
+				w->gap      = bp.number(node, "gap", w->gap);
+				w->padding  = bp.number(node, "padding", w->padding);
+				w->blocking = bp.boolean(node, "blocking", w->blocking);
+				w->placement = popupPlacementFrom(bp.text(node, "placement"), w->placement);
 			} else if (auto* w = dynamic_cast<ListView*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->of        = std::string(bp.text(node, "of"));
-				w->rowHeight = bp.number(node, "rowHeight", w->rowHeight);
+				w->rowHeight  = bp.number(node, "rowHeight", w->rowHeight);
+				w->rowHeights = std::string(bp.text(node, "rowHeights"));
 				w->spacing   = bp.number(node, "spacing", w->spacing);
 				w->barWidth  = bp.number(node, "barWidth", w->barWidth);
 				w->wheelStep = bp.number(node, "wheelStep", w->wheelStep);
+				w->follow    = bp.boolean(node, "follow", w->follow);
+				w->revealRow = static_cast<int>(bp.number(node, "revealRow", -1.0f));
 			} else if (auto* w = dynamic_cast<Scroll*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->vertical   = bp.boolean(node, "vertical", w->vertical);
@@ -218,6 +263,13 @@ namespace RDA::Layout {
 				w->wheelStep  = bp.number(node, "wheelStep", w->wheelStep);
 			} else if (auto* w = dynamic_cast<DockHost*>(&widget)) {
 				w->persist = std::string(bp.text(node, "persist"));
+				if (bp.text(node, "arrange") == "tiles") {
+					w->space().arrange = DockArrange::Tiles;
+				}
+				TileGrid& grid = w->space().grid();
+				grid.columns   = static_cast<int>(bp.number(node, "columns", static_cast<float>(grid.columns)));
+				grid.rowHeight = bp.number(node, "rowHeight", grid.rowHeight);
+				grid.gap       = bp.number(node, "gap", grid.gap);
 			} else if (auto* w = dynamic_cast<DockContainer*>(&widget)) {
 				// `title` was a constructor argument; the rest is where the panel starts,
 				// and only until somebody moves it.
@@ -225,6 +277,12 @@ namespace RDA::Layout {
 				w->dock     = sideFrom(bp.text(node, "side"), w->dock);
 				w->dockSize = bp.number(node, "size", w->dockSize);
 				w->closable = bp.boolean(node, "closable", w->closable);
+				// Where it starts in a tiles arrangement. A col or row nobody wrote
+				// stays negative, which is what "wherever it fits" is spelled as.
+				w->tileCol  = static_cast<int>(bp.number(node, "col", -1.0f));
+				w->tileRow  = static_cast<int>(bp.number(node, "row", -1.0f));
+				w->tileCols = static_cast<int>(bp.number(node, "cols", static_cast<float>(w->tileCols)));
+				w->tileRows = static_cast<int>(bp.number(node, "rows", static_cast<float>(w->tileRows)));
 			} else if (auto* w = dynamic_cast<Viewport*>(&widget)) {
 				std::string_view named = bp.text(node, "name");
 				if (!named.empty()) w->name = std::string(named);
@@ -353,13 +411,24 @@ namespace RDA::Layout {
 		// An event handler is a program that runs when the widget says so. It is captured
 		// in the widget's own callback rather than registered with the signal graph: it
 		// answers to input, not to state, and the widget already owns its lifetime.
+		// `row` and `slot` are set only for a handler attached inside a <list> row
+		// template, and say where to ask which row this copy of the template is showing
+		// when the handler actually fires. Everything outside a list passes nullptr and
+		// behaves exactly as it did.
 		bool attachEvent(Widget& widget, const std::string& event, Program program,
-		                 std::vector<uint32_t> ids) {
+		                 std::vector<uint32_t> ids,
+		                 ListView* row = nullptr, size_t slot = 0) {
 			// Takes the value the widget passed, so a handler that named a parameter can
 			// read it. Null for an event that carries nothing, like a click.
-			auto runner = [program = std::move(program), ids = std::move(ids), event]
+			auto runner = [program = std::move(program), ids = std::move(ids), event, row, slot]
 			              (const Value* passed) {
-				const EvalResult result = evaluate(program, signals(), ids, passed);
+				// Asked at fire time rather than captured: the slot shows a different row
+				// every time the list scrolls, and a handler captured with one of them
+				// would act on whatever was under the pointer when the layout loaded.
+				RowRef ref;
+				const bool haveRow = row && row->rowRefFor(slot, ref);
+				const EvalResult result = evaluate(program, signals(), ids, passed,
+				                                   haveRow ? &ref : nullptr);
 				if (!result.ok) {
 					RDA_LOG_WARNING("handler " << event << ": " << result.error);
 					return;
@@ -411,6 +480,42 @@ namespace RDA::Layout {
 					};
 					return true;
 				}
+			} else if (event == "onCaret") {
+				if (auto* field = dynamic_cast<TextField*>(&widget)) {
+					field->onCaret = [runner](float at) {
+						const Value passed = Value::fromNumber(at);
+						runner(&passed);
+					};
+					return true;
+				}
+			} else if (event == "onAccept") {
+				if (auto* field = dynamic_cast<TextField*>(&widget)) {
+					field->onAccept = [runner] { runner(nullptr); };
+					return true;
+				}
+			} else if (event == "onDismiss") {
+				if (auto* field = dynamic_cast<TextField*>(&widget)) {
+					field->onDismiss = [runner] { runner(nullptr); };
+					return true;
+				}
+			} else if (event == "onSubmit") {
+				if (auto* field = dynamic_cast<TextField*>(&widget)) {
+					field->onSubmit = [runner] { runner(nullptr); };
+					return true;
+				}
+			} else if (event == "onClose") {
+				if (auto* popup = dynamic_cast<Popup*>(&widget)) {
+					popup->onClose = [runner] { runner(nullptr); };
+					return true;
+				}
+			} else if (event == "onHover") {
+				// Every widget has this one -- it is on the base class, reported from
+				// placement() -- so there is no dynamic_cast to do.
+				widget.onHover = [runner](bool over) {
+					const Value passed = Value::fromBool(over);
+					runner(&passed);
+				};
+				return true;
 			}
 			return false;
 		}
@@ -424,6 +529,23 @@ namespace RDA::Layout {
 			if (instruction.op == Op::PushRowField) return true;
 		}
 		return false;
+	}
+
+	// The signals a program reads, resolved. A row binding that reads one of these has to
+	// be re-applied when it moves, and the row is the only thing that can do that -- so
+	// the list observes them and re-binds itself. Deduplicated, because one program
+	// reading the same signal twice should not put the list in the dirty list twice.
+	static std::vector<uint32_t> signalsReadBy(const Program& program,
+	                                           const std::vector<uint32_t>& ids) {
+		std::vector<uint32_t> out;
+		for (const Instruction& instruction : program.code) {
+			const bool reads = instruction.op == Op::LoadSignal ||
+			                   instruction.op == Op::StoreSignal;
+			if (!reads || instruction.operand >= ids.size()) continue;
+			const uint32_t signal = ids[instruction.operand];
+			if (std::find(out.begin(), out.end(), signal) == out.end()) out.push_back(signal);
+		}
+		return out;
 	}
 
 	// One copy of a list's row template. Called once per pooled row, so every widget
@@ -466,7 +588,10 @@ namespace RDA::Layout {
 			std::vector<uint32_t> ids = resolveNames(program, where, table);
 
 			if (record.kind == static_cast<uint32_t>(BindingKind::Event)) {
-				if (!attachEvent(*target, property, std::move(program), std::move(ids))) {
+				// Handed the list and this copy's slot, so `item` means something inside a
+				// handler as well as inside a value binding.
+				if (!attachEvent(*target, property, std::move(program), std::move(ids),
+				                 &list, list.currentSlot())) {
 					RDA_LOG_WARNING("layout: nothing answers '" << property << "' on '"
 					                << target->id() << "'");
 				}
@@ -474,6 +599,17 @@ namespace RDA::Layout {
 			}
 
 			if (readsRow(program)) {
+				// A row binding that also reads a signal: the list watches it on the row's
+				// behalf. Registered once for the list rather than once per pooled row --
+				// every copy runs the same program and the refresh re-binds all of them,
+				// so the other copies' registrations would be the same observer again.
+				if (list.currentSlot() == 0) {
+					std::vector<uint32_t> watched = signalsReadBy(program, ids);
+					if (!watched.empty()) {
+						instance.track(bindings().addRowRefresh(std::move(watched), &list));
+					}
+				}
+
 				ListView::RowBinding binding;
 				binding.program  = std::move(program);
 				binding.ids      = std::move(ids);

@@ -12,9 +12,16 @@ set(RDA_TEST_SOURCES
 	FeatureTests.cpp
 	LayoutTests.cpp
 	TextTests.cpp
+	TileTests.cpp
 	../RendeerAlpha/src/Layout/Expression.cpp
 	../RendeerAlpha/src/Layout/ThemeSchema.cpp
 	../RendeerAlpha/src/GraphicalObjects/Motion.cpp
+	# Motion::along follows a route, and a route is measured by the SVG path
+	# flattener -- so the animation layer the tests exist to cover now reaches both.
+	../RendeerAlpha/src/Core/Route.cpp
+	../RendeerAlpha/src/Core/Svg.cpp
+	../RendeerAlpha/src/Core/Colour.cpp
+	../RendeerAlpha/src/GraphicalObjects/TileGrid.cpp
 	../RendeerAlpha/src/GraphicalObjects/Syntax.cpp
 	../RendeerAlpha/src/vendor/tinyxml2/tinyxml2.cpp
 	../RendeerAlpha/src/Layout/ExpressionParser.cpp

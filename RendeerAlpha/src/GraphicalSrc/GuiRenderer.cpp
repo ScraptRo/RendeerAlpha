@@ -12,6 +12,24 @@ namespace RDA {
 		glm::vec2 translate;
 	};
 
+	// Colours arrive the way a person wrote them -- "#3A6AD0" is what a theme says and
+	// what a designer picked -- which is sRGB. The attachment is an sRGB format, so the
+	// hardware encodes linear->sRGB on the way out, and handing it an sRGB value means
+	// encoding something that was already encoded: #808080 reached the screen as #BCBCBC,
+	// and every mid-tone in every theme was too bright.
+	//
+	// Decoded here rather than when a theme loads, because this is the one point every
+	// colour in this GUI passes through -- a theme's, a layout's, an <image> tint, a
+	// drawing sent over the C ABI. Decoding in one of those would have left the others.
+	//
+	// The exact piecewise inverse rather than pow(c, 2.2), because it is the exact inverse
+	// of what the hardware does next: a colour written as #3A6AD0 comes back off the
+	// screen as #3A6AD0, not as something a byte away from it.
+	//
+	// In the vertex shader, so the interpolation between two corners happens in linear
+	// light -- which is what a gradient between two colours physically is -- and so does
+	// the alpha blending, since Vulkan blends sRGB attachments in linear space too. Alpha
+	// is left alone: it is coverage, not light, and was never gamma-encoded.
 	static const char* kGuiVertexSource = R"GLSL(
 		#version 450
 		layout(location = 0) in vec2 inPos;
@@ -20,10 +38,14 @@ namespace RDA {
 		layout(push_constant) uniform Push { vec2 scale; vec2 translate; } pc;
 		layout(location = 0) out vec2 vUV;
 		layout(location = 1) out vec4 vColor;
+		vec3 srgbToLinear(vec3 c) {
+			bvec3 low = lessThanEqual(c, vec3(0.04045));
+			return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, vec3(low));
+		}
 		void main() {
 			gl_Position = vec4(inPos * pc.scale + pc.translate, 0.0, 1.0);
 			vUV = inUV;
-			vColor = inColor;
+			vColor = vec4(srgbToLinear(inColor.rgb), inColor.a);
 		}
 	)GLSL";
 
@@ -251,6 +273,11 @@ namespace RDA {
 	}
 
 	void GuiRenderer::beginFrame(const Window* owner, uint32_t frameIndex) {
+		// Anything the interface met for the first time while it was being walked. Sent
+		// before this frame records, so the picture the GPU has matches the metrics the
+		// walk already laid the text out with.
+		mFont.uploadPending();
+
 		// The buffers are brought into existence here rather than mid-record, so a window
 		// drawing for the first time allocates before it is recording into a command
 		// buffer.

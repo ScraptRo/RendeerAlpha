@@ -16,45 +16,6 @@ namespace RDA {
 		std::atomic<uint64_t> gNextTextureRevision{ 1 };
 	}
 
-	// One-shot GPU work on the graphics queue, using a transient command pool.
-	static void immediateSubmit(const std::function<void(VkCommandBuffer)>& record) {
-		GPUInfo& gpu = getGPU();
-		VkDevice device = gpu.LDevice;
-
-		VkCommandPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-		poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-		poolInfo.queueFamilyIndex = gpu.graphicsFamily;
-		VkCommandPool pool = VK_NULL_HANDLE;
-		vkCreateCommandPool(device, &poolInfo, nullptr, &pool);
-
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandPool = pool;
-		allocInfo.commandBufferCount = 1;
-		VkCommandBuffer cmd = VK_NULL_HANDLE;
-		vkAllocateCommandBuffers(device, &allocInfo, &cmd);
-
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-		vkBeginCommandBuffer(cmd, &beginInfo);
-
-		record(cmd);
-
-		vkEndCommandBuffer(cmd);
-
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &cmd;
-		vkQueueSubmit(gpu.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-		vkQueueWaitIdle(gpu.graphicsQueue);
-
-		vkFreeCommandBuffers(device, pool, 1, &cmd);
-		vkDestroyCommandPool(device, pool, nullptr);
-	}
 
 	// Records an image layout transition, choosing sensible stage/access masks for
 	// the transitions we actually use. Falls back to broad masks otherwise.
@@ -288,6 +249,44 @@ namespace RDA {
 		return texture;
 	}
 
+	Texture Texture::loadFromMemory(const void* bytes, size_t size, bool srgb) {
+		Texture texture;
+		if (!bytes || size == 0) return texture;
+		int width = 0, height = 0, channels = 0;
+		stbi_uc* pixels = stbi_load_from_memory(static_cast<const stbi_uc*>(bytes),
+		                                        static_cast<int>(size),
+		                                        &width, &height, &channels, STBI_rgb_alpha);
+		if (!pixels) {
+			// Not logged here: the caller knows the name this was meant to be, and a
+			// decoder failure with no name attached is a line nobody can act on.
+			return texture;
+		}
+		texture = fromPixels(pixels, static_cast<uint32_t>(width),
+		                     static_cast<uint32_t>(height), srgb);
+		stbi_image_free(pixels);
+		return texture;
+	}
+
+	Texture Texture::fromPixels(const void* rgba, uint32_t width, uint32_t height, bool srgb) {
+		Texture texture;
+		if (!rgba || width == 0 || height == 0) return texture;
+
+		TextureDesc desc;
+		desc.width = width;
+		desc.height = height;
+		desc.format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+		desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		desc.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+		desc.withSampler = true;
+		desc.mipmapped = true; // content, and content gets minified
+
+		if (texture.create(desc)) {
+			const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
+			texture.uploadPixels(rgba, size);
+		}
+		return texture;
+	}
+
 	bool Texture::uploadPixels(const void* pixels, VkDeviceSize sizeBytes) {
 		if (!isValid() || !pixels || sizeBytes == 0) return false;
 
@@ -370,6 +369,53 @@ namespace RDA {
 		return true;
 	}
 
+	bool Texture::uploadRegion(const void* pixels, uint32_t x, uint32_t y,
+	                           uint32_t width, uint32_t height, uint32_t bytesPerPixel) {
+		if (!isValid() || !pixels || width == 0 || height == 0 || bytesPerPixel == 0) return false;
+		if (x + width > mExtent.width || y + height > mExtent.height) return false;
+
+		const VkDeviceSize sizeBytes =
+			static_cast<VkDeviceSize>(width) * height * bytesPerPixel;
+
+		MemoryBuffer staging;
+		if (!staging.create(sizeBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, MemoryResidence::CpuToGpu)) {
+			return false;
+		}
+		if (!staging.upload(pixels, sizeBytes)) return false;
+
+		VkBuffer stagingHandle = staging.handle();
+		VkImage image = mImage;
+		VkImageAspectFlags aspect = mAspect;
+		// Where the image is now decides how it has to be transitioned back: one that has
+		// been drawn with is readable by the shader, one fresh from create() is undefined.
+		const VkImageLayout was = mLayout;
+
+		immediateSubmit([=](VkCommandBuffer cmd) {
+			recordTransition(cmd, image, aspect, was,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 1);
+
+			VkBufferImageCopy region{};
+			region.bufferOffset = 0;
+			region.bufferRowLength = 0;   // tightly packed
+			region.bufferImageHeight = 0;
+			region.imageSubresource.aspectMask = aspect;
+			region.imageSubresource.mipLevel = 0;
+			region.imageSubresource.baseArrayLayer = 0;
+			region.imageSubresource.layerCount = 1;
+			region.imageOffset = { static_cast<int32_t>(x), static_cast<int32_t>(y), 0 };
+			region.imageExtent = { width, height, 1 };
+			vkCmdCopyBufferToImage(cmd, stagingHandle, image,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+			recordTransition(cmd, image, aspect,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+		});
+
+		mLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		return true;
+	}
+
 	void Texture::destroy() {
 		// See MemoryBuffer::destroy — textures may outlive the engine's shutdown,
 		// by which point the device/allocator have already freed everything.
@@ -400,4 +446,10 @@ namespace RDA {
 			mAllocation = nullptr;
 		}
 	}
+	void Texture::transitionTo(VkCommandBuffer cmd, VkImageLayout newLayout) {
+		if (!mImage || mLayout == newLayout) return;
+		recordTransition(cmd, mImage, mAspect, mLayout, newLayout, 0, mMipLevels);
+		mLayout = newLayout;
+	}
+
 }

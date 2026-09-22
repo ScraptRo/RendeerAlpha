@@ -319,6 +319,33 @@ namespace RDA {
 		SizeSpec width;
 		SizeSpec height;
 
+		// The shape this travels along when it moves, written as an SVG path, and how fast
+		// it travels it. Two curves, and they are independent on purpose: the same arc at
+		// a different pace, or the same pace along a different arc, are different motions
+		// and neither should require re-authoring the other.
+		//
+		// The route is fitted to the journey -- its first point on where the move starts,
+		// its last on where it ends, turned and scaled -- so it bends relative to the
+		// direction of travel and one route serves any two places. Empty is a straight
+		// line, which is what everything did before this existed.
+		//
+		// Needs `animate` to be more than zero: a route is a shape to travel, and
+		// something arriving instantly does not travel.
+		std::string route;
+		Pace        pace;
+
+		// Dragging this moves the whole window.
+		//
+		// For a window opened with no OS frame, where the layout draws its own title bar
+		// and would otherwise have drawn something that cannot be picked up. A property
+		// rather than a `<titlebar>` element, because the bar is whatever the designer
+		// made it -- a stack, a panel, a label -- and only one of its jobs is being a
+		// handle.
+		//
+		// A button inside it still takes its own press: this is declared before the
+		// children draw, and the one under the pointer last is the one that gets it.
+		bool dragWindow = false;
+
 		// This child's own answer to the container's hAlign and vAlign. Whichever of the
 		// two lies across the stacking axis is the one a container reads; the other is
 		// ignored, exactly as the container's own setting for that axis is.
@@ -434,11 +461,26 @@ namespace RDA {
 		// that stops being laid out falls back cleanly on the next frame.
 		Rect placement(Gui& gui, glm::vec2 origin);
 
+	public:
+		// The pointer arrived, or left. Fired on the change rather than every frame, so a
+		// handler is asked a question rather than told a fact sixty times a second.
+		//
+		// Reported from placement(), which is the one call every widget's paint makes to
+		// find out where it ended up -- so this works for a row, a panel, a label, and
+		// anything added later, without each of them knowing about it. A widget that is
+		// not painted does not report, which is what makes a row scrolled out of view
+		// stay quiet; and an inert subtree has the pointer moved far away, so it reports
+		// a leave and nothing else.
+		std::function<void(bool)> onHover;
+
+	protected:
+
 		std::string mId;
 		std::vector<std::unique_ptr<Widget>> mChildren;
 		Widget* mParent = nullptr;
 		Rect mArranged{};
 		bool mArrangedValid = false;
+		bool mHovered = false;      // what onHover last reported
 	};
 
 	// Marks the span in which a widget tree is being walked and painted.
@@ -615,6 +657,63 @@ namespace RDA {
 		void paint(Gui& gui, glm::vec2 origin) override;
 	};
 
+	// A panel that draws over everything, beside the widget it belongs to, and closes when
+	// the pointer goes somewhere else.
+	//
+	// Every dropdown, menu, tooltip, autocomplete list and dialog wants the same three
+	// things -- draw above, take the input first, close when it is not wanted -- and
+	// without this every application rebuilds them out of a <container>, a transparent
+	// full-area <button> and arithmetic against the window's width. That pattern works
+	// and is slightly wrong in a different way each time.
+	//
+	// It is a Container, so what is inside it is an ordinary layout: a <stack> of buttons
+	// is a menu, a <list> is a picker, a <label> is a tooltip. This widget is only the
+	// surface, where it goes, and when it goes away.
+	class Popup : public Container {
+	public:
+		// Which edge of the anchor to sit against. `Over` covers it, for a picker that
+		// replaces the control rather than hanging off it.
+		enum class Placement : uint8_t { Below, Above, Right, Left, Over };
+
+		explicit Popup(std::string id) : Container(std::move(id)) {}
+
+		// Showing or not. Bindable, and the application owns it: this never writes the
+		// signal, it calls onClose and lets the layout decide -- the same shape every
+		// other two-way property here has.
+		bool open = false;
+
+		// The full id path of the widget to hang off -- "root/toolbar/model", the path the
+		// log, the probe and rda_focus all spell, not the bare id. Empty means the popup
+		// is placed by its own x/y/w/h, like anything else in a container.
+		//
+		// The engine has to remember where that widget was drawn to do this, which nothing
+		// else needs; see Gui::wantAnchor for what it costs.
+		std::string anchor;
+		Placement   placement = Placement::Below;
+		float       gap = 4.0f;       // pixels between the anchor and this
+		float       padding = 8.0f;   // inset around its children, and what it adds to its own size
+
+		// While it is open, nothing underneath hovers or clicks: the interface behind a
+		// menu is behind it. Off for a tooltip, or anything that floats without taking
+		// over.
+		bool blocking = true;
+
+		// A press outside it, or Escape. The layout closes itself here -- `open` is a
+		// binding, so writing false to the signal is what actually shuts it.
+		std::function<void()> onClose;
+
+		Variant variant = kDefaultVariant;  // a panel variant, for the surface
+
+		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
+		void paint(Gui& gui, glm::vec2 origin) override;
+		void paintAbove(Gui& gui, glm::vec2 origin) override;
+
+	private:
+		// Where it was drawn last, so the dismissal can ask whether the press was inside
+		// it -- which happens in the same call that would otherwise have to guess.
+		Rect mShown{};
+	};
+
 	// A line of text.
 	class Label : public Widget {
 	public:
@@ -626,6 +725,21 @@ namespace RDA {
 		// edge. Off by default: a caption that silently became three lines tall would
 		// move everything under it, and most labels are one line on purpose.
 		bool        wrap = false;
+		// Runs of the text drawn in their own colour, as `start:length:colour` triples
+		// separated by `;` -- "0:3:#E06C75;4:6:#61AFEF". Offsets are bytes.
+		//
+		// A string rather than a shape, because that is what makes it bindable: it is a
+		// column like any other, so a row can carry its own colouring and a list gets
+		// syntax colour, a diff or a search highlight without a new mechanism. Anything
+		// no span covers is drawn in the label's own colour.
+		//
+		// Parsed once per distinct value -- see runs().
+		std::string spans;
+
+		// `spans`, parsed, clamped to the text and put in order. Rebuilt only when the
+		// string or the text it indexes actually changes, so a label re-bound to the same
+		// value every frame parses nothing.
+		const std::vector<TextSpan>& runs() const;
 		// Where the text sits in the box the layout gave this label, across and down.
 		// Named for the axes rather than for the container, which is the same pair a
 		// stack answers and means the same thing here.
@@ -644,6 +758,14 @@ namespace RDA {
 		// like it means.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+
+	private:
+		// What runs() built, and what it built them from. Two keys rather than one: the
+		// spans are clamped to the text, so the same string over a shorter text is a
+		// different answer -- which is exactly what a list row re-bound to a new row is.
+		mutable std::vector<TextSpan> mRuns;
+		mutable std::string           mRunsFrom;
+		mutable size_t                mRunsTextSize = static_cast<size_t>(-1);
 	};
 
 	// A clickable button. onClick fires once on each completed click.
@@ -720,8 +842,25 @@ namespace RDA {
 			: Widget(std::move(id)), source(std::move(source)) {}
 		~Image() override;
 
+		// A file beside the running program, or "mem:<name>" for a picture a backend
+		// registered -- see Images.h. Bindable either way, so one <image> can show a file
+		// now and a model's answer a moment later.
+		//
+		// A path ending in .svg is drawn rather than loaded: the shape is rasterised at
+		// whatever size the layout turned out to give this widget, so it is sharp at that
+		// size and at the next one, and on a display at 150% it is sharp at a size nobody
+		// exported. See Core/Svg.h.
 		std::string source;
 		Fit         fit = Fit::Contain;
+
+		// Multiplied into the picture. White leaves it alone, which is the default and is
+		// what a photograph wants; a colour is what turns one white-drawn icon into every
+		// colour a theme has, without a second file or a second rasterisation.
+		//
+		// This is why an SVG's `currentColor` -- and a fill it never stated -- come out
+		// white rather than the black the specification says: white is the one colour a
+		// tint can still turn into any other.
+		uint32_t    tint = rgba(255, 255, 255);
 
 		// The picture's own size in pixels, so width="content" means what it looks like.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
@@ -731,13 +870,78 @@ namespace RDA {
 		void ensureLoaded() const;
 		// Hands the texture to the engine to destroy at a safe moment. See Image::release.
 		void release() const;
+		// The same, for the frames of a loop. Its own function because there are three
+		// places a loop is dropped and every one of them has to go through the engine:
+		// clearing the vector destroys the textures where they stand, which is a
+		// use-after-free whenever the GUI is still describing one. See Image::release.
+		void retireFrames() const;
 
 		// Held by pointer so its address survives this widget. The frame's draw list was
 		// built before the update that destroys this widget ran, and it still refers to
 		// the texture by address when it is recorded afterwards.
 		mutable std::unique_ptr<Texture> mTexture;
-		mutable std::string mLoaded;  // the path mTexture holds, so a change reloads
+		// A registered picture is borrowed rather than owned: the registry holds it, two
+		// <image>s naming it share one, and redefining the name replaces what both draw.
+		// The revision is how a redefine is noticed -- the pointer may well be reused.
+		mutable const Texture* mShared = nullptr;
+		mutable uint64_t       mSharedRevision = 0;
+		mutable std::string mLoaded;  // the source the above were resolved from
 		mutable bool        mFailed = false;
+
+		// A drawn picture, kept parsed so that changing size re-draws rather than
+		// re-reads, and the size it was last drawn at.
+		mutable std::shared_ptr<void> mDrawing;   // Svg::Picture, held without the header
+		mutable uint32_t    mDrawnWidth = 0;
+		mutable uint32_t    mDrawnHeight = 0;
+
+		// A drawing that moves, rasterised once into the frames of its loop.
+		//
+		// Not re-drawn per frame: the rasteriser walks every edge of every shape for every
+		// sub-scanline, which is nothing once and real work sixty times a second. A loop
+		// is short and an icon is small -- thirty frames of a 24px icon is seventy
+		// kilobytes -- so playing it is picking a texture, and costs what showing a still
+		// one costs.
+		mutable std::vector<std::unique_ptr<Texture>> mFrames;
+		mutable float mLoopSeconds = 0.0f;
+		mutable float mPlayhead = 0.0f;
+
+		// Reads the file, or the drawing, for `source`. Separate from ensureLoaded because
+		// a drawing needs a size and a size is only known once the widget is placed.
+		void ensureDrawn(uint32_t width, uint32_t height) const;
+		bool isDrawing() const;
+
+		// Whichever of the two this image is showing, or null.
+		const Texture* active() const { return mShared ? mShared : mTexture.get(); }
+	};
+
+	// A picture that keeps arriving: a camera, a decoded video, a model's output as it is
+	// produced, the result of a filter that runs every frame.
+	//
+	// The difference from `<image src="mem:...">` is what happens on the second frame.
+	// An image is registered, which builds a texture; a stream is pushed, which writes
+	// into the one already there. At thirty frames a second that is the difference
+	// between a feed and a stall -- see Streams.h.
+	//
+	// It also reports that it is being looked at. A producer can ask whether anybody is
+	// watching before it decodes the next frame, which is what stops a feed on a screen
+	// nobody is showing from costing anything.
+	class Stream : public Widget {
+	public:
+		enum class Fit : uint8_t {
+			Contain, // the whole frame inside the box, aspect kept, centred
+			Stretch, // fill the box, aspect ignored
+		};
+		explicit Stream(std::string id, std::string name = {})
+			: Widget(std::move(id)), name(std::move(name)) {}
+
+		// Which stream to show. Bindable, so one widget can follow whichever feed is
+		// selected.
+		std::string name;
+		Fit         fit = Fit::Contain;
+
+		// The frame's own size in pixels, so width="content" means what it looks like.
+		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
+		void paint(Gui& gui, glm::vec2 origin) override;
 	};
 
 	// One page of a Tabs. A container with a title; the title is what the tab bar says.
@@ -804,6 +1008,26 @@ namespace RDA {
 		Variant                          variant = kDefaultVariant;
 		std::function<void(std::string)> onChange;
 
+		// A declared table to take the choices from, instead of <option> children.
+		//
+		// <option> is written in the layout and compiled ahead of time, which is right
+		// for a fixed set and impossible for one the machine discovers -- the models
+		// installed, a recent-files list, the tables in a database. Naming a table here
+		// is the same answer <list> already gives, and there is then no maximum to
+		// declare and nothing to hide.
+		std::string of;
+		std::string textColumn  = "text";   // the column a row shows
+		std::string valueColumn = "value";  // the column a row means
+
+		// How many choices there are, and what the i-th one says and means.
+		//
+		// One pair of accessors rather than five loops, because the choices now come from
+		// two places and every one of those loops had to agree about which. The <option>
+		// path skips a hidden child, which is what makes "declare a maximum and bind
+		// visible" work as well -- it silently did not, and drew blank rows.
+		size_t choiceCount() const;
+		bool   choiceAt(size_t index, std::string_view& text, std::string_view& value) const;
+
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
 		void paintAbove(Gui& gui, glm::vec2 origin) override;
@@ -860,6 +1084,35 @@ namespace RDA {
 			mPlaceholder = std::move(value);
 		}
 
+		// A completion to offer ahead of the caret. Not part of the value: it is drawn,
+		// and it is taken with Tab or dropped with Escape, and until then the text is
+		// exactly what was typed.
+		void setSuggestion(std::string value) { mSuggestion = std::move(value); }
+		const std::string& suggestion() const { return mSuggestion; }
+
+		// Where the caret is, whenever it moves or the text changes. A completion is a
+		// function of the prefix and the suffix, so the caret is the other half of what
+		// an application needs -- onChange alone hands back the whole contents and no
+		// idea where in it the reader is.
+		std::function<void(float)> onCaret;
+		// Tab took the suggestion; Escape dropped it. Handled inside the field, so the
+		// application never sees a keystroke -- it sees that its offer was taken.
+		std::function<void()>      onAccept;
+		std::function<void()>      onDismiss;
+		// The send gesture, whichever one `submitKey` names.
+		std::function<void()>      onSubmit;
+
+		// Which keystroke sends, overriding what the mode would choose. This is how a
+		// chat composer is multi-line and still sends on Enter, with Shift+Enter for a
+		// line -- the one combination the modes could not express. See SubmitKey.
+		SubmitKey                  submitKey = SubmitKey::Default;
+
+		// The grammar to colour with, overriding the variant's. A variant owns the
+		// palette, which is a theme's business; which language is in the field is the
+		// document's, and an application should not need a variant per grammar -- nor
+		// be unable to colour one its theme never heard of.
+		std::string                language;
+
 		// Never zero, because zero is what a caller passes to say it cannot tell.
 		uint64_t textVersion() const { return mTextVersion; }
 		TextFieldStyle                         style;
@@ -877,6 +1130,8 @@ namespace RDA {
 	private:
 		std::string mText;
 		std::string mPlaceholder;
+		std::string mSuggestion;
+		int         mLastCaret = -1;   // so onCaret fires on a move, not every frame
 		uint64_t    mTextVersion = 1;
 		// How many lines mText holds, and which version was counted. Height follows line
 		// count, so measuring used to count newlines across the whole document every

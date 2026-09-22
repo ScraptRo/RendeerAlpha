@@ -13,6 +13,44 @@ namespace RDA {
 	static constexpr int kMaxAtlasHeight = 4096;
 	static constexpr size_t kMaxReportedMissing = 8;
 
+	// Rows kept below the baked bands for glyphs nobody declared.
+	//
+	// Sized for what a session actually meets rather than for a script: a reader who
+	// sees twenty distinct emoji in an afternoon is the normal case, and a thousand rows
+	// holds several hundred of them at interface sizes. When it runs out the replacement
+	// box comes back, which is what this did for every one of them before.
+	static constexpr int kOnDemandRows = 1024;
+
+	// One padding texel around a baked glyph, the same as the packer leaves, so bilinear
+	// sampling at the edge of one cannot reach into its neighbour.
+	static constexpr int kGlyphPad = 1;
+
+	// The faces, in the order they were named. Kept for the life of the atlas: a glyph
+	// baked on demand hours later is rasterised from the same font the first one was.
+	struct FontAtlas::Faces {
+		struct Face {
+			std::vector<unsigned char> ttf;
+			stbtt_fontinfo             info{};
+		};
+		std::vector<Face> faces;
+	};
+
+	FontAtlas::FontAtlas() : mFaces(std::make_unique<Faces>()) {}
+	FontAtlas::~FontAtlas() = default;
+
+	void FontAtlas::destroy() {
+		mTexture.destroy();
+		mSizes.clear();
+		mPresent.clear();
+		mMissing.clear();
+		mPixels.clear();
+		if (mFaces) mFaces->faces.clear();
+		mShelfX = mShelfY = mShelfHeight = 0;
+		mDirtyTop = mDirtyBottom = 0;
+		mRoomWarned = false;
+		++mRevision;
+	}
+
 	namespace {
 		// Packing asks for a bitmap and does not report how much of it was used, so how
 		// tall a size needs to be is only known once its glyphs have been placed. Each
@@ -30,24 +68,66 @@ namespace RDA {
 			RDA_LOG_ERROR("Font atlas asked for no sizes: " << ttfPath);
 			return false;
 		}
-		std::ifstream file(ttfPath, std::ios::binary | std::ios::ate);
-		if (!file) {
-			RDA_LOG_ERROR("Font file not found: " << ttfPath);
-			return false;
+		// One path, or several separated by ';'. The first is the body font; the rest are
+		// only ever asked about a codepoint the ones before them do not have.
+		std::vector<std::string> paths;
+		for (size_t at = 0; at <= ttfPath.size();) {
+			const size_t stop = ttfPath.find(';', at);
+			std::string one = ttfPath.substr(at, stop == std::string::npos ? std::string::npos : stop - at);
+			// Trimmed, because "body.ttf; fallback.ttf" is what a person writes.
+			while (!one.empty() && (one.front() == ' ' || one.front() == '\t')) one.erase(one.begin());
+			while (!one.empty() && (one.back() == ' ' || one.back() == '\t')) one.pop_back();
+			if (!one.empty()) paths.push_back(std::move(one));
+			if (stop == std::string::npos) break;
+			at = stop + 1;
 		}
-		std::streamsize size = file.tellg();
-		file.seekg(0);
-		std::vector<unsigned char> ttf(static_cast<size_t>(size));
-		if (!file.read(reinterpret_cast<char*>(ttf.data()), size)) {
-			RDA_LOG_ERROR("Failed to read font file: " << ttfPath);
+		if (paths.empty()) {
+			RDA_LOG_ERROR("Font atlas asked for no font: " << ttfPath);
 			return false;
 		}
 
-		stbtt_fontinfo font{};
-		if (!stbtt_InitFont(&font, ttf.data(), stbtt_GetFontOffsetForIndex(ttf.data(), 0))) {
-			RDA_LOG_ERROR("Not a font this can read: " << ttfPath);
-			return false;
+		mFaces->faces.clear();
+		for (const std::string& path : paths) {
+			std::ifstream file(path, std::ios::binary | std::ios::ate);
+			if (!file) {
+				// The body font not being there is fatal; a fallback not being there is a
+				// fact about this machine, and an interface without emoji still works.
+				if (mFaces->faces.empty()) {
+					RDA_LOG_ERROR("Font file not found: " << path);
+					return false;
+				}
+				RDA_LOG_WARNING("Fallback font not found, skipping it: " << path);
+				continue;
+			}
+			std::streamsize size = file.tellg();
+			file.seekg(0);
+			Faces::Face face;
+			face.ttf.resize(static_cast<size_t>(size));
+			if (!file.read(reinterpret_cast<char*>(face.ttf.data()), size)) {
+				if (mFaces->faces.empty()) {
+					RDA_LOG_ERROR("Failed to read font file: " << path);
+					return false;
+				}
+				RDA_LOG_WARNING("Fallback font could not be read, skipping it: " << path);
+				continue;
+			}
+			if (!stbtt_InitFont(&face.info, face.ttf.data(),
+			                    stbtt_GetFontOffsetForIndex(face.ttf.data(), 0))) {
+				if (mFaces->faces.empty()) {
+					RDA_LOG_ERROR("Not a font this can read: " << path);
+					return false;
+				}
+				RDA_LOG_WARNING("Fallback is not a font this can read, skipping it: " << path);
+				continue;
+			}
+			mFaces->faces.push_back(std::move(face));
 		}
+
+		// Everything below bakes the preloaded blocks from the body font, as it always
+		// has. The fallbacks are for what those blocks do not cover, which is decided one
+		// codepoint at a time in bakeOnDemand.
+		const std::vector<unsigned char>& ttf = mFaces->faces.front().ttf;
+		stbtt_fontinfo& font = mFaces->faces.front().info;
 
 		// ---- which of the wanted codepoints this font actually draws -----------------
 		//
@@ -167,8 +247,10 @@ namespace RDA {
 
 		// Four rows for the white block, and two spare so bilinear sampling at the edge of
 		// the last glyph cannot reach into it.
+		// The baked bands, the white block, and the room on-demand glyphs go in.
+		mDynamicTop = totalRows + 6;
 		int atlasHeight = 1;
-		while (atlasHeight < totalRows + 6) atlasHeight *= 2;
+		while (atlasHeight < mDynamicTop + kOnDemandRows) atlasHeight *= 2;
 		if (atlasHeight > kMaxAtlasHeight) {
 			RDA_LOG_ERROR("Font atlas would need " << atlasHeight << " rows for "
 			              << pixelHeights.size() << " sizes; ask for fewer, or smaller ones");
@@ -231,6 +313,16 @@ namespace RDA {
 			RDA_LOG_ERROR("Failed to create font atlas texture");
 			return false;
 		}
+		// Kept, because an on-demand glyph is drawn into it and the rectangle it touched
+		// is what gets sent. Without a copy there would be nothing to draw into.
+		mShelfX = 0;
+		mShelfY = mDynamicTop;
+		mShelfHeight = 0;
+		mDirtyTop = mDirtyBottom = 0;
+		mRoomWarned = false;
+		++mRevision;
+
+		mPixels = bitmap;   // the copy on-demand glyphs are drawn into
 		if (!mTexture.uploadPixels(bitmap.data(),
 		                           static_cast<VkDeviceSize>(kAtlasWidth) * atlasHeight)) {
 			RDA_LOG_ERROR("Failed to upload font atlas");
@@ -320,46 +412,167 @@ namespace RDA {
 			return;
 		}
 
-		// Two different problems, and telling them apart is the whole value of the line:
-		// a codepoint outside GlyphRanges.h is a limit of this engine, one inside it is a
-		// limit of the font the application chose. Only the second can be fixed by
-		// changing a setting.
+		// Since anything outside GlyphRanges.h is baked on demand from whichever face has
+		// it, getting here at all means no face did -- which is a fact about the fonts
+		// this application named, and fixable by naming another. The one exception is a
+		// codepoint inside the preloaded table, where the body font is the only one asked.
 		const bool inTable = glyphSlot(cp) >= 0;
 		char code[16];
 		std::snprintf(code, sizeof(code), "U+%04X", cp);
 		if (inTable) {
-			RDA_LOG_WARNING(code << " is drawn as a box: the font in use does not have it.");
+			RDA_LOG_WARNING(code << " is drawn as a box: the body font does not have it.");
 		} else {
-			RDA_LOG_WARNING(code << " is drawn as a box: it is outside the range in"
-			                        " GlyphRanges.h, which is Latin only.");
+			RDA_LOG_WARNING(code << " is drawn as a box: none of the fonts given has a"
+			                        " glyph for it. Add a face that does, after a ';' in"
+			                        " the font path.");
 		}
 	}
 
-	int FontAtlas::slotFor(uint32_t cp) const {
-		const int slot = glyphSlot(cp);
-		if (slot >= 0 && static_cast<size_t>(slot) < mPresent.size() && mPresent[static_cast<size_t>(slot)]) {
-			return slot;
+	void FontAtlas::uploadPending() const {
+		if (mDirtyBottom <= mDirtyTop || !mTexture.isValid() || mPixels.empty()) return;
+		const int rows = mDirtyBottom - mDirtyTop;
+		mTexture.uploadRegion(mPixels.data() + static_cast<size_t>(mDirtyTop) * kAtlasWidth,
+		                      0, static_cast<uint32_t>(mDirtyTop),
+		                      static_cast<uint32_t>(kAtlasWidth), static_cast<uint32_t>(rows));
+		mDirtyTop = mDirtyBottom = 0;
+	}
+
+	bool FontAtlas::bakeOnDemand(uint32_t cp, int index) const {
+		if (!mFaces || mFaces->faces.empty() || mPixels.empty()) return false;
+		if (index < 0 || static_cast<size_t>(index) >= mSizes.size()) return false;
+		const Size& size = mSizes[static_cast<size_t>(index)];
+
+		// The first face that has it. This is the whole of the fallback rule, and it is
+		// per codepoint rather than per font: a monospace body keeps the alphabet and an
+		// emoji face is asked only about what the body does not draw.
+		const stbtt_fontinfo* chosen = nullptr;
+		int glyph = 0;
+		for (const Faces::Face& face : mFaces->faces) {
+			const int found = stbtt_FindGlyphIndex(&face.info, static_cast<int>(cp));
+			if (found != 0) { chosen = &face.info; glyph = found; break; }
 		}
+		if (!chosen) {
+			// Nobody has it. Remembered as the replacement box rather than simply
+			// refused, so the next draw is a map hit instead of another walk over every
+			// face -- which for a document in a script none of them covers is the
+			// difference between one search and one per character per frame.
+			const auto box = (static_cast<size_t>(kReplacementSlot) < size.glyphs.size())
+				? size.glyphs[static_cast<size_t>(kReplacementSlot)] : BakedGlyph{};
+			size.onDemand.emplace(cp, box);
+			noteMissing(cp);
+			// No revision bump: nothing new was drawn into the atlas, and forcing a walk
+			// for a box that was already on screen would be a frame for nothing.
+			return true;
+		}
+
+		const float scale = stbtt_ScaleForPixelHeight(chosen, size.pixelHeight);
+		int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		stbtt_GetGlyphBitmapBox(chosen, glyph, scale, scale, &x0, &y0, &x1, &y1);
+		const int w = x1 - x0;
+		const int h = y1 - y0;
+
+		int advanceRaw = 0, bearing = 0;
+		stbtt_GetGlyphHMetrics(chosen, glyph, &advanceRaw, &bearing);
+
+		BakedGlyph baked{};
+		baked.xadvance = advanceRaw * scale;
+		baked.xoff = static_cast<float>(x0);
+		baked.yoff = static_cast<float>(y0);
+
+		if (w <= 0 || h <= 0) {
+			// A codepoint the face draws as nothing -- a space of its own, a joiner. It
+			// still advances, and recording it means never asking this question again.
+			size.onDemand.emplace(cp, baked);
+			++mRevision;
+			return true;
+		}
+
+		// A shelf: fill along a row, drop to a new one below the tallest thing on it.
+		const int needW = w + kGlyphPad;
+		const int needH = h + kGlyphPad;
+		if (mShelfX + needW > kAtlasWidth) {
+			mShelfY += mShelfHeight;
+			mShelfX = 0;
+			mShelfHeight = 0;
+		}
+		const int atlasHeight = static_cast<int>(mAtlasH);
+		if (mShelfY + needH > atlasHeight) {
+			if (!mRoomWarned) {
+				mRoomWarned = true;
+				RDA_LOG_WARNING("Font atlas has no room left for new glyphs; the rest draw "
+				                "as the replacement box. Ask for fewer sizes, or smaller ones.");
+			}
+			return false;
+		}
+
+		const int px = mShelfX;
+		const int py = mShelfY;
+		// Straight into the CPU copy, one row at a time, at the atlas' stride.
+		stbtt_MakeGlyphBitmap(chosen,
+			mPixels.data() + static_cast<size_t>(py) * kAtlasWidth + px,
+			w, h, kAtlasWidth, scale, scale, glyph);
+
+		mShelfX += needW;
+		mShelfHeight = (std::max)(mShelfHeight, needH);
+
+		baked.x0 = static_cast<unsigned short>(px);
+		baked.y0 = static_cast<unsigned short>(py);
+		baked.x1 = static_cast<unsigned short>(px + w);
+		baked.y1 = static_cast<unsigned short>(py + h);
+		size.onDemand.emplace(cp, baked);
+
+		// Grow the pending rectangle rather than sending now: a line that met twenty new
+		// characters is one upload at the end of the frame instead of twenty stalls.
+		if (mDirtyBottom <= mDirtyTop) {
+			mDirtyTop = py;
+			mDirtyBottom = py + h;
+		} else {
+			mDirtyTop = (std::min)(mDirtyTop, py);
+			mDirtyBottom = (std::max)(mDirtyBottom, py + h);
+		}
+		++mRevision;
+		return true;
+	}
+
+	const BakedGlyph* FontAtlas::glyphFor(uint32_t cp, int index) const {
+		const Size& size = at(index);
+		if (size.glyphs.empty()) return nullptr;
+
+		// The preloaded table: an array index, and what almost every character hits.
+		const int slot = glyphSlot(cp);
+		if (slot >= 0 && static_cast<size_t>(slot) < mPresent.size()
+		    && mPresent[static_cast<size_t>(slot)]) {
+			return &size.glyphs[static_cast<size_t>(slot)];
+		}
+
+		// Then whatever has already been baked, and then baking it.
+		const auto found = size.onDemand.find(cp);
+		if (found != size.onDemand.end()) return &found->second;
+		if (bakeOnDemand(cp, index)) {
+			const auto made = size.onDemand.find(cp);
+			if (made != size.onDemand.end()) return &made->second;
+		}
+
 		noteMissing(cp);
 		if (static_cast<size_t>(kReplacementSlot) < mPresent.size()
 		    && mPresent[static_cast<size_t>(kReplacementSlot)]) {
-			return kReplacementSlot;
+			return &size.glyphs[static_cast<size_t>(kReplacementSlot)];
 		}
-		return -1;
+		return nullptr;
 	}
 
 	bool FontAtlas::quadFor(uint32_t cp, float& penX, float baselineY, GlyphQuad& out, int index) const {
 		const Size& size = at(index);
 		if (size.glyphs.empty()) return false;
 
-		const int slot = slotFor(cp);
-		if (slot < 0) {
+		const BakedGlyph* glyph = glyphFor(cp, index);
+		if (!glyph) {
 			// Nothing to draw and nothing to draw it with: advance by a space so the rest
 			// of the line keeps its position.
 			penX += size.glyphs[kSpaceSlot].xadvance;
 			return false;
 		}
-		const BakedGlyph& b = size.glyphs[static_cast<size_t>(slot)];
+		const BakedGlyph& b = *glyph;
 		if (b.x1 <= b.x0 || b.y1 <= b.y0) {
 			// An empty box -- a space, or a mark the font draws as nothing. It still
 			// advances; it just has no quad, which saves one per space in every label.
@@ -383,8 +596,8 @@ namespace RDA {
 	float FontAtlas::advance(uint32_t cp, int index) const {
 		const Size& size = at(index);
 		if (size.glyphs.empty()) return 0.0f;
-		const int slot = slotFor(cp);
-		return size.glyphs[static_cast<size_t>(slot < 0 ? kSpaceSlot : slot)].xadvance;
+		const BakedGlyph* glyph = glyphFor(cp, index);
+		return glyph ? glyph->xadvance : size.glyphs[kSpaceSlot].xadvance;
 	}
 
 	float FontAtlas::textWidth(const std::string& text, int index) const {
@@ -398,8 +611,8 @@ namespace RDA {
 		while (begin < end) {
 			uint32_t cp = 0;
 			begin += Utf8::decode(begin, end, cp);
-			const int slot = slotFor(cp);
-			width += size.glyphs[static_cast<size_t>(slot < 0 ? kSpaceSlot : slot)].xadvance;
+			const BakedGlyph* glyph = glyphFor(cp, index);
+			width += glyph ? glyph->xadvance : size.glyphs[kSpaceSlot].xadvance;
 		}
 		return width;
 	}

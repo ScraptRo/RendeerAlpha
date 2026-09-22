@@ -475,11 +475,26 @@ namespace RDA {
 
 	// The colour a viewport's own target starts each frame at, in the same 0xAABBGGRR
 	// packing as every other colour here.
+	//
+	// Decoded on the way, for the same reason the GUI's vertex shader decodes: the target
+	// is an sRGB format, so a clear value is written through the same linear->sRGB encode
+	// as everything else, and a colour a person wrote is already encoded. This is the one
+	// colour that reaches an attachment without passing through a shader, which is why it
+	// needs saying twice -- and why a background was still too light after the shader was
+	// fixed.
+	static float srgbToLinear(float c) {
+		return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+	}
+
 	static VkClearColorValue unpackClear(uint32_t color) {
+		const auto channel = [](uint32_t byte) {
+			return srgbToLinear(static_cast<float>(byte) / 255.0f);
+		};
 		return VkClearColorValue{ {
-			static_cast<float>( color        & 0xFFu) / 255.0f,
-			static_cast<float>((color >>  8) & 0xFFu) / 255.0f,
-			static_cast<float>((color >> 16) & 0xFFu) / 255.0f,
+			channel( color        & 0xFFu),
+			channel((color >>  8) & 0xFFu),
+			channel((color >> 16) & 0xFFu),
+			// Alpha is coverage, not light, and was never gamma-encoded.
 			static_cast<float>((color >> 24) & 0xFFu) / 255.0f,
 		} };
 	}

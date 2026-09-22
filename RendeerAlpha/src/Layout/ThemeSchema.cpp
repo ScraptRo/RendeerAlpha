@@ -100,6 +100,7 @@ namespace RDA::Layout {
 			     "starts from that mode's defaults instead of inheriting a variant"),
 			COLOUR(background,  "behind the text"),
 			COLOUR(text,        "the text itself, and unhighlighted code"),
+			COLOUR(suggestion,  "a completion offered ahead of the caret"),
 			COLOUR(placeholder, "the color of the placeholder"),
 			COLOUR(caret,       "the insertion point"),
 			COLOUR(selection,   "behind selected text; usually part-transparent"),

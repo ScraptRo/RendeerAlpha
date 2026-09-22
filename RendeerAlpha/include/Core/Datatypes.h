@@ -44,11 +44,58 @@ namespace RDA {
 		bool windowDependent = true;
 	};
 
+	// "wherever the platform would have put it" -- which is not the same as 0,0, and is
+	// the only sensible default for a window nobody has placed.
+	inline constexpr int kWindowUnplaced = INT32_MIN;
+
+	// How the OS dresses a window: everything about it that is not its size.
+	//
+	// Its own struct because the same set is stated twice -- once by an application
+	// before the engine starts, and once by the window that ends up carrying it -- and
+	// two lists that have to agree is one list too many.
+	//
+	// Most of it is read when the window is created, because that is when the platform
+	// decides. `decorated`, `resizable`, `alwaysOnTop`, `opacity`, the bounds, the
+	// position and the icon can all be changed afterwards as well; `transparent` cannot,
+	// anywhere.
+	struct WindowStyle {
+		// The OS frame: title bar, border, the three buttons. Off means the layout draws
+		// its own -- and something in it needs `dragWindow`, or the window cannot be
+		// moved at all.
+		bool decorated = true;
+		bool resizable = true;
+		bool maximized = false;       // opens filling the work area
+		bool fullscreen = false;      // opens covering the monitor
+		bool alwaysOnTop = false;
+		// A framebuffer with a real alpha channel, so a clear colour that is not opaque
+		// lets the desktop through. Decided at creation and nowhere else, and ignored
+		// where the platform or the compositor will not do it.
+		bool transparent = false;
+		float opacity = 1.0f;         // the whole window, frame included
+
+		// Bounds the reader cannot drag past. Zero on an axis means no bound there.
+		unsigned int minWidth = 0, minHeight = 0, maxWidth = 0, maxHeight = 0;
+
+		// Where its top-left corner opens, in screen coordinates. Left unplaced, the
+		// platform chooses -- usually centred on the active monitor.
+		int x = kWindowUnplaced, y = kWindowUnplaced;
+
+		// The picture the OS shows for it: the title bar on Windows and Linux, the
+		// alt-tab card, the taskbar. A .png, or an .svg -- which is rasterised at every
+		// size an OS picks from, so one file covers all of them.
+		//
+		// Not the executable's icon. That one is a resource inside the binary, put there
+		// when the program is built rather than when it runs.
+		std::string icon;
+	};
+
 	struct WindowInfo {
 		std::string name;
 		unsigned int Width;
 		unsigned int Height;
 		bool vsync = true; // FIFO present (cap to refresh) vs. Mailbox (uncapped, burns GPU)
+
+		WindowStyle style;   // the frame, the icon, the bounds -- see WindowStyle
 	};
 
 	// Standard interleaved vertex used by the mesh / pipeline layer.

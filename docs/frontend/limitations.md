@@ -11,15 +11,21 @@ Worth knowing up front, so you do not go looking:
   only property that is inherited.
 - **No layout that depends on itself.** A wrapped label's height depends on the width it
   was given, and that is as far as it goes: nothing measures what it is going to become.
-- **No keyboard focus model beyond text fields.** A dropdown has no arrow keys, and
-  nothing is tab-navigable.
+- **No application shortcuts.** Tab order, arrows, Space, Escape and Ctrl+Z are the
+  engine's and are described in [keyboard.md](keyboard.md); a chord of your own — Ctrl+S,
+  Ctrl+K — is not a thing a layout can declare, and has to be read from the backend.
 - **One font face.** No second family and no real bold — `weight: "bold"` is drawn twice a
   pixel apart.
 - **Latin text only.** Every string is UTF-8, and the atlas covers Basic Latin, Latin-1
   Supplement, Latin Extended-A, the Romanian comma-below letters, common punctuation and
   the euro — so `Șase limbi și un preț — Straße, mañana, Łódź, Győr, İstanbul` all draw,
-  and can be typed into a `<textfield>`. Greek, Cyrillic, Hebrew, Arabic, CJK and emoji
-  draw as a hollow box: they need shaping and bidirectional layout, not a wider range.
+  and can be typed into a `<textfield>`. Anything outside those ranges is baked into the
+  atlas the first time something asks to draw it, so emoji and symbols draw as long as
+  the font — or a fallback face named in `config.font` — actually holds them.
+
+  Greek, Cyrillic, Hebrew, Arabic and CJK are the ones that do not: they need shaping
+  and, for two of them, bidirectional layout, which is a different job from a wider
+  range of glyphs.
 
 ---
 

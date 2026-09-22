@@ -1,6 +1,8 @@
 #pragma once
 #include <GraphicalObjects/GuiTypes.h>
 #include <cstdint>
+#include <Core/Route.h>
+#include <glm/glm.hpp>
 #include <unordered_map>
 
 // Values that move to where they are going instead of arriving there.
@@ -23,6 +25,18 @@ namespace RDA {
 	// `t` from 0 to 1, in and out. Easing lives in GuiTypes.h, so a theme can name a
 	// curve without depending on the thing that applies it.
 	float ease(Easing curve, float t);
+
+	// The same question asked of a Pace: time in, distance covered out.
+	//
+	// A named pace is the easing it names. A custom one is a cubic whose x is time, which
+	// means finding the u where x(u) is the time asked for and answering with y(u) -- there
+	// is no closed form for that, and everyone solves it the same way, by a few steps of
+	// Newton with bisection to catch the flat parts where Newton will not converge.
+	float shape(const Pace& pace, float t);
+
+	// "linear", "in", "out", "inOut", or "cubic-bezier(x1,y1,x2,y2)". Anything else is
+	// left as it was, which is how a misspelt pace keeps the default rather than stopping.
+	Pace paceFrom(const std::string& text, Pace fallback);
 
 	// One animated value per key. Scalars and colours are the same table -- a colour is
 	// interpolated per channel, but it settles and is evicted the same way.
@@ -49,6 +63,29 @@ namespace RDA {
 		// position and heads somewhere else, so a pointer sweeping across a row of buttons
 		// leaves them fading from wherever each of them had reached.
 		float value(uint32_t key, float target, float seconds, Easing curve = Easing::Out);
+
+		// A value, paced by a curve rather than by one of the four names.
+		float value(uint32_t key, float target, float seconds, const Pace& pace);
+
+		// Where a *point* is on its way to `target`, following `route` rather than going
+		// straight there.
+		//
+		// This is the whole of what was missing. Easing x and y separately makes the route
+		// a straight line no matter what curve is asked for, because the curve is being
+		// applied to each axis instead of to progress along a journey. Here the journey is
+		// the thing that has progress, the pace shapes that progress, and the route says
+		// where that progress puts you.
+		//
+		// The route is fitted: its first point lands on where the journey started and its
+		// last on where it ends, turned and scaled to match -- so an arc bends relative to
+		// the direction of travel, and one route works between any two places. A null
+		// route, or one whose ends coincide, is a straight line.
+		//
+		// Uses `key` and `key + 1`, as the two halves of a point. Everything else --
+		// retargeting mid-flight, settling, eviction, whether this window needs another
+		// frame -- is the same machinery a scalar gets, because it is stored as two of them.
+		glm::vec2 along(uint32_t key, glm::vec2 target, float seconds, const Pace& pace,
+		                const Route::Shape* route);
 
 		// Puts a value where it is told, settled, with no journey.
 		//

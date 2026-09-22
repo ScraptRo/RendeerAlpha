@@ -1,5 +1,8 @@
 ﻿#include <GraphicalObjects/Gui.h>
+#include <GraphicalObjects/Images.h>
+#include <GraphicalObjects/Streams.h>
 #include <GraphicalObjects/Viewports.h>
+#include <Core/Tables.h>
 #include <Core/Utf8.h>
 #include <Logger/Logger.h>
 #include <algorithm>
@@ -22,6 +25,7 @@ namespace RDA {
 		if (mInput.scroll != 0.0f) return false;
 		if (!mInput.typed.empty() || !mInput.editKeys.empty()) return false;
 		if (mInput.copy || mInput.cut || mInput.paste || mInput.selectAll || mInput.submit) return false;
+		if (mInput.undo || mInput.redo) return false;
 
 		// A focused field blinks its caret, which is geometry changing on a timer.
 		if (mFocused != 0) return false;
@@ -40,6 +44,24 @@ namespace RDA {
 		// And the theme was swapped underneath it. Everything on screen is a different
 		// colour and not one of the checks above can tell.
 		if (mTheme.revision() != mLastThemeRevision) return false;
+		// And rows arrived, or changed, under a <list>. Same tree, same input, different
+		// contents -- and until this was here, a transcript that was only being appended
+		// to reached the screen when the reader happened to move the mouse.
+		if (tables().revision() != mLastTableRevision) return false;
+		// And the atlas learned a character. A glyph baked on demand usually changes the
+		// text's width too, which would be caught by the geometry differing -- but one
+		// whose advance happens to match what the replacement box had would otherwise sit
+		// there as a box until something else moved.
+		if (mFont && mFont->revision() != mLastFontRevision) return false;
+		// And a picture a backend registered was replaced. Same tree, same input, a
+		// different image -- a preview updated while nobody touched the mouse would
+		// otherwise sit there showing the one before it.
+		if (images().revision() != mLastImageRevision) return false;
+		// And a stream got a frame. Same tree, same input, a different picture -- a feed
+		// that only advanced when the pointer moved would be the same bug twice.
+		if (streams().revision() != mLastStreamRevision) return false;
+		// And something asked to be looked at again -- an icon part-way through its loop.
+		if (mAwake) return false;
 
 		// Docks added or closed outside the walk, or queued from inside it and still
 		// waiting to be applied.
@@ -109,8 +131,36 @@ namespace RDA {
 		// colour that is sitting there perfectly visible.
 		mMotion.forget();
 
+		// Asked for again by whatever is still playing, every frame it still is. Cleared
+		// here rather than when it settles, so nothing has to remember to stop asking.
+		mAwake = false;
+		// The same: a grip is held for as long as it is re-declared and the pointer is
+		// still down, so letting go needs no call.
+		mWindowGrabbed = false;
+
 		mDraw.clear();
 		mOverlays.clear();
+		// Where things are is a fact about this frame, so it is thrown away at the top of
+		// it. What is *wanted* is not, and persists.
+		mAnchorRect.clear();
+
+		// An overlay asked for the pointer last frame. The walk below runs without one --
+		// nothing underneath hovers, highlights, takes focus or fires -- and the real
+		// input is put back before the overlay pass, which is where the popup and its
+		// dismissal read it.
+		//
+		// The claim is re-made every frame the overlay is open, so nothing has to
+		// remember to release it.
+		mPointerClaimed = mPointerClaimedNext;
+		mPointerClaimedNext = false;
+		mRealInput = mInput;
+		if (mPointerClaimed) {
+			// Far enough outside that no rect contains it, rather than a flag every
+			// widget would have to remember to ask about.
+			mInput.pointer = glm::vec2(-1.0e6f, -1.0e6f);
+			mInput.down = mInput.pressed = mInput.released = false;
+			mInput.scroll = 0.0f;
+		}
 		mOpacity = 1.0f;
 		mOpacityStack.clear();
 		mInputStack.clear();
@@ -141,6 +191,11 @@ namespace RDA {
 			// growing the list being iterated would invalidate the iterator.
 			const std::vector<std::pair<Widget*, glm::vec2>> above = mOverlays;
 			mOverlays.clear();
+			// The real pointer, for whatever is in front. Restored here rather than at the
+			// end of the frame, because an overlay is exactly the thing that should have
+			// it -- and restored unconditionally, since a frame where nothing claimed it
+			// kept a copy of the same input anyway.
+			mInput = mRealInput;
 			for (const auto& one : above) {
 				pushClip(glm::vec4(0.0f, 0.0f, mInput.viewport.x, mInput.viewport.y));
 				one.first->paintAbove(*this, one.second);
@@ -159,6 +214,10 @@ namespace RDA {
 		mLastSceneTexture = mSceneTexture;
 		mLastViewportRevision = viewports().revision();
 		mLastThemeRevision = mTheme.revision();
+		mLastTableRevision = tables().revision();
+		if (mFont) mLastFontRevision = mFont->revision();
+		mLastImageRevision = images().revision();
+		mLastStreamRevision = streams().revision();
 		mLastDockRevision = mDockSpace.revision();
 		mLayoutDirty = false;
 		mCacheValid = true;
@@ -303,10 +362,10 @@ namespace RDA {
 	void Gui::drawText(const char* text, glm::vec2 topLeft, uint32_t color, TextStyle font) {
 		if (mFont && text) addText(topLeft.x, topLeft.y + baseline(font), text, color, font);
 	}
-	void Gui::image(const Rect& r, const Texture* texture) {
+	void Gui::image(const Rect& r, const Texture* texture, uint32_t tint) {
 		if (!texture) return;
 		setTexture(texture);
-		addQuad(r.x, r.y, r.x + r.w, r.y + r.h, 0.0f, 0.0f, 1.0f, 1.0f, rgba(255, 255, 255));
+		addQuad(r.x, r.y, r.x + r.w, r.y + r.h, 0.0f, 0.0f, 1.0f, 1.0f, tint);
 		setTexture(nullptr); // the image is its own command; go back to the atlas
 	}
 	void Gui::pushOpacity(float alpha) {
@@ -447,6 +506,17 @@ namespace RDA {
 	}
 	void Gui::drawAbove(Widget* widget, glm::vec2 origin) {
 		if (widget) mOverlays.emplace_back(widget, origin);
+	}
+
+	void Gui::wantAnchor(const std::string& path) {
+		if (!path.empty()) mAnchorWanted.insert(path);
+	}
+
+	bool Gui::anchorRect(const std::string& path, Rect& out) const {
+		const auto at = mAnchorRect.find(path);
+		if (at == mAnchorRect.end()) return false;
+		out = at->second;
+		return true;
 	}
 
 	void Gui::pushId(const char* id) {
@@ -698,6 +768,57 @@ namespace RDA {
 	void Gui::label(const char* text, glm::vec2 pos, uint32_t color, TextStyle font) {
 		if (!mFont) return;
 		addText(pos.x, pos.y + baseline(font), text, color, font);
+	}
+
+	void Gui::labelSpans(const char* text, int begin, int count, glm::vec2 pos,
+	                     uint32_t base, const TextSpan* spans, size_t spanCount,
+	                     TextStyle font) {
+		if (!mFont || !text || count <= 0) return;
+		float pen = pos.x;
+		const float baseY = pos.y + baseline(font);
+		int at = begin;
+		const int end = begin + count;
+
+		// Walk the slice, drawing whatever is between here and the next boundary. The
+		// spans are sorted and disjoint, so this is one pass over both -- no search per
+		// character, and no substring anywhere.
+		size_t next = 0;
+		while (next < spanCount && spans[next].start + spans[next].length <= at) ++next;
+
+		while (at < end) {
+			if (next < spanCount && spans[next].start <= at) {
+				// Inside a span: draw to whichever comes first, its end or the slice's.
+				const int stop = (std::min)(end, spans[next].start + spans[next].length);
+				pen = addTextRange(pen, baseY, text + at, stop - at, spans[next].color, font);
+				at = stop;
+				if (at >= spans[next].start + spans[next].length) ++next;
+				continue;
+			}
+			// Outside one: draw to where the next begins, or to the end.
+			const int stop = (next < spanCount) ? (std::min)(end, spans[next].start) : end;
+			pen = addTextRange(pen, baseY, text + at, stop - at, base, font);
+			at = stop;
+		}
+	}
+
+	bool Gui::windowGrip(const char* id, const Rect& rect) {
+		const uint32_t wid = scopedId(id);
+		if (rect.contains(mInput.pointer)) mHot = wid;
+		if (mHot == wid && mInput.pressed) mActive = wid;
+		if (mActive == wid && mInput.released) mActive = 0;
+
+		// Held is enough: there is no click to report and nothing to draw. A drag that
+		// began here goes on even once the pointer has left the bar, which is what makes
+		// a window follow the pointer across the screen rather than stopping at its own
+		// edge.
+		const bool held = (mActive == wid);
+		if (held) {
+			mWindowGrabbed = true;
+			// The window is about to move under a pointer that has not itself moved, so
+			// nothing else would ask for the next frame.
+			mAwake = true;
+		}
+		return held;
 	}
 
 	bool Gui::button(const char* id, const char* text, const Rect& rect, Variant variant,

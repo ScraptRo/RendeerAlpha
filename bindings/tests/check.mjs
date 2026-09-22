@@ -45,7 +45,16 @@ const settle = (ms = 500) => new Promise((r) => setTimeout(r, ms))
 
 // ---- lifecycle -----------------------------------------------------------------------
 console.log('lifecycle')
-rda.init({ name: 'node binding checks' })
+// How the window is dressed goes through a separate entry point each, so a binding that
+// forgot to declare one fails here rather than in somebody's application. The size is
+// the engine's own default, stated rather than changed: the fixture's layout is written
+// against it.
+rda.init({
+	name: 'node binding checks',
+	width: 1280, height: 800,
+	minWidth: 320, minHeight: 200, maxWidth: 1600, maxHeight: 1200,
+	resizable: false, opacity: 0.95, x: 120, y: 120,
+})
 check('init returns with the engine up', rda.running(), true)
 
 define()
@@ -144,6 +153,97 @@ check('and the poll runs the handler', asked, [7])
 
 refused('invoking a command nothing is bound to is refused', () => rda.invoke('unused'))
 refused('invoking a command that does not exist is refused', () => rda.invoke('nope'))
+
+// ---- the window, the clipboard, and measuring (ABI 1.2) --------------------------------
+console.log('window and clipboard')
+rda.setTitle('binding test \u2014 renamed')
+check('the title can be set while open', rda.running(), true)
+
+rda.setClipboard('round trip \u2014 dash')
+check('the clipboard round-trips', rda.clipboard(), 'round trip \u2014 dash')
+
+const oneWide = rda.measureText('M')
+const tenWide = rda.measureText('MMMMMMMMMM')
+check('ten monospace characters are ten times one', Math.round(tenWide.width / oneWide.width), 10)
+check('and a line has a height', oneWide.height > 0, true)
+
+// ---- pictures from memory --------------------------------------------------------------
+// A 2x2 PNG written out here, so the check needs no image library to make one.
+console.log('images')
+const PNG = Buffer.from(
+	'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGM8YeP2n4GBgYEJRIAwACNKAk3nXZn3AAAAAElFTkSuQmCC',
+	'base64')
+
+rda.defineImage('fromBytes', PNG)
+check('a picture registered from encoded bytes', rda.running(), true)
+rda.defineImagePixels('fromPixels', Buffer.alloc(16, 0xC8), 2, 2)
+check('and one from raw pixels', rda.running(), true)
+rda.defineImage('fromBytes', PNG)
+check('registering the same name again is a replace, not an error', rda.running(), true)
+rda.forgetImage('fromBytes')
+rda.forgetImage('never registered')
+check('forgetting one, or one that was never there, is fine', rda.running(), true)
+
+refused('bytes that are not a picture are refused',
+	() => rda.defineImage('bad', Buffer.from('not a picture')))
+refused('no bytes at all is refused', () => rda.defineImage('bad', Buffer.alloc(0)))
+refused('a picture with no name is refused', () => rda.defineImage('', PNG))
+refused('too few pixels for the size is refused',
+	() => rda.defineImagePixels('bad', Buffer.alloc(4), 2, 2))
+
+// ---- streams and effects ----------------------------------------------------------------
+// A 2x2 frame, and a filter over it. Nothing shows either -- what is under test is that the
+// calls cross, that a surface is reused rather than rebuilt, and that a shader compiles.
+console.log('streams and effects')
+const FRAME = Buffer.alloc(16, 0x80)
+
+rda.pushFramePixels('feed', FRAME, 2, 2)
+check('a frame pushed from raw pixels', rda.running(), true)
+rda.pushFrame('feed', PNG)
+check('and one from an encoded frame', rda.running(), true)
+check('a stream nothing has drawn yet is still wanted', rda.streamWanted('feed'), true)
+
+refused('a frame with no bytes is refused', () => rda.pushFrame('feed', Buffer.alloc(0)))
+refused('too few pixels for the size is refused',
+	() => rda.pushFramePixels('feed', Buffer.alloc(4), 2, 2))
+
+rda.defineEffect('grey',
+	'void main() { vec4 c = texture(src, uv()); store(vec4(vec3(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))), c.a)); }')
+check('a filter compiled', rda.running(), true)
+rda.applyEffect('grey', 'feed', 'feed.grey')
+check('and ran over the feed', rda.running(), true)
+rda.applyEffect('grey', 'feed', 'feed.grey', [0.5, 1.0])
+check('with parameters', rda.running(), true)
+
+refused('a shader that will not compile is refused',
+	() => rda.defineEffect('bad', 'void main() { not glsl }'))
+refused('an effect nothing defined is refused',
+	() => rda.applyEffect('nope', 'feed', 'feed.out'))
+refused('reading and writing one stream is refused',
+	() => rda.applyEffect('grey', 'feed', 'feed'))
+
+// Several pictures into one filter, and the answer read back rather than looked at.
+rda.pushFramePixels('a', Buffer.from([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255]), 2, 2)
+rda.pushFramePixels('b', Buffer.from([0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255]), 2, 2)
+rda.defineEffect('blend', 'void main() { store(mix(tap(0, uv()), tap(1, uv()), param(0))); }')
+rda.applyEffect('blend', ['a', 'b'], 'mixed', [0.0])
+const first = rda.readFrame('mixed')
+check('a two-input blend read back at the right size', `${first.width}x${first.height}`, '2x2')
+check('and at 0 it is the first picture', Array.from(first.pixels.subarray(0, 4)).join(','), '255,0,0,255')
+rda.applyEffect('blend', ['a', 'b'], 'mixed', [1.0])
+const second = rda.readFrame('mixed')
+check('at 1 it is the second', Array.from(second.pixels.subarray(0, 4)).join(','), '0,0,255,255')
+
+refused('more than four sources is refused',
+	() => rda.applyEffect('blend', ['a', 'b', 'a', 'b', 'a'], 'out'))
+refused('no sources at all is refused', () => rda.applyEffect('blend', [], 'out'))
+refused('writing into one of the sources is refused',
+	() => rda.applyEffect('blend', ['a', 'b'], 'b'))
+refused('reading a stream that is not there is refused', () => rda.readFrame('nope'))
+
+rda.forgetEffect('grey')
+rda.closeStream('feed')
+check('forgetting both is fine', rda.running(), true)
 
 // ---- the theme ------------------------------------------------------------------------
 console.log('theme')

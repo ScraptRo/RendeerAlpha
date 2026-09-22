@@ -3,7 +3,9 @@
 #include <Core/Datatypes.h>
 #include <GraphicalObjects/Texture.h>
 #include <GraphicalSrc/GlyphRanges.h>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace RDA {
@@ -36,16 +38,41 @@ namespace RDA {
 	// laid out, silently wrong, and impossible to notice in an English test.
 	class FontAtlas {
 	public:
+		FontAtlas();
+		~FontAtlas();
+		FontAtlas(const FontAtlas&) = delete;
+		FontAtlas& operator=(const FontAtlas&) = delete;
+
 		// Bakes every size given. The first is the base -- what everything that expresses
 		// no opinion is drawn at -- so it is also what ascent() and lineAdvance() report
 		// when nobody says otherwise.
+		//
+		// `ttfPath` may name several faces separated by ';'. The first is the body font
+		// and decides the line metrics; the rest are asked, in order, only for a codepoint
+		// the ones before them do not have. That is what lets a monospace interface show
+		// an emoji without the emoji font taking over the alphabet.
 		bool bake(const std::string& ttfPath, const std::vector<float>& pixelHeights);
 		bool bake(const std::string& ttfPath, float pixelHeight) {
 			return bake(ttfPath, std::vector<float>{ pixelHeight });
 		}
-		void destroy() { mTexture.destroy(); mSizes.clear(); mPresent.clear(); mMissing.clear(); }
+		void destroy();
+
+		// Bumped whenever a glyph is baked on demand. The GUI keeps last frame's geometry
+		// when nothing it can see has changed, and an atlas that has just learned a
+		// character is invisible to every one of its other checks -- the widget tree is
+		// the same and so is the input, and the glyph would appear the next time
+		// something else happened to force a walk.
+		uint64_t revision() const { return mRevision; }
 
 		const Texture& texture()     const { return mTexture; }
+
+		// Sends whatever was baked on demand since the last call, as one rectangle.
+		//
+		// Asked for by the renderer once a frame rather than done when a glyph is baked:
+		// baking happens while the interface is being walked, a frame that met twenty new
+		// characters would otherwise be twenty stalls, and the descriptor set is written
+		// once at start-up -- so nothing else would ever ask for the texture again.
+		void uploadPending() const;
 		bool           isValid()     const { return mTexture.isValid(); }
 		glm::vec2      whiteUV()     const { return mWhiteUV; }
 		float          atlasWidth()  const { return mAtlasW; }
@@ -100,13 +127,25 @@ namespace RDA {
 			float ascent = 0.0f;
 			float lineAdvance = 0.0f;
 			std::vector<BakedGlyph> glyphs; // index = glyphSlot(codepoint)
+			// Everything outside GlyphRanges.h that has actually been asked for, baked
+			// when it was. Kept per size, because a glyph is a picture at one size.
+			mutable std::unordered_map<uint32_t, BakedGlyph> onDemand;
 		};
 		const Size& at(int index) const;
 
-		// The slot to draw `cp` from: its own if the font has it, the replacement box if
-		// not. -1 only when there is no replacement box either, which is the one case
-		// with nothing at all to draw.
-		int  slotFor(uint32_t cp) const;
+		// The glyph to draw `cp` with at this size, or nullptr when there is nothing at
+		// all to draw it with.
+		//
+		// Three answers in order: the preloaded table, which covers Latin and costs an
+		// array index; what has already been baked on demand; and baking it now. The last
+		// is why this is the only lookup -- a glyph has to exist before it can be
+		// measured, and measuring happens during layout, before anything is drawn.
+		const BakedGlyph* glyphFor(uint32_t cp, int index) const;
+
+		// Bakes one codepoint at one size into the atlas' spare room, from the first face
+		// that has it. False when no face does, or when the room has run out.
+		bool bakeOnDemand(uint32_t cp, int index) const;
+
 		void noteMissing(uint32_t cp) const;
 
 		// Sizes asked for that were not baked, so each is complained about once rather
@@ -120,10 +159,37 @@ namespace RDA {
 		mutable std::vector<uint32_t> mMissing;
 
 		std::vector<uint8_t> mPresent; // per slot: does the font actually have this glyph
-		Texture              mTexture;
+		mutable Texture      mTexture;
 		std::vector<Size>    mSizes;   // [0] is the base size
 		float                mAtlasW = 0.0f;
 		float                mAtlasH = 0.0f;
 		glm::vec2            mWhiteUV{ 0.0f };
+
+		// The faces, kept alive after the bake because on-demand needs them: a glyph that
+		// arrives in the third hour is rasterised from the same font the first one was.
+		// Behind a pointer so stb_truetype stays out of this header.
+		struct Faces;
+		std::unique_ptr<Faces> mFaces;
+
+		// The atlas as the CPU knows it. A glyph is drawn into here and the rectangle it
+		// touched is sent; without a copy there would be nothing to draw it into.
+		mutable std::vector<uint8_t> mPixels;
+
+		// A shelf allocator over the rows below the baked bands. Glyphs are added in the
+		// order they are met, which is neither sorted by size nor knowable in advance, so
+		// a shelf -- fill a row, start the next one below the tallest thing in it -- is
+		// the right amount of cleverness.
+		mutable int mShelfX = 0;       // next free column on the current shelf
+		mutable int mShelfY = 0;       // top row of the current shelf
+		mutable int mShelfHeight = 0;  // tallest glyph on it so far
+		int         mDynamicTop = 0;   // first row the preloaded bands do not own
+		mutable bool mRoomWarned = false;
+
+		// The rectangle baked since the last flush, in atlas rows. Columns are not
+		// tracked: a shelf is as wide as the atlas soon enough, and a row is 1 KB.
+		mutable int mDirtyTop = 0;
+		mutable int mDirtyBottom = 0;   // exclusive; equal means nothing pending
+
+		mutable uint64_t mRevision = 1;
 	};
 }

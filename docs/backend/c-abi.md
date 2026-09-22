@@ -1,6 +1,6 @@
 # Any language with an FFI
 
-`RendeerAlpha/include/RendeerC.h` — 55 functions, built as `rendeer_c.dll` /
+`RendeerAlpha/include/RendeerC.h` — 60 functions, built as `rendeer_c.dll` /
 `librendeer_c.so`. Everything above is written on top of it — Python, Node and C# alike.
 
 ## Which ABI you are talking to
@@ -56,9 +56,17 @@ oddity is answerable without asking which two halves were in the room.
 
 These two functions may never change. They are what everything else is checked with.
 
-**1.1** added `rda_set_theme`. Nothing else moved, so every package built against 1.0 runs
-against a 1.1 engine untouched — which is the split doing exactly the job it was added
-for, on its first use.
+**1.1** added `rda_set_theme`. **1.2** added `rda_config_set_size`, `rda_set_title`,
+`rda_clipboard_set`, `rda_clipboard_get` and `rda_measure_text`. **1.3** added `rda_focus`,
+`rda_pick_folder` and `rda_pick_file`. **1.4** added `rda_poll_dropped_file`. **1.5** added
+`rda_image_define`, `rda_image_define_pixels` and `rda_image_forget`. **1.6** added the
+stream and effect calls, and then the window ones: `rda_config_set_icon`,
+`rda_config_set_decorated`, `rda_config_set_resizable`, `rda_config_set_maximized`,
+`rda_config_set_fullscreen`, `rda_config_set_always_on_top`, `rda_config_set_transparent`,
+`rda_config_set_opacity`, `rda_config_set_size_limits`, `rda_config_set_position` and
+`rda_set_icon`. Nothing was removed or changed in any of them, so a package built against
+1.0 still runs against a 1.6 engine untouched — which is the split doing exactly the job
+it was added for.
 
 ### Not the same as the blueprint's version
 
@@ -79,7 +87,10 @@ hands its work to `LoopWork` and waits for the loop to run it.
 
 A handful stand outside it, and each says why in its own comment: `rda_running`,
 `rda_stop` and `rda_wait` read an atomic, `rda_set_transition_ms` stores one, and
-`rda_poll_command` reads a queue of its own. Everything else hops.
+`rda_poll_command` and `rda_poll_dropped_file` each read a queue of their own. The two file
+choosers are the other kind of exception: they block for as long as a person is looking at
+a dialog, which is far too long to hold the loop, so they run on the calling thread and the
+window keeps drawing behind them. Everything else hops.
 
 Three things follow:
 
@@ -111,6 +122,17 @@ that will not load and a call made before `rda_init()` all return 0.
 | **Commands** | `rda_command_bind`, or `rda_command_watch` + `rda_poll_command`; `rda_command_invoke` to ask for one yourself |
 | **Viewports** | `rda_viewport_draw`, `rda_viewport_size` |
 | **Theme** | `rda_set_theme` — swap the whole look while the window is open |
+| **The window** | `rda_config_set_size` (opening size), `rda_set_title`, `rda_set_icon`, and the `rda_config_set_*` group below |
+| **How it opens** | `rda_config_set_icon`, `_decorated`, `_resizable`, `_maximized`, `_fullscreen`, `_always_on_top`, `_transparent`, `_opacity`, `_size_limits`, `_position` — read when the window is created, which is why they are on the config |
+| **What it does after** | signals, not calls: `rda.maximized`, `rda.minimized`, `rda.fullscreen` and `rda.open` read *and* write; `rda.width`, `rda.height` and `rda.focused` report. See [the window](../frontend/window.md) |
+| **The clipboard** | `rda_clipboard_set`, `rda_clipboard_get` |
+| **Measuring** | `rda_measure_text` — what a string would be drawn at |
+| **The keyboard** | `rda_focus` — put the caret on a widget, by the id its layout gave it |
+| **Files** | `rda_pick_folder`, `rda_pick_file` — the platform's own chooser; `rda_poll_dropped_file` — what was let go over the window |
+| **Pictures** | `rda_image_define`, `rda_image_define_pixels`, `rda_image_forget` — showing bytes without writing a file |
+| **Streams** | `rda_stream_push`, `rda_stream_push_encoded`, `rda_stream_wanted`, `rda_stream_counts`, `rda_stream_close` — a picture that keeps arriving |
+| **Effects** | `rda_effect_define`, `rda_effect_apply`, `rda_effect_apply_many`, `rda_effect_forget` — a compute filter over one to four pictures, without the Vulkan |
+| **Reading back** | `rda_stream_read` — a frame copied into ordinary memory, as it looks on screen |
 
 Two conventions worth knowing before writing a binding:
 
@@ -124,6 +146,13 @@ than truncating something nobody notices.
 **Rows are written in runs.** `rda_table_set_numbers(table, column, first, values, count)`
 writes a whole column in one hop. Filling a table cell by cell would be one round trip per
 cell.
+
+**Queues are drained, not delivered.** Commands and dropped files both arrive on the
+engine's thread, and a callback from there is something a JavaScript binding cannot take.
+So both are queued and asked for: call `rda_poll_dropped_file` until it answers 0, on the
+same beat everything else is polled. Nothing is lost between one look and the next — the
+queue is bounded, and a backend that stops asking entirely loses the oldest with a line in
+the log.
 
 **A drawing is written in one run too.** `rda_viewport_draw(name, commands, count)` takes
 the whole picture as an array of `rda_draw_cmd` — four ops (`CLEAR`, `RECT`, `LINE`,

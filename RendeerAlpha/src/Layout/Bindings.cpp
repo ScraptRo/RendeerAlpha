@@ -1,5 +1,7 @@
 ﻿#include <Layout/Bindings.h>
+#include <GraphicalObjects/Motion.h>
 #include <GraphicalObjects/Widget.h>
+#include <Layout/ListView.h>
 #include <Logger/Logger.h>
 
 #include <cmath>
@@ -53,6 +55,16 @@ namespace RDA::Layout {
 			if (word == "end")     return with(Align::End);
 			return fallback;
 		}
+		// "below" | "above" | "right" | "left" | "over", for a <popup>.
+		Popup::Placement popupPlacementFrom(std::string_view word, Popup::Placement fallback) {
+			if (word == "below") return Popup::Placement::Below;
+			if (word == "above") return Popup::Placement::Above;
+			if (word == "right") return Popup::Placement::Right;
+			if (word == "left")  return Popup::Placement::Left;
+			if (word == "over")  return Popup::Placement::Over;
+			return fallback;
+		}
+
 		Distribute spreadFrom(std::string_view word, Distribute fallback) {
 			if (word == "spaceBetween") return Distribute::SpaceBetween;
 			if (word == "spaceAround")  return Distribute::SpaceAround;
@@ -74,6 +86,9 @@ namespace RDA::Layout {
 		if (property == "height")       { return applySize(widget.height, value); }
 		// A child's own answer for an axis, which every widget has and any of them may
 		// compute: `hAlignSelf={() => state.narrow ? "center" : "start"}`.
+		if (property == "dragWindow")   { widget.dragWindow = value.truthy(); return true; }
+		if (property == "route")        { widget.route = value.asText(); return true; }
+		if (property == "pace")         { widget.pace = paceFrom(value.asText(), widget.pace); return true; }
 		if (property == "hAlignSelf")   { widget.hAlignSelf = alignFrom(value.text, widget.hAlignSelf); return true; }
 		if (property == "vAlignSelf")   { widget.vAlignSelf = alignFrom(value.text, widget.vAlignSelf); return true; }
 		if (property == "minWidth")     { widget.width.min = static_cast<float>(value.asNumber()); return true; }
@@ -86,19 +101,36 @@ namespace RDA::Layout {
 		if (auto* w = dynamic_cast<Label*>(&widget)) {
 			if (property == "text")    { w->text = value.asText(); return true; }
 			if (property == "wrap")    { w->wrap = value.truthy(); return true; }
+			if (property == "spans")   { w->spans = value.asText(); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Button*>(&widget)) {
 			if (property == "text")    { w->text = value.asText(); return true; }
 			if (property == "padding") { w->padding = static_cast<float>(value.asNumber()); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+		} else if (auto* w = dynamic_cast<Stream*>(&widget)) {
+			if (property == "name")    { w->name = value.asText(); return true; }
+			if (property == "fit")     {
+				w->fit = std::string_view(value.text) == "stretch" ? Stream::Fit::Stretch
+				                                                   : Stream::Fit::Contain;
+				return true;
+			}
 		} else if (auto* w = dynamic_cast<Image*>(&widget)) {
 			if (property == "src")     { w->source = value.asText(); return true; }
+			if (property == "tint")    {
+				uint32_t parsed = 0;
+				if (parseColor(value.asText().c_str(), parsed)) w->tint = parsed;
+				return true;
+			}
 		} else if (auto* w = dynamic_cast<Tabs*>(&widget)) {
 			if (property == "value")   { w->value = static_cast<int>(value.asNumber()); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Select*>(&widget)) {
-			if (property == "value")   { w->value = value.asText(); return true; }
-			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+			if (property == "value")       { w->value = value.asText(); return true; }
+			if (property == "placeholder") { w->placeholder = value.asText(); return true; }
+			if (property == "of")          { w->of = value.asText(); return true; }
+			if (property == "textColumn")  { w->textColumn = value.asText(); return true; }
+			if (property == "valueColumn") { w->valueColumn = value.asText(); return true; }
+			if (property == "variant")     { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Option*>(&widget)) {
 			if (property == "text")    { w->text = value.asText(); return true; }
 			if (property == "value")   { w->value = value.asText(); return true; }
@@ -114,9 +146,12 @@ namespace RDA::Layout {
 			if (property == "max")     { w->maxValue = static_cast<float>(value.asNumber()); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<TextField*>(&widget)) {
-			if (property == "text")    { w->setText(value.asText()); return true; }
+			if (property == "text")        { w->setText(value.asText()); return true; }
 			if (property == "placeholder") { w->setPlaceholder(value.asText()); return true; }
-			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+			if (property == "suggestion")  { w->setSuggestion(value.asText()); return true; }
+			if (property == "language")    { w->language = value.asText(); return true; }
+			if (property == "submitKey")   { w->submitKey = submitFrom(value.text, w->submitKey); return true; }
+			if (property == "variant")     { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Stack*>(&widget)) {
 			if (property == "arrange")  { w->vertical = value.text != "horizontal"; return true; }
 			if (property == "spacing")  { w->spacing = static_cast<float>(value.asNumber()); return true; }
@@ -124,6 +159,18 @@ namespace RDA::Layout {
 			if (property == "hAlign")   { w->hAlign = alignFrom(value.text, w->hAlign); return true; }
 			if (property == "vAlign")   { w->vAlign = alignFrom(value.text, w->vAlign); return true; }
 			if (property == "spread")   { w->spread = spreadFrom(value.text, w->spread); return true; }
+		} else if (auto* w = dynamic_cast<ListView*>(&widget)) {
+			if (property == "follow")    { w->follow = value.truthy(); return true; }
+			if (property == "revealRow") { w->revealRow = static_cast<int>(value.asNumber()); return true; }
+			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+		} else if (auto* w = dynamic_cast<Popup*>(&widget)) {
+			if (property == "open")      { w->open = value.truthy(); return true; }
+			if (property == "anchor")    { w->anchor = value.asText(); return true; }
+			if (property == "blocking")  { w->blocking = value.truthy(); return true; }
+			if (property == "gap")       { w->gap = static_cast<float>(value.asNumber()); return true; }
+			if (property == "padding")   { w->padding = static_cast<float>(value.asNumber()); return true; }
+			if (property == "placement") { w->placement = popupPlacementFrom(value.text, w->placement); return true; }
+			if (property == "variant")   { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Panel*>(&widget)) {
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
 		}
@@ -151,6 +198,22 @@ namespace RDA::Layout {
 		return id;
 	}
 
+	ObserverId BindingRuntime::addRowRefresh(std::vector<uint32_t> signalIds, ListView* list) {
+		Binding binding;
+		binding.signalIds = std::move(signalIds);
+		binding.refresh   = list;
+		binding.live      = true;
+
+		const ObserverId id = static_cast<ObserverId>(mBindings.size());
+		mBindings.push_back(std::move(binding));
+		++mLive;
+
+		for (const uint32_t signal : mBindings.back().signalIds) {
+			signals().observe(signal, id);
+		}
+		return id;
+	}
+
 	void BindingRuntime::remove(ObserverId observer) {
 		if (observer >= mBindings.size() || !mBindings[observer].live) return;
 		signals().forget(observer);
@@ -159,7 +222,11 @@ namespace RDA::Layout {
 	}
 
 	bool BindingRuntime::applyOne(Binding& binding) {
-		if (!binding.live || !binding.target) return false;
+		if (!binding.live) return false;
+		// The refresh kind evaluates nothing: the list re-binds its own rows, which is
+		// where the row is known.
+		if (binding.refresh) { binding.refresh->invalidateRows(); return true; }
+		if (!binding.target) return false;
 
 		const EvalResult result = evaluate(binding.program, signals(), binding.signalIds);
 		if (!result.ok) {

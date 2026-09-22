@@ -59,7 +59,16 @@ static class Check {
 	static int Main() {
 		// ---- lifecycle ----
 		Console.WriteLine("lifecycle");
-		Rda.Init(new StartupConfig { Name = "c# binding checks" });
+		// How the window is dressed goes through a separate entry point each, and C#
+		// resolves a DllImport when it is first called -- so a name that is wrong is only
+		// found by calling it. The size is the engine's own default, stated rather than
+		// changed: the fixture's layout is written against it.
+		Rda.Init(new StartupConfig {
+			Name = "c# binding checks",
+			Width = 1280, Height = 800,
+			MinWidth = 320, MinHeight = 200, MaxWidth = 1600, MaxHeight = 1200,
+			Resizable = false, Opacity = 0.95f, X = 120, Y = 120,
+		});
 		Report("init returns with the engine up", Rda.Running, true);
 
 		Schema.Define();
@@ -164,6 +173,112 @@ static class Check {
 
 		Refused("invoking a command nothing is bound to is refused", () => Rda.Invoke("unused"));
 		Refused("invoking a command that does not exist is refused", () => Rda.Invoke("nope"));
+
+		// ---- the window, the clipboard, and measuring (ABI 1.2) ----
+		Console.WriteLine("window and clipboard");
+		Rda.SetTitle("binding test \u2014 renamed");
+		Report("the title can be set while open", Rda.Running, true);
+
+		Rda.SetClipboard("round trip \u2014 dash");
+		Report("the clipboard round-trips", Rda.Clipboard(), "round trip \u2014 dash");
+
+		var oneWide = Rda.MeasureText("M");
+		var tenWide = Rda.MeasureText("MMMMMMMMMM");
+		Report("ten monospace characters are ten times one",
+			(int)Math.Round(tenWide.Width / oneWide.Width), 10);
+		Report("and a line has a height", oneWide.Height > 0, true);
+
+		// ---- pictures from memory ----
+		// A 2x2 PNG written out here, so the check needs no image library to make one.
+		Console.WriteLine("images");
+		byte[] png = Convert.FromBase64String(
+			"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGM8YeP2n4GBgYEJRIAwACNKAk3nXZn3AAAAAElFTkSuQmCC");
+		byte[] pixels = new byte[16];
+		for (int i = 0; i < pixels.Length; ++i) pixels[i] = 0xC8;
+
+		Rda.DefineImage("fromBytes", png);
+		Report("a picture registered from encoded bytes", Rda.Running, true);
+		Rda.DefineImagePixels("fromPixels", pixels, 2, 2);
+		Report("and one from raw pixels", Rda.Running, true);
+		Rda.DefineImage("fromBytes", png);
+		Report("registering the same name again is a replace, not an error", Rda.Running, true);
+		Rda.ForgetImage("fromBytes");
+		Rda.ForgetImage("never registered");
+		Report("forgetting one, or one that was never there, is fine", Rda.Running, true);
+
+		Refused("bytes that are not a picture are refused",
+			() => Rda.DefineImage("bad", System.Text.Encoding.UTF8.GetBytes("not a picture")));
+		Refused("no bytes at all is refused", () => Rda.DefineImage("bad", new byte[0]));
+		Refused("a picture with no name is refused", () => Rda.DefineImage("", png));
+		Refused("too few pixels for the size is refused",
+			() => Rda.DefineImagePixels("bad", new byte[4], 2, 2));
+
+		// ---- streams and effects ----
+		// A 2x2 frame, and a filter over it. Nothing shows either -- what is under test is
+		// that the calls cross and that a shader compiles.
+		Console.WriteLine("streams and effects");
+		byte[] frame = new byte[16];
+		for (int i = 0; i < frame.Length; ++i) frame[i] = 0x80;
+
+		Rda.PushFramePixels("feed", frame, 2, 2);
+		Report("a frame pushed from raw pixels", Rda.Running, true);
+		Rda.PushFrame("feed", png);
+		Report("and one from an encoded frame", Rda.Running, true);
+		Report("a stream nothing has drawn yet is still wanted", Rda.StreamWanted("feed"), true);
+
+		Refused("a frame with no bytes is refused", () => Rda.PushFrame("feed", new byte[0]));
+		Refused("too few pixels for the size is refused",
+			() => Rda.PushFramePixels("feed", new byte[4], 2, 2));
+
+		Rda.DefineEffect("grey",
+			"void main() { vec4 c = texture(src, uv()); store(vec4(vec3(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))), c.a)); }");
+		Report("a filter compiled", Rda.Running, true);
+		Rda.ApplyEffect("grey", "feed", "feed.grey");
+		Report("and ran over the feed", Rda.Running, true);
+		Rda.ApplyEffect("grey", "feed", "feed.grey", new float[] { 0.5f, 1.0f });
+		Report("with parameters", Rda.Running, true);
+
+		Refused("a shader that will not compile is refused",
+			() => Rda.DefineEffect("bad", "void main() { not glsl }"));
+		Refused("an effect nothing defined is refused",
+			() => Rda.ApplyEffect("nope", "feed", "feed.out"));
+		Refused("reading and writing one stream is refused",
+			() => Rda.ApplyEffect("grey", "feed", "feed"));
+
+		// Several pictures into one filter, and the answer read back rather than looked at.
+		byte[] flatA = new byte[16];
+		byte[] flatB = new byte[16];
+		for (int i = 0; i < 16; i += 4) {
+			flatA[i] = 255; flatA[i + 3] = 255;
+			flatB[i + 2] = 255; flatB[i + 3] = 255;
+		}
+		Rda.PushFramePixels("a", flatA, 2, 2);
+		Rda.PushFramePixels("b", flatB, 2, 2);
+		Rda.DefineEffect("blend", "void main() { store(mix(tap(0, uv()), tap(1, uv()), param(0))); }");
+		Rda.ApplyEffect("blend", new[] { "a", "b" }, "mixed", new float[] { 0.0f });
+		var first = Rda.ReadFrame("mixed");
+		Report("a two-input blend read back at the right size",
+			first.Width + "x" + first.Height, "2x2");
+		Report("and at 0 it is the first picture",
+			string.Join(",", first.Pixels[0], first.Pixels[1], first.Pixels[2], first.Pixels[3]),
+			"255,0,0,255");
+		Rda.ApplyEffect("blend", new[] { "a", "b" }, "mixed", new float[] { 1.0f });
+		var second = Rda.ReadFrame("mixed");
+		Report("at 1 it is the second",
+			string.Join(",", second.Pixels[0], second.Pixels[1], second.Pixels[2], second.Pixels[3]),
+			"0,0,255,255");
+
+		Refused("more than four sources is refused",
+			() => Rda.ApplyEffect("blend", new[] { "a", "b", "a", "b", "a" }, "out"));
+		Refused("no sources at all is refused",
+			() => Rda.ApplyEffect("blend", new string[0], "out"));
+		Refused("writing into one of the sources is refused",
+			() => Rda.ApplyEffect("blend", new[] { "a", "b" }, "b"));
+		Refused("reading a stream that is not there is refused", () => Rda.ReadFrame("nope"));
+
+		Rda.ForgetEffect("grey");
+		Rda.CloseStream("feed");
+		Report("forgetting both is fine", Rda.Running, true);
 
 		// ---- the theme ----
 		Console.WriteLine("theme");

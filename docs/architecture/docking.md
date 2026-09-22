@@ -25,6 +25,39 @@ Two things had to change for it:
   everything that builds a tree goes on working unchanged; anything that is not a panel
   stays an ordinary child and paints underneath, which is how a dock area gets a backdrop.
 
+## Two arrangements, one set of elements
+
+`arrange` chooses how the space is divided, and the two answers are different enough to
+be different code:
+
+- **`panes`** is a tree of splits (`DockTree.h`). Every pane is somebody's half, the area
+  is always fully covered, panels sharing a pane are tabs, and a drop has four meanings
+  depending on which part of a pane it lands on.
+- **`tiles`** is a column grid (`TileGrid.h`). A panel is a rectangle of whole cells with
+  room around it, nothing has to be anybody's half, and dragging one pushes what it lands
+  on downward rather than re-cutting anything.
+
+They are not one mode with a flag because they disagree about what a panel *is*. In panes
+a panel is a share of its neighbour, which is where tabs and splitters come from; in tiles
+it is a rectangle, so neither has anything to mean. A single arrangement would have to
+answer both and would be a worse version of each.
+
+What they do share is everything above that: the same `<dockspace>` and `<dock>`, the
+same containers, the same theme, the same close buttons, the same `persist` file. A saved
+file carries both blocks, so a space switched from one to the other finds what the reader
+had done on each side still there.
+
+The grid's own rules are two, and the rest follows from them. **Tiles are pulled up into
+free space and never sideways** -- a tile that slid left to fill a hole would move because
+of something that happened elsewhere on the screen, and nobody can follow that. And
+**whatever is under the pointer keeps its row** while everything else settles around it;
+pulling it up would take it out from under the hand holding it. Those two are what
+`TileGrid::compact` and its `settling` argument are.
+
+A tile follows the pointer in pixels while the grid follows it in whole cells behind,
+which is the whole feel of the arrangement: what you carry is smooth, what it does to the
+others snaps, and a translucent rectangle shows where it will land.
+
 ## The chrome follows the theme
 
 A dock panel's tab, its title bar when it floats, the splitters between panes and the

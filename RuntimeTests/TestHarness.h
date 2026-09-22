@@ -76,6 +76,20 @@ namespace test {
 		if (!(cond)) ::test::fail(__FILE__, __LINE__, "CHECK(" #cond ") failed"); \
 	} while (0)
 
+// The same, for two strings. CHECK_EQ goes through std::to_string, which has nothing
+// to say about one -- and a comparison that fails without printing what it got is the
+// kind of test that costs an hour to read.
+#define CHECK_STR(actual, expected)                                   \
+	do {                                                              \
+		const std::string actual_ = (actual);                         \
+		const std::string expected_ = (expected);                     \
+		if (actual_ != expected_) {                                   \
+			::test::fail(__FILE__, __LINE__,                          \
+				std::string(#actual) + "\n        got  " + actual_ +    \
+				"\n        want " + expected_);                        \
+		}                                                             \
+	} while (0)
+
 #define CHECK_EQ(actual, expected)                                    \
 	do {                                                              \
 		const auto actual_ = (actual);                                \

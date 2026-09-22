@@ -3,6 +3,7 @@
 #include <vendor/RDA_Library/inline_vector.h>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <cstdint>
 
 // Shared GUI value types, split out so both the immediate frontend (Gui) and the
@@ -133,11 +134,33 @@ namespace RDA {
 		bool  cut = false;               // Ctrl+X
 		bool  paste = false;             // Ctrl+V
 		bool  selectAll = false;         // Ctrl+A
+		bool  undo = false;              // Ctrl+Z
+		bool  redo = false;              // Ctrl+Y, and Ctrl+Shift+Z
 		// Ctrl+Enter. An editable field deliberately ignores it rather than inserting a
 		// newline, leaving the application to decide what submitting means.
 		bool  submit = false;
 		float dt = 0.0f;                 // seconds since last frame (caret blink, animation)
 	};
+
+	// A run of text drawn in its own colour, inside a string that is otherwise one.
+	//
+	// Offsets are **bytes**, because that is what everything else here indexes text by --
+	// the caret a field reports, the ranges a wrap returns, the spans a lexer produces.
+	// Two conventions would be worse than one inconvenient one, and for ASCII, which is
+	// what a highlighter mostly deals in, they are the same number.
+	struct TextSpan {
+		int      start = 0;
+		int      length = 0;
+		uint32_t color = 0;
+	};
+
+	// "#RGB" / "#RRGGBB" / "#RRGGBBAA", or decimal "r,g,b" / "r,g,b,a" with any
+	// non-digit separators. Leaves `out` alone and answers false on anything else.
+	//
+	// Shared rather than copied: a theme, a drawing sent over the C ABI and a label's
+	// spans all take a colour written by a person, and three parsers would be three
+	// slightly different ideas of what a colour is.
+	bool parseColor(const char* text, uint32_t& out);
 
 	// Which flavor of text field to present. Same editing core, different presentation
 	// and behavior — see TextFieldStyle::forMode for the per-mode defaults.
@@ -146,6 +169,51 @@ namespace RDA {
 		Document,  // multi-line text area with document padding
 		Code,      // multi-line, monospace, line-number gutter + current-line highlight
 	};
+
+	// Which keystroke means "send this", for a field that has somebody listening.
+	//
+	// A property rather than a mode, because the two do not follow each other: a chat
+	// composer is multi-line *and* sends on Enter, which is the one combination the
+	// modes could not express. Shift+Enter is always the line break wherever Enter
+	// sends -- it is the gesture everyone already has in their fingers, and a field
+	// that took it away would be the odd one out.
+	enum class SubmitKey : uint8_t {
+		Default,    // by mode: Enter on a single line, Ctrl+Enter on a multi-line one
+		Enter,
+		CtrlEnter,
+		Both,
+		None,
+	};
+
+	// "enter", "ctrlEnter", "both", "none" -- what a layout writes. Anything else is the
+	// fallback, so a misspelling leaves the field as it was rather than silently making
+	// it unsendable.
+	inline SubmitKey submitFrom(std::string_view word, SubmitKey fallback) {
+		if (word == "enter")     return SubmitKey::Enter;
+		if (word == "ctrlEnter") return SubmitKey::CtrlEnter;
+		if (word == "both")      return SubmitKey::Both;
+		if (word == "none")      return SubmitKey::None;
+		return fallback;
+	}
+
+	// Whether this Enter is the send.
+	//
+	// Out here as a rule rather than left as a branch inside the field, because one of
+	// its cases cannot be reached from outside the process: Windows will not let a
+	// synthesised Shift be held down for another program's window, so Shift+Enter is the
+	// one gesture no test harness can press. It is checked against a table instead --
+	// see the truth table in RuntimeTests/TextTests.cpp.
+	constexpr bool submitsOn(SubmitKey sends, bool multiline, bool ctrl, bool shift) {
+		// A field that says nothing gets what the mode implies: a single line sends on
+		// Enter, a multi-line one on Ctrl+Enter.
+		if (sends == SubmitKey::Default) {
+			sends = multiline ? SubmitKey::CtrlEnter : SubmitKey::Enter;
+		}
+		if (ctrl) return sends == SubmitKey::CtrlEnter || sends == SubmitKey::Both;
+		// Shift is the line break, always, wherever Enter is the send. A composer that
+		// took that away would be the odd one out.
+		return !shift && (sends == SubmitKey::Enter || sends == SubmitKey::Both);
+	}
 
 	// What a run of source text means, for syntax highlighting. A Language (Syntax.h)
 	// classifies text into these; SyntaxStyle gives each one a color. Kept here rather
@@ -214,6 +282,31 @@ namespace RDA {
 		InOut,    // eased at both ends; for a longer move that should not start abruptly
 	};
 
+	// How fast something is moving at each moment of its journey -- the second of the two
+	// curves a motion is made of, the first being the route it follows.
+	//
+	// Not a replacement for Easing, and Easing is not a poor version of this. A theme names
+	// one of four curves for a colour and four is the right amount of choice for a colour:
+	// there is nothing a fade needs to say that "fast then settling" cannot. A route is the
+	// other case. The whole point of giving something a shape to travel is being able to
+	// say how it is travelled, and four names cannot say "wait, then go, then settle".
+	//
+	// A cubic through (0,0) and (1,1) with two control points -- what every design tool
+	// draws and what CSS spells cubic-bezier(). x is time elapsed, y is distance covered,
+	// and a y outside 0..1 is an overshoot, which is how a thing arrives by settling back.
+	struct Pace {
+		Easing named = Easing::Out;
+		bool   custom = false;
+		float  x1 = 0.0f, y1 = 0.0f, x2 = 1.0f, y2 = 1.0f;
+
+		bool operator==(const Pace& other) const {
+			return custom == other.custom &&
+			       (custom ? (x1 == other.x1 && y1 == other.y1 &&
+			                  x2 == other.x2 && y2 == other.y2)
+			               : named == other.named);
+		}
+	};
+
 	// How a style's colours get from one to another when what a widget is doing changes.
 	//
 	// Zero is instant, which is what everything did before this existed and what a theme
@@ -255,6 +348,10 @@ namespace RDA {
 		uint32_t background  = rgba(18, 20, 26);
 		uint32_t text        = rgba(228, 230, 235);
 		uint32_t placeholder = rgba(125, 125, 125);
+		// What a completion offered ahead of the caret is drawn in. Dimmer than the text
+		// on purpose: it is not in the value yet, and reading it as though it were is the
+		// one way this feature goes wrong.
+		uint32_t suggestion  = rgba(120, 128, 145);
 		uint32_t caret       = rgba(120, 170, 255);
 		uint32_t selection   = rgba(60, 92, 150, 140);
 		uint32_t gutter      = rgba(28, 30, 38);
@@ -383,7 +480,11 @@ namespace RDA {
 	struct PanelStyle {
 		uint32_t body         = rgba(28, 30, 36, 235);
 		uint32_t accent       = rgba(74, 106, 208);
-		float    accentHeight = 3.0f; // height of the top accent strip, in pixels
+		// Off unless a theme asks for it. It used to be three pixels of blue on every
+		// panel ever drawn, which is a decision the engine has no business making for an
+		// interface it has not seen -- and one that had to be turned off before a plain
+		// panel looked plain.
+		float    accentHeight = 0.0f; // height of the top accent strip, in pixels
 		uint32_t border       = rgba(58, 62, 72);
 		float    borderWidth  = 0.0f;
 		float    radius       = 0.0f;

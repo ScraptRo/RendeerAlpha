@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <Core/Datatypes.h>
+#include <functional>
 
 // Forward declare the VMA allocator handle so we don't pull the heavy
 // vk_mem_alloc.h header into everything that needs the device.
@@ -42,6 +43,19 @@ namespace RDA{
 	VkDevice         getDevice();
 	VkPhysicalDevice getPhysicalDevice();
 	VmaAllocator     getAllocator();
+
+	// One-shot GPU work on the graphics queue, through a transient pool, waited for
+	// before returning. Uploading a texture, generating its mips, and running a filter
+	// over a picture are all this; it lives here rather than in any one of them because
+	// it is a fact about the device and not about what is being submitted.
+	//
+	// Blocking, and on the loop thread. Fine for what it is used for -- none of which is
+	// per-frame -- and the alternative is a fence somebody has to remember to wait on.
+	//
+	// Compute is submitted here too: a queue family with VK_QUEUE_GRAPHICS_BIT is
+	// required by the specification to have VK_QUEUE_COMPUTE_BIT as well, so the graphics
+	// queue is a compute queue and there is no second one to find.
+	void immediateSubmit(const std::function<void(VkCommandBuffer)>& record);
 
 	// Re-usable queries (also used by the swapchain).
 	QueueFamilyIndices      findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);

@@ -7,6 +7,7 @@
 
 namespace RDA {
 	class Widget;
+	class ListView;
 }
 
 // Live bindings: the half of the loop that puts a changed signal on screen.
@@ -31,6 +32,15 @@ namespace RDA::Layout {
 		ObserverId add(Program program, std::vector<uint32_t> signalIds,
 		               Widget* target, std::string property);
 
+		// An observer that drives no property: when any of these signals moves, the list
+		// is told its rows are stale and re-binds them itself.
+		//
+		// This exists because a row binding cannot be an ordinary one. An ordinary
+		// binding knows the single widget it writes; a row binding is one program over a
+		// pool of rows, and a signal write has no way to say which row it meant. So the
+		// signal graph drives the list, and the list drives its rows.
+		ObserverId addRowRefresh(std::vector<uint32_t> signalIds, ListView* list);
+
 		// Stops a binding. Called when the widgets it writes to are going away — an
 		// evaluation afterwards would be writing through a dangling pointer.
 		void remove(ObserverId observer);
@@ -50,6 +60,9 @@ namespace RDA::Layout {
 			std::vector<uint32_t> signalIds;
 			Widget*               target = nullptr;
 			std::string           property;
+			// Set instead of target/property: this one marks a list stale rather than
+			// evaluating anything.
+			ListView*             refresh = nullptr;
 			bool                  live = false;
 		};
 

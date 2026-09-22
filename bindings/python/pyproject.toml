@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rda"
-version = "0.9.0"
+version = "1.0.0"
 description = "Write a RendeerAlpha backend in Python. The interface is a compiled layout; this is the state behind it."
 readme = "README.md"
 license = { text = "MIT" }

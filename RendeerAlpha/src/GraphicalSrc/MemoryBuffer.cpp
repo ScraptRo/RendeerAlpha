@@ -99,7 +99,7 @@ namespace RDA {
 
 		VmaAllocationCreateInfo allocInfo{};
 		allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-		if (residence == MemoryResidence::CpuToGpu) {
+		if (residence != MemoryResidence::GpuOnly) {
 			allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
 		}
 
@@ -115,7 +115,7 @@ namespace RDA {
 	bool MemoryBuffer::upload(const void* data, VkDeviceSize size, VkDeviceSize offset) {
 		if (!isValid() || size == 0) return false;
 
-		if (mResidence == MemoryResidence::CpuToGpu) {
+		if (mResidence != MemoryResidence::GpuOnly) {
 			void* dst = nullptr;
 			if (vmaMapMemory(getAllocator(), mAllocation, &dst) != VK_SUCCESS) {
 				RDA_LOG_ERROR("Failed to map buffer for upload");
@@ -139,7 +139,7 @@ namespace RDA {
 	}
 
 	void* MemoryBuffer::map() {
-		if (mResidence != MemoryResidence::CpuToGpu || !isValid()) return nullptr;
+		if (mResidence == MemoryResidence::GpuOnly || !isValid()) return nullptr;
 		if (!mMapped) {
 			vmaMapMemory(getAllocator(), mAllocation, &mMapped);
 		}

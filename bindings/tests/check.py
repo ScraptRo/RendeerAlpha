@@ -9,6 +9,7 @@ Two bindings over one ABI should be able to answer the same questions, and a lin
 appears in one output and not the other is a gap worth seeing.
 """
 
+import base64
 import os
 import sys
 import time
@@ -54,9 +55,37 @@ def refused(what, work):
 print("lifecycle")
 config = rda.StartupConfig()
 config.name = "python binding checks"
+# How the window is dressed. Every one of these is a separate entry point, so a binding
+# that forgot to declare one fails here rather than in somebody's application. Chosen to
+# be invisible: a window that is already this size, slightly transparent, put somewhere
+# ordinary. Nothing that takes the screen over while the tests run.
+# The engine's own default size, stated rather than changed: the fixture's layout is
+# written against it, and a smaller window would change what a placed viewport measures.
+config.width, config.height = 1280, 800
+config.min_width, config.min_height = 320, 200
+config.max_width, config.max_height = 1600, 1200
+config.resizable = False
+config.opacity = 0.95
+config.x, config.y = 120, 120
 
 rda.init(config)
 check("init returns with the engine up", rda.running(), True)
+
+# What the engine publishes about its own window. Defined during bring-up, so they are
+# there before any interface is.
+from rda import _engine
+check("the window reports its width", _engine.get_number("rda.width") >= 1.0, True)
+check("the window reports its height", _engine.get_number("rda.height") >= 1.0, True)
+check("the window says it is open", _engine.get_bool("rda.open"), True)
+check("a fresh window is not maximised", _engine.get_bool("rda.maximized"), False)
+# And writing one is how a frameless title bar's buttons work. Set and put back, so the
+# rest of the checks run against the window they started with.
+_engine.set_bool("rda.maximized", True)
+time.sleep(0.4)
+check("writing rda.maximized maximises", _engine.get_bool("rda.maximized"), True)
+_engine.set_bool("rda.maximized", False)
+time.sleep(0.4)
+check("and writing it back restores", _engine.get_bool("rda.maximized"), False)
 
 define()
 rda.load_interface("res/layouts/first.rdab")
@@ -162,6 +191,101 @@ check("invoke runs the handler", asked, [7.0])
 
 refused("invoking a command nothing is bound to is refused", lambda: rda.invoke("unused"))
 refused("invoking a command that does not exist is refused", lambda: rda.invoke("nope"))
+
+# ---- the window, the clipboard, and measuring (ABI 1.2) --------------------------------
+print("window and clipboard")
+rda.set_title("binding test \u2014 renamed")
+check("the title can be set while open", rda.running(), True)
+
+rda.set_clipboard("round trip \u2014 dash")
+check("the clipboard round-trips", rda.clipboard(), "round trip \u2014 dash")
+
+one = rda.measure_text("M")
+ten = rda.measure_text("MMMMMMMMMM")
+check("ten monospace characters are ten times one", round(ten[0] / one[0]), 10)
+check("and a line has a height", one[1] > 0, True)
+refused("measuring with no text is refused", lambda: rda.measure_text(None))
+
+# ---- pictures from memory --------------------------------------------------------------
+# A 2x2 PNG written out here, so the check needs no image library to make one.
+print("images")
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGM8YeP2n4GBgYEJRIAwACNKAk3nXZn3AAAAAElFTkSuQmCC")
+
+rda.define_image("fromBytes", PNG)
+check("a picture registered from encoded bytes", rda.running(), True)
+rda.define_image_pixels("fromPixels", b"\xC8\x3C\x46\xFF" * 4, 2, 2)
+check("and one from raw pixels", rda.running(), True)
+rda.define_image("fromBytes", PNG)
+check("registering the same name again is a replace, not an error", rda.running(), True)
+rda.forget_image("fromBytes")
+rda.forget_image("never registered")
+check("forgetting one, or one that was never there, is fine", rda.running(), True)
+
+refused("bytes that are not a picture are refused",
+        lambda: rda.define_image("bad", b"not a picture"))
+refused("no bytes at all is refused", lambda: rda.define_image("bad", b""))
+refused("a picture with no name is refused", lambda: rda.define_image("", PNG))
+refused("too few pixels for the size is refused",
+        lambda: rda.define_image_pixels("bad", b"\0" * 4, 2, 2))
+
+# ---- streams and effects ----------------------------------------------------------------
+# A 2x2 frame, and a filter over it. Nothing shows either -- what is under test is that the
+# calls cross, that a surface is reused rather than rebuilt, and that a shader compiles.
+print("streams and effects")
+FRAME = b"\x40\x80\xC0\xFF" * 4
+
+rda.push_frame_pixels("feed", FRAME, 2, 2)
+check("a frame pushed from raw pixels", rda.running(), True)
+rda.push_frame("feed", PNG)
+check("and one from an encoded frame", rda.running(), True)
+# Not `shown`: this file already has a shown() for formatting values.
+sent, drawn = rda.stream_counts("feed")
+check("both were counted", sent, 2)
+check("a stream nothing has drawn yet is still wanted", rda.stream_wanted("feed"), True)
+
+refused("a frame with no bytes is refused", lambda: rda.push_frame("feed", b""))
+refused("too few pixels for the size is refused",
+        lambda: rda.push_frame_pixels("feed", b"\0" * 4, 2, 2))
+
+rda.define_effect("grey", "void main() { vec4 c = texture(src, uv()); store(vec4(vec3(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))), c.a)); }")
+check("a filter compiled", rda.running(), True)
+rda.apply_effect("grey", "feed", "feed.grey")
+check("and ran over the feed", rda.stream_counts("feed.grey")[0], 1)
+rda.apply_effect("grey", "feed", "feed.grey", [0.5, 1.0])
+check("with parameters", rda.stream_counts("feed.grey")[0], 2)
+
+refused("a shader that will not compile is refused",
+        lambda: rda.define_effect("bad", "void main() { not glsl }"))
+refused("an effect nothing defined is refused",
+        lambda: rda.apply_effect("nope", "feed", "feed.out"))
+refused("reading and writing one stream is refused",
+        lambda: rda.apply_effect("grey", "feed", "feed"))
+refused("filtering a stream with no frame is refused",
+        lambda: rda.apply_effect("grey", "empty", "empty.out"))
+
+# Several pictures into one filter, and the answer read back rather than looked at.
+rda.push_frame_pixels("a", b"\xFF\x00\x00\xFF" * 4, 2, 2)
+rda.push_frame_pixels("b", b"\x00\x00\xFF\xFF" * 4, 2, 2)
+rda.define_effect("blend", "void main() { store(mix(tap(0, uv()), tap(1, uv()), param(0))); }")
+rda.apply_effect("blend", ["a", "b"], "mixed", [0.0])
+front, width, height = rda.read_frame("mixed")
+check("a two-input blend read back at the right size", (width, height), (2, 2))
+check("and at 0 it is the first picture", tuple(front[0:4]), (255, 0, 0, 255))
+rda.apply_effect("blend", ["a", "b"], "mixed", [1.0])
+back, _, _ = rda.read_frame("mixed")
+check("at 1 it is the second", tuple(back[0:4]), (0, 0, 255, 255))
+
+refused("more than four sources is refused",
+        lambda: rda.apply_effect("blend", ["a", "b", "a", "b", "a"], "out"))
+refused("no sources at all is refused", lambda: rda.apply_effect("blend", [], "out"))
+refused("writing into one of the sources is refused",
+        lambda: rda.apply_effect("blend", ["a", "b"], "b"))
+refused("reading a stream that is not there is refused", lambda: rda.read_frame("nope"))
+
+rda.forget_effect("grey")
+rda.close_stream("feed")
+check("forgetting both is fine", rda.running(), True)
 
 # ---- the theme ------------------------------------------------------------------------
 print("theme")

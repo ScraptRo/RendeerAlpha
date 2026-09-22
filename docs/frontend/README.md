@@ -32,10 +32,11 @@ run time, and if it is not, it does not.
 | [Absolute placement](placement.md) | `x`, `y`, `w`, `h`, `anchor` — for the times a stack is the wrong tool |
 | [Motion](motion.md) | `animate`, inherited; `visible`, and what collapses |
 | [The keyboard](keyboard.md) | Tab, Space, the arrows, Escape — and the ring that shows where they go |
+| [The window](window.md) | how it opens, its icon, a window with no frame, and `state.rda` |
 
 ## The elements
 
-[Every element](elements/README.md) — nineteen of them, in six groups, plus
+[Every element](elements/README.md) — twenty-one of them, in seven groups, plus
 [the properties they all share](elements/common-properties.md).
 
 ## Beyond one layout

@@ -43,45 +43,6 @@ namespace RDA {
 	using Layout::loadBlueprintFile;
 
 	namespace {
-		bool hexVal(char c, int& v) {
-			if (c >= '0' && c <= '9') { v = c - '0';      return true; }
-			if (c >= 'a' && c <= 'f') { v = c - 'a' + 10; return true; }
-			if (c >= 'A' && c <= 'F') { v = c - 'A' + 10; return true; }
-			return false;
-		}
-
-		// "#RGB" / "#RRGGBB" / "#RRGGBBAA" or decimal "r,g,b" / "r,g,b,a" (any
-		// non-digit separators). Leaves `out` untouched and returns false on garbage.
-		bool parseColor(const char* text, uint32_t& out) {
-			if (!text) return false;
-			while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') ++text;
-
-			if (*text == '#') {
-				++text;
-				int d[8], n = 0;
-				for (; n < 8 && text[n]; ++n) {
-					if (!hexVal(text[n], d[n])) break;
-				}
-				auto byte = [&](int i) { return (d[2 * i] << 4) | d[2 * i + 1]; };
-				if (n == 3) { out = rgba(d[0] * 17, d[1] * 17, d[2] * 17); return true; }
-				if (n == 6) { out = rgba(byte(0), byte(1), byte(2)); return true; }
-				if (n == 8) { out = rgba(byte(0), byte(1), byte(2), byte(3)); return true; }
-				return false;
-			}
-
-			int c[4] = { 0, 0, 0, 255 }, n = 0;
-			for (const char* p = text; *p && n < 4; ) {
-				while (*p && (*p < '0' || *p > '9')) ++p;
-				if (!*p) break;
-				int v = 0;
-				while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; }
-				c[n++] = v > 255 ? 255 : v;
-			}
-			if (n < 3) return false;
-			out = rgba(c[0], c[1], c[2], c[3]);
-			return true;
-		}
-
 		// Read a field into `out` when the node has one; otherwise leave it alone, which
 		// is what makes a partial variant inherit the rest from its base.
 		void readColor(const Blueprint& bp, const BlueprintNode& node, const char* key, uint32_t& out) {
@@ -294,6 +255,7 @@ namespace RDA {
 			readColor(bp, node, "background", s.background);
 			readColor(bp, node, "text", s.text);
 			readColor(bp, node, "placeholder", s.placeholder);
+			readColor(bp, node, "suggestion", s.suggestion);
 			readColor(bp, node, "caret", s.caret);
 			readColor(bp, node, "selection", s.selection);
 			readColor(bp, node, "gutter", s.gutter);

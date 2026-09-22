@@ -50,6 +50,46 @@ namespace Rendeer {
 		/// <summary>Pixel height for body text. Zero keeps the default.</summary>
 		public float FontHeight = 0.0f;
 
+		/// <summary>The size the window opens at. Zero keeps the engine's default.</summary>
+		public int Width = 0;
+		/// <summary>The size the window opens at. Zero keeps the engine's default.</summary>
+		public int Height = 0;
+
+		/// <summary>
+		/// The picture the OS shows for the window: the title bar, the alt-tab card, the
+		/// taskbar. A .png, or an .svg -- which is drawn at every size an OS picks from,
+		/// so one file covers all of them. Not the executable's icon, which is a resource
+		/// inside the binary.
+		/// </summary>
+		public string Icon = "";
+		/// <summary>
+		/// The OS frame: title bar, border, the three buttons. False means the layout
+		/// draws its own, and something in it needs dragWindow or the window cannot move.
+		/// </summary>
+		public bool Decorated = true;
+		/// <summary>Whether the reader may resize it.</summary>
+		public bool Resizable = true;
+		/// <summary>Opens filling the work area.</summary>
+		public bool Maximized = false;
+		/// <summary>Opens covering the monitor.</summary>
+		public bool Fullscreen = false;
+		/// <summary>Stays above other windows.</summary>
+		public bool AlwaysOnTop = false;
+		/// <summary>
+		/// A framebuffer with a real alpha channel, so a clear colour that is not opaque
+		/// lets the desktop through. Decided when the window is created and nowhere else.
+		/// </summary>
+		public bool Transparent = false;
+		/// <summary>The whole window, frame included. 0..1.</summary>
+		public float Opacity = 1.0f;
+		/// <summary>Bounds the reader cannot drag past. Zero on an axis means no bound.</summary>
+		public int MinWidth = 0, MinHeight = 0, MaxWidth = 0, MaxHeight = 0;
+		/// <summary>
+		/// Where the top-left corner opens. Null leaves that axis to the platform, which
+		/// is not the same answer as 0 -- that is a corner of the screen.
+		/// </summary>
+		public int? X = null, Y = null;
+
 		/// <summary>Once, after the window is up and before Init() returns.</summary>
 		public Action? OnStart;
 		/// <summary>Once per frame, before it is drawn, with the seconds since the last.</summary>
@@ -106,6 +146,29 @@ namespace Rendeer {
 				Engine.rda_config_set_vsync(handle, config.Vsync ? 1 : 0);
 				if (!string.IsNullOrEmpty(config.Font) || config.FontHeight > 0.0f) {
 					Engine.rda_config_set_font(handle, config.Font ?? "", config.FontHeight);
+				}
+				if (config.Width > 0 || config.Height > 0) {
+					Engine.rda_config_set_size(handle, config.Width, config.Height);
+				}
+
+				// How the window is dressed. Each one is sent only when it differs from
+				// the engine's own default, so a config nobody touched makes no calls.
+				if (!string.IsNullOrEmpty(config.Icon)) Engine.rda_config_set_icon(handle, config.Icon);
+				if (!config.Decorated) Engine.rda_config_set_decorated(handle, 0);
+				if (!config.Resizable) Engine.rda_config_set_resizable(handle, 0);
+				if (config.Maximized) Engine.rda_config_set_maximized(handle, 1);
+				if (config.Fullscreen) Engine.rda_config_set_fullscreen(handle, 1);
+				if (config.AlwaysOnTop) Engine.rda_config_set_always_on_top(handle, 1);
+				if (config.Transparent) Engine.rda_config_set_transparent(handle, 1);
+				if (config.Opacity != 1.0f) Engine.rda_config_set_opacity(handle, config.Opacity);
+				if (config.MinWidth > 0 || config.MinHeight > 0 ||
+				    config.MaxWidth > 0 || config.MaxHeight > 0) {
+					Engine.rda_config_set_size_limits(handle, config.MinWidth, config.MinHeight,
+					                                  config.MaxWidth, config.MaxHeight);
+				}
+				if (config.X.HasValue || config.Y.HasValue) {
+					Engine.rda_config_set_position(handle, config.X ?? int.MinValue,
+					                               config.Y ?? int.MinValue);
 				}
 
 				// Held for the life of the process: the engine calls these long after this
@@ -221,6 +284,246 @@ namespace Rendeer {
 		/// </remarks>
 		public static void OnCommand(string command, Action handler) =>
 			Engine.OnCommand(command, handler);
+
+		/// <summary>
+		/// Registers a picture a backend made, under <paramref name="name"/>. The bytes are
+		/// an encoded image (PNG, JPEG, BMP, TGA, GIF, PSD, HDR, PNM); a layout shows it
+		/// with <c>src="mem:&lt;name&gt;"</c>. Registering the same name again replaces
+		/// what every image naming it draws.
+		/// </summary>
+		public static void DefineImage(string name, byte[] data) {
+			if (data == null || data.Length == 0) {
+				throw new RdaException("there are no bytes to make an image from");
+			}
+			if (Engine.rda_image_define(name, data, data.Length) == 0) {
+				Engine.Fail("cannot register the image '" + name + "'");
+			}
+		}
+
+		/// <summary>
+		/// The same, from raw pixels: four bytes each (R, G, B, A), rows tightly packed,
+		/// width * height * 4 in all.
+		/// </summary>
+		public static void DefineImagePixels(string name, byte[] pixels, int width, int height) {
+			int wanted = width * height * 4;
+			if (pixels == null || pixels.Length < wanted) {
+				throw new RdaException("a " + width + "x" + height + " image needs " + wanted
+				                       + " bytes, and there are " + (pixels?.Length ?? 0));
+			}
+			if (Engine.rda_image_define_pixels(name, pixels, width, height) == 0) {
+				Engine.Fail("cannot register the image '" + name + "'");
+			}
+		}
+
+		/// <summary>
+		/// Pushes an encoded frame (PNG, JPEG, ...) into the stream <paramref name="name"/>,
+		/// shown by <c>&lt;stream name="..."&gt;</c>. Unlike DefineImage the surface is kept
+		/// and written into, so a feed does not build a texture per frame.
+		/// </summary>
+		public static void PushFrame(string name, byte[] data) {
+			if (data == null || data.Length == 0) {
+				throw new RdaException("there are no bytes to push");
+			}
+			if (Engine.rda_stream_push_encoded(name, data, data.Length) == 0) {
+				Engine.Fail("cannot push a frame into '" + name + "'");
+			}
+		}
+
+		/// <summary>The same, from raw pixels: four bytes each, rows tightly packed.</summary>
+		public static void PushFramePixels(string name, byte[] pixels, int width, int height) {
+			int wanted = width * height * 4;
+			if (pixels == null || pixels.Length < wanted) {
+				throw new RdaException("a " + width + "x" + height + " frame needs " + wanted
+				                       + " bytes, and there are " + (pixels?.Length ?? 0));
+			}
+			if (Engine.rda_stream_push(name, pixels, width, height) == 0) {
+				Engine.Fail("cannot push a frame into '" + name + "'");
+			}
+		}
+
+		/// <summary>
+		/// Whether anybody is looking at this stream. False for one on a screen that is not
+		/// showing -- ask before decoding the next frame.
+		/// </summary>
+		public static bool StreamWanted(string name) => Engine.rda_stream_wanted(name) == 1;
+
+		/// <summary>Drops a stream. A stream widget naming it then draws nothing.</summary>
+		public static void CloseStream(string name) {
+			if (Engine.rda_stream_close(name) == 0) {
+				Engine.Fail("cannot close the stream '" + name + "'");
+			}
+		}
+
+		/// <summary>
+		/// Compiles a filter and keeps it under <paramref name="name"/>. Write the filter,
+		/// not the Vulkan around it: <c>src</c> is the input, <c>store(c)</c> writes the
+		/// result, and <c>uv()</c>, <c>coord()</c>, <c>size()</c> and <c>param(i)</c> say
+		/// where you are and what you were passed. Colours inside an effect are linear light.
+		/// </summary>
+		public static void DefineEffect(string name, string glsl) {
+			if (Engine.rda_effect_define(name, glsl) == 0) {
+				Engine.Fail("cannot define the effect '" + name + "'");
+			}
+		}
+
+		/// <summary>
+		/// Runs the effect over the stream <paramref name="source"/> into
+		/// <paramref name="into"/>, which is made if it is not there. The two may not be the
+		/// same. Up to eight parameters.
+		/// </summary>
+		public static void ApplyEffect(string name, string source, string into,
+		                               float[]? values = null)
+			=> ApplyEffect(name, new[] { source }, into, values);
+
+		/// <summary>
+		/// The same over up to four pictures at once -- a blend, a mask, a difference.
+		/// They are reachable in the shader as <c>tap(0, at)</c>..<c>tap(3, at)</c>, and
+		/// <c>src</c> is the first. The output is the size of the first; the rest are
+		/// sampled in 0..1. <paramref name="into"/> may not be one of them.
+		/// </summary>
+		public static void ApplyEffect(string name, string[] sources, string into,
+		                               float[]? values = null) {
+			if (sources == null || sources.Length == 0) {
+				throw new RdaException("an effect needs something to read");
+			}
+			if (sources.Length > 4) {
+				throw new RdaException(sources.Length + " sources, and a filter reads at "
+				                       + "most four. Chain two effects instead.");
+			}
+			int count = values == null ? 0 : (values.Length > 8 ? 8 : values.Length);
+			// UTF-8 by hand: the runtime has no marshaller for an array of UTF-8 strings.
+			IntPtr[] names = new IntPtr[sources.Length];
+			try {
+				for (int i = 0; i < sources.Length; ++i) {
+					names[i] = Marshal.StringToCoTaskMemUTF8(sources[i]);
+				}
+				if (Engine.rda_effect_apply_many(name, names, sources.Length, into,
+				                                 values, count) == 0) {
+					Engine.Fail("cannot apply the effect '" + name + "'");
+				}
+			} finally {
+				foreach (IntPtr one in names) {
+					if (one != IntPtr.Zero) Marshal.FreeCoTaskMem(one);
+				}
+			}
+		}
+
+		/// <summary>
+		/// The current frame of a stream: RGBA8, rows tightly packed, as it looks on screen.
+		/// A surface an effect wrote holds linear light and is encoded on the way out.
+		/// Costs a round trip to the GPU and a wait.
+		/// </summary>
+		public static (byte[] Pixels, int Width, int Height) ReadFrame(string name) {
+			int needed = Engine.rda_stream_read(name, null, 0, out int width, out int height);
+			if (needed < 0) Engine.Fail("cannot read the stream '" + name + "'");
+			if (needed == 0) return (new byte[0], 0, 0);
+			byte[] pixels = new byte[needed];
+			if (Engine.rda_stream_read(name, pixels, needed, out width, out height) < 0) {
+				Engine.Fail("cannot read the stream '" + name + "'");
+			}
+			return (pixels, width, height);
+		}
+
+		/// <summary>Drops a compiled effect.</summary>
+		public static void ForgetEffect(string name) {
+			if (Engine.rda_effect_forget(name) == 0) {
+				Engine.Fail("cannot forget the effect '" + name + "'");
+			}
+		}
+
+		/// <summary>Drops a registered picture. An image still naming it draws nothing.</summary>
+		public static void ForgetImage(string name) {
+			if (Engine.rda_image_forget(name) == 0) {
+				Engine.Fail("cannot forget the image '" + name + "'");
+			}
+		}
+
+		/// <summary>
+		/// Every file let go over the window since the last call. Empty most of the time;
+		/// a drop is queued rather than delivered, so nothing is lost between looks.
+		/// </summary>
+		public static List<string> DroppedFiles() {
+			var paths = new List<string>();
+			byte[] buffer = new byte[4096];
+			while (Engine.rda_poll_dropped_file(buffer, buffer.Length) > 0) {
+				int length = Array.IndexOf<byte>(buffer, 0);
+				if (length < 0) length = buffer.Length;
+				paths.Add(System.Text.Encoding.UTF8.GetString(buffer, 0, length));
+			}
+			return paths;
+		}
+
+		/// <summary>
+		/// Puts the keyboard on a widget, by the full id its layout gave it --
+		/// <c>root/composer</c>. An empty name takes the keyboard away.
+		/// </summary>
+		public static void Focus(string widgetId = "") {
+			if (Engine.rda_focus(widgetId) == 0) Engine.Fail("cannot focus '" + widgetId + "'");
+		}
+
+		/// <summary>The platform's folder chooser. Null when cancelled. Blocks.</summary>
+		public static string? PickFolder(string title = "", string start = "") {
+			int length = Engine.rda_pick_folder(title, start, null, 0);
+			if (length < 0) Engine.Fail("cannot open the chooser");
+			if (length == 0) return null;
+			byte[] buffer = new byte[length + 1];
+			Engine.rda_pick_folder(title, start, buffer, length + 1);
+			return System.Text.Encoding.UTF8.GetString(buffer, 0, length);
+		}
+
+		/// <summary>
+		/// The platform's file chooser. <paramref name="filter"/> is
+		/// <c>"Images|*.png;*.jpg"</c>; empty means any file.
+		/// </summary>
+		public static string? PickFile(string title = "", string start = "", string filter = "") {
+			int length = Engine.rda_pick_file(title, start, filter, null, 0);
+			if (length < 0) Engine.Fail("cannot open the chooser");
+			if (length == 0) return null;
+			byte[] buffer = new byte[length + 1];
+			Engine.rda_pick_file(title, start, filter, buffer, length + 1);
+			return System.Text.Encoding.UTF8.GetString(buffer, 0, length);
+		}
+
+		/// <summary>The window's title, after it has opened.</summary>
+		public static void SetTitle(string title) {
+			if (Engine.rda_set_title(title) == 0) Engine.Fail("cannot set the title");
+		}
+
+		/// <summary>
+		/// The window's icon, after it has opened.
+		///
+		/// A .png, or an .svg -- which is drawn at every size an OS picks from, so one
+		/// file covers the title bar, the alt-tab card and the taskbar. "" puts the
+		/// platform's default back. StartupConfig.Icon sets the first one.
+		/// </summary>
+		public static void SetIcon(string path = "") {
+			if (Engine.rda_set_icon(path) == 0) Engine.Fail("cannot set the icon");
+		}
+
+		/// <summary>Puts <paramref name="text"/> on the OS clipboard.</summary>
+		public static void SetClipboard(string text) {
+			if (Engine.rda_clipboard_set(text) == 0) Engine.Fail("cannot write the clipboard");
+		}
+
+		/// <summary>What is on the OS clipboard. Empty when it holds none.</summary>
+		public static string Clipboard() {
+			int length = Engine.rda_clipboard_get(null, 0);
+			if (length < 0) Engine.Fail("cannot read the clipboard");
+			if (length == 0) return "";
+			byte[] buffer = new byte[length + 1];
+			Engine.rda_clipboard_get(buffer, length + 1);
+			return System.Text.Encoding.UTF8.GetString(buffer, 0, length);
+		}
+
+		/// <summary>
+		/// The size <paramref name="text"/> would be drawn at, in the pixels a layout
+		/// uses. A <paramref name="size"/> of 0 is the interface's own.
+		/// </summary>
+		public static (float Width, float Height) MeasureText(string text, float size = 0f) {
+			if (Engine.rda_measure_text(text, size, out float width, out float height) == 0)
+				Engine.Fail("cannot measure text");
+			return (width, height);
+		}
 
 		/// <summary>Swaps the whole look while the window stays open.</summary>
 		/// <remarks>

@@ -100,4 +100,13 @@ namespace RDA {
 		mEvents.push_back(event);
 		if (mCallbacks.onScroll) mCallbacks.onScroll(xoffset, yoffset);
 	}
+
+	void Input::onFilesDropped(const std::vector<std::string>& paths) {
+		// No polled state and no InputEvent for this one. A drop is not something a
+		// frame is in the middle of -- it happens once, carries data too big for the
+		// event struct, and an application that misses the frame it landed on has lost
+		// the files. So it goes straight to whoever asked, and to the queue the C ABI
+		// drains at its own pace.
+		if (mCallbacks.onFilesDropped) mCallbacks.onFilesDropped(paths);
+	}
 }

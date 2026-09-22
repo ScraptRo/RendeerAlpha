@@ -85,6 +85,19 @@ namespace RDA {
 		// Whether an id names a table. at() answers a bad id with a shared empty table,
 		// which is the right thing for a layout that names one that is not there and the
 		// wrong thing for a caller that wants to be told -- hence this.
+		// Every table's version added up.
+		//
+		// A cheap "did any of them move" for whoever caches work between frames. The GUI
+		// keeps last frame's geometry when nothing it can see has changed, and rows
+		// arriving is invisible to every one of its other checks -- same widget tree,
+		// same input, a <list> quietly showing different things. Without this a filled
+		// table reached the screen only when something else happened to force a walk,
+		// which in an application that is also writing signals looks like it works.
+		//
+		// Monotonic, because a table's own version only ever increases, so two tables
+		// cannot cancel each other out.
+		uint64_t revision() const;
+
 		bool     valid(uint32_t table) const { return table < mTables.size(); }
 		Table&   at(uint32_t table);
 

@@ -40,6 +40,14 @@ namespace RDA {
 		uint32_t mCachedHeight = 0;
 		uint32_t mCachedWinWidth = 0;    // window content size, in screen coords
 		uint32_t mCachedWinHeight = 0;
+
+		// Where the pointer took hold of the window, in window coordinates, while a
+		// `dragWindow` region is held. See followGrip.
+		bool   mGripping = false;
+		double mGripX = 0.0, mGripY = 0.0;
+		// Where a fullscreen window came from, so leaving it puts it back rather than
+		// leaving it the size of the monitor with a frame around it.
+		int mWindowedX = 0, mWindowedY = 0, mWindowedW = 0, mWindowedH = 0;
 	public:
 		Window(WindowInfo&);
 		~Window();
@@ -78,6 +86,41 @@ namespace RDA {
 			return { screenPos.x * static_cast<float>(mCachedWidth) / mCachedWinWidth,
 			         screenPos.y * static_cast<float>(mCachedHeight) / mCachedWinHeight };
 		}
+
+		// ---- what the OS does with it, after it exists -------------------------------
+		//
+		// Every one of these is the platform's business rather than the renderer's, so
+		// they are thin: they exist because GLFW is main-thread only and everything else
+		// in the engine reads this class instead of calling it.
+
+		// The picture the OS shows for this window. A .png, or an .svg rasterised at the
+		// sizes an OS picks from. Empty puts the platform's default back.
+		bool setIcon(const std::string& path);
+
+		void setTitle(const std::string& title);
+		void setDecorated(bool on);
+		void setResizable(bool on);
+		void setAlwaysOnTop(bool on);
+		void setOpacity(float value);
+		void setSizeLimits(unsigned minW, unsigned minH, unsigned maxW, unsigned maxH);
+		void setPosition(int x, int y);
+		void getPosition(int& x, int& y) const;
+
+		void setMaximized(bool on);
+		bool isMaximized() const;
+		void setMinimized(bool on);
+		bool isMinimized() const;
+		void setFullscreen(bool on);
+		bool isFullscreen() const;
+		bool isFocused() const;
+
+		// Move the window with the pointer, for a window with no frame of its own.
+		//
+		// Called every frame with whether a `dragWindow` region is being held. The first
+		// held frame only remembers where the pointer took hold; every one after it moves
+		// the window by how far the pointer has gone since. A maximised window ignores
+		// it -- dragging one somewhere would leave it maximised and in the wrong place.
+		void followGrip(bool held);
 
 		GLFWwindow*    getGLFW() const { return mWindow; }
 		VkSurfaceKHR   getSurface() const { return mSurface.Get(); }

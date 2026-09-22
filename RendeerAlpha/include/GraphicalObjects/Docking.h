@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <GraphicalObjects/Widget.h>
 #include <GraphicalObjects/DockTree.h>
+#include <GraphicalObjects/TileGrid.h>
 #include <memory>
 #include <vector>
 #include <string>
@@ -25,6 +26,19 @@ namespace RDA {
 	// of five places in the whole window. See DockTree.h for what replaced it.
 	enum class DockSide { Floating = 0, Left, Right, Top, Bottom, Center, Count };
 
+	// How a dock space arranges what is in it.
+	//
+	// Panes is the editor: the area is cut up, every panel is somebody's half, splitters
+	// between them, and no space is ever unclaimed. Tiles is the dashboard: each panel
+	// has a size of its own in a column grid, there is room between them, and dragging
+	// one pushes the ones it lands on rather than re-cutting anything. See TileGrid.h.
+	//
+	// Two arrangements rather than one that does both, because the two disagree about
+	// what a panel *is*. In Panes a panel is a share of its neighbour, so there are tabs
+	// and splitters and a drop has four meanings; in Tiles it is a rectangle, so there
+	// are none of those and a drop has one. A single mode would have to answer both.
+	enum class DockArrange : uint8_t { Panes, Tiles };
+
 	// A movable, dockable container — defined in code, holding child widgets like any
 	// container. The user drags its title/tab to move it and drops it onto a target;
 	// the widgets inside never move on their own. This is the unit of docking.
@@ -38,6 +52,14 @@ namespace RDA {
 		// -- splitters, drop guidance -- uses the default, since it belongs to no panel.
 		Variant     variant = kDefaultVariant;
 		DockSide    dock = DockSide::Floating; // initial placement only; see above
+
+		// Where it starts in a Tiles arrangement, in grid cells. A negative col or row
+		// means "wherever it fits", which is the first hole reading left to right and
+		// then down -- so a dashboard can state the sizes and let the grid do the
+		// placing. Initial placement only, the same way `dock` is: once a tile is in the
+		// grid, where it sits belongs to whoever dragged it.
+		int tileCol = -1, tileRow = -1;
+		int tileCols = 3, tileRows = 3;
 		Rect        floatingRect{ 40.0f, 40.0f, 240.0f, 220.0f };
 		float       dockSize = 240.0f; // how wide/tall its first pane should be
 		bool        closable = false;  // show a close (x) button; set for spawned instances
@@ -71,6 +93,16 @@ namespace RDA {
 		// Work queued from inside the walk and not yet applied — the next frame has to
 		// run update() rather than reuse cached geometry, or it would never happen.
 		bool hasPendingWork() const { return !mPendingSpawns.empty() || mPendingRemove != nullptr; }
+
+		// Panes or Tiles. Set before the first update, the way a container's `dock` is:
+		// the two arrangements keep separate state, so changing it mid-run leaves the
+		// panels where the other one had them until they are placed again.
+		DockArrange arrange = DockArrange::Panes;
+
+		// The grid, when this space arranges in Tiles. Its columns, row height and gap
+		// are what a layout's `columns`, `rowHeight` and `gap` set.
+		TileGrid&       grid() { return mGrid; }
+		const TileGrid& grid() const { return mGrid; }
 
 		DockContainer* add(const char* id, const char* title);
 		// Takes a container built elsewhere. The layout front end constructs its own, so
@@ -124,6 +156,12 @@ namespace RDA {
 
 	private:
 		DockContainer* spawnWithId(const char* type, const char* id);
+		// The Tiles arrangement's whole frame: placing, dragging, resizing and drawing.
+		// Separate from update() rather than folded into it because the two arrangements
+		// share the container list and the theme and nothing else.
+		void updateTiles(Gui& gui, const Rect& area);
+		void drawTile(Gui& gui, DockContainer* container, const Rect& rect, bool active,
+		              float arrive);
 		void applyPendingRemovals();
 		// Puts containers that are not in the tree yet where their `dock` hint asks.
 		void seedTree(glm::vec2 viewport);
@@ -147,6 +185,14 @@ namespace RDA {
 		std::vector<std::unique_ptr<DockContainer>> mContainers;
 
 		DockLayout mTree;
+		TileGrid   mGrid;
+		// Tiles: what the hand is on, and where on it. The offset is in pixels, so a tile
+		// picked up by its right-hand end stays picked up there rather than jumping its
+		// top-left corner to the pointer.
+		DockContainer* mTileDrag = nullptr;
+		DockContainer* mTileResize = nullptr;
+		glm::vec2      mTileGrab{ 0.0f };
+		Rect           mTileGhost{};   // where the dragged tile is drawn, vs where it will land
 		// One container id per placement hint, naming the pane that hint seeded. Held as
 		// an id rather than a node pointer because splitting turns a pane into a split;
 		// the id survives that, and finds the pane again through the tree.

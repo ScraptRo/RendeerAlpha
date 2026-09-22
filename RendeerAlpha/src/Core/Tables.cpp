@@ -80,6 +80,12 @@ namespace RDA {
 
 	// Never destroyed, like the other three tables: a destructor that runs after main may
 	// still reach this. See bindings() in Layout/Bindings.cpp for the order that bites.
+	uint64_t Tables::revision() const {
+		uint64_t sum = 0;
+		for (const Table& table : mTables) sum += table.version();
+		return sum;
+	}
+
 	Tables& tables() {
 		static Tables* registry = new Tables;
 		return *registry;

@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 from ctypes import (CFUNCTYPE, POINTER, Structure, c_char_p, c_double, c_float, c_int,
+                    c_int64,
                     c_int32, c_uint32, c_void_p, create_string_buffer)
 
 # The RendeerC.h this package was written against. The major has to match the engine's
@@ -20,7 +21,7 @@ from ctypes import (CFUNCTYPE, POINTER, Structure, c_char_p, c_double, c_float, 
 # RendeerC.h. Checked rather than assumed, because the two are installed separately and
 # a mismatch would otherwise arrive much later, as a missing attribute or a wrong answer.
 ABI_MAJOR = 1
-ABI_MINOR = 1
+ABI_MINOR = 6
 
 NO_SIGNAL = 0xFFFFFFFF
 NO_TABLE = 0xFFFFFFFF
@@ -255,6 +256,69 @@ def _declare(lib):
     lib.rda_define_table.restype = c_int
     lib.rda_define_column.argtypes = [c_char_p, c_char_p, c_int]
     lib.rda_define_column.restype = c_int
+
+    lib.rda_config_set_size.argtypes = [c_void_p, c_int, c_int]
+    lib.rda_config_set_icon.argtypes = [c_void_p, c_char_p]
+    lib.rda_config_set_decorated.argtypes = [c_void_p, c_int]
+    lib.rda_config_set_resizable.argtypes = [c_void_p, c_int]
+    lib.rda_config_set_maximized.argtypes = [c_void_p, c_int]
+    lib.rda_config_set_fullscreen.argtypes = [c_void_p, c_int]
+    lib.rda_config_set_always_on_top.argtypes = [c_void_p, c_int]
+    lib.rda_config_set_transparent.argtypes = [c_void_p, c_int]
+    lib.rda_config_set_opacity.argtypes = [c_void_p, c_float]
+    lib.rda_config_set_size_limits.argtypes = [c_void_p, c_int, c_int, c_int, c_int]
+    lib.rda_config_set_position.argtypes = [c_void_p, c_int, c_int]
+    lib.rda_poll_dropped_file.argtypes = [c_char_p, c_int]
+    lib.rda_poll_dropped_file.restype = c_int
+
+    lib.rda_image_define.argtypes = [c_char_p, c_void_p, c_int]
+    lib.rda_image_define.restype = c_int
+    lib.rda_image_define_pixels.argtypes = [c_char_p, c_void_p, c_int, c_int]
+    lib.rda_image_define_pixels.restype = c_int
+    lib.rda_image_forget.argtypes = [c_char_p]
+    lib.rda_image_forget.restype = c_int
+
+    lib.rda_stream_push.argtypes = [c_char_p, c_void_p, c_int, c_int]
+    lib.rda_stream_push.restype = c_int
+    lib.rda_stream_push_encoded.argtypes = [c_char_p, c_void_p, c_int]
+    lib.rda_stream_push_encoded.restype = c_int
+    lib.rda_stream_wanted.argtypes = [c_char_p]
+    lib.rda_stream_wanted.restype = c_int
+    lib.rda_stream_counts.argtypes = [c_char_p, POINTER(c_int64), POINTER(c_int64)]
+    lib.rda_stream_counts.restype = c_int
+    lib.rda_stream_close.argtypes = [c_char_p]
+    lib.rda_stream_close.restype = c_int
+
+    lib.rda_effect_define.argtypes = [c_char_p, c_char_p]
+    lib.rda_effect_define.restype = c_int
+    lib.rda_effect_apply.argtypes = [c_char_p, c_char_p, c_char_p, POINTER(c_float), c_int]
+    lib.rda_effect_apply.restype = c_int
+    lib.rda_effect_forget.argtypes = [c_char_p]
+    lib.rda_effect_forget.restype = c_int
+    lib.rda_effect_apply_many.argtypes = [c_char_p, POINTER(c_char_p), c_int, c_char_p,
+                                          POINTER(c_float), c_int]
+    lib.rda_effect_apply_many.restype = c_int
+    lib.rda_stream_read.argtypes = [c_char_p, c_char_p, c_int, POINTER(c_int),
+                                    POINTER(c_int)]
+    lib.rda_stream_read.restype = c_int
+
+    lib.rda_focus.argtypes = [c_char_p]
+    lib.rda_focus.restype = c_int
+    lib.rda_pick_folder.argtypes = [c_char_p, c_char_p, c_char_p, c_int]
+    lib.rda_pick_folder.restype = c_int
+    lib.rda_pick_file.argtypes = [c_char_p, c_char_p, c_char_p, c_char_p, c_int]
+    lib.rda_pick_file.restype = c_int
+
+    lib.rda_set_title.argtypes = [c_char_p]
+    lib.rda_set_title.restype = c_int
+    lib.rda_set_icon.argtypes = [c_char_p]
+    lib.rda_set_icon.restype = c_int
+    lib.rda_clipboard_set.argtypes = [c_char_p]
+    lib.rda_clipboard_set.restype = c_int
+    lib.rda_clipboard_get.argtypes = [c_char_p, c_int]
+    lib.rda_clipboard_get.restype = c_int
+    lib.rda_measure_text.argtypes = [c_char_p, c_float, POINTER(c_float), POINTER(c_float)]
+    lib.rda_measure_text.restype = c_int
 
     lib.rda_set_theme.argtypes = [c_char_p]
     lib.rda_set_theme.restype = c_int

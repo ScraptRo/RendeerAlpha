@@ -93,7 +93,7 @@ extern "C" {
 // These two functions may never change, since they are what a binding calls before it
 // trusts anything else here.
 #define RDA_ABI_MAJOR 1
-#define RDA_ABI_MINOR 1
+#define RDA_ABI_MINOR 6
 RDA_C_API int rda_abi_major(void);
 RDA_C_API int rda_abi_minor(void);
 
@@ -121,6 +121,47 @@ RDA_C_API void rda_config_set_theme(rda_config* config, const char* path);
 // Syntax languages beyond the built-in "python" (res/themes/languages.xml).
 RDA_C_API void rda_config_set_languages(rda_config* config, const char* path);
 RDA_C_API void rda_config_set_vsync(rda_config* config, int on);
+// The size the window opens at. Zero for either leaves the engine's default. Only the
+// opening size -- where the reader leaves it is read back through state.rda.
+// Added in ABI 1.2.
+RDA_C_API void rda_config_set_size(rda_config* config, int width, int height);
+// ---- how the window is dressed ---------------------------------------------------
+// Everything below is read when the window is created, which is why it is on the config
+// rather than callable later. What a running window can still be told is a signal
+// instead -- rda.maximized, rda.minimized, rda.fullscreen and rda.open all read and
+// write -- because "is it maximised" is state, and this engine has one answer for state.
+//
+// The icon is the exception: a picture is not state, so it has a call of its own below.
+
+// The picture the OS shows for this window: the title bar, the alt-tab card, the
+// taskbar. A .png, or an .svg -- which is rasterised at every size an OS picks from, so
+// one file covers all of them.
+//
+// Not the executable's icon. That one is a resource inside the binary, put there when
+// the program is built rather than when it runs.
+RDA_C_API void rda_config_set_icon(rda_config* config, const char* path);
+// The OS frame: title bar, border, the three buttons. Off means the interface draws its
+// own -- and something in it needs dragWindow, or the window cannot be moved at all.
+RDA_C_API void rda_config_set_decorated(rda_config* config, int on);
+RDA_C_API void rda_config_set_resizable(rda_config* config, int on);
+RDA_C_API void rda_config_set_maximized(rda_config* config, int on);
+RDA_C_API void rda_config_set_fullscreen(rda_config* config, int on);
+RDA_C_API void rda_config_set_always_on_top(rda_config* config, int on);
+// A framebuffer with a real alpha channel, so a clear colour that is not opaque lets the
+// desktop through. Decided at creation and nowhere else, and ignored where the platform
+// or the compositor will not do it.
+RDA_C_API void rda_config_set_transparent(rda_config* config, int on);
+// The whole window, frame included. 0..1; anything outside is clamped.
+RDA_C_API void rda_config_set_opacity(rda_config* config, float value);
+// Bounds the reader cannot drag past. Zero on an axis means no bound there.
+RDA_C_API void rda_config_set_size_limits(rda_config* config, int min_width, int min_height,
+                                          int max_width, int max_height);
+// Where its top-left corner opens, in screen coordinates. RDA_WINDOW_UNPLACED on an
+// axis leaves that one to the platform, which is what a window nobody placed gets --
+// and is not the same answer as 0, which is a corner of the screen.
+#define RDA_WINDOW_UNPLACED (-2147483647 - 1)
+RDA_C_API void rda_config_set_position(rda_config* config, int x, int y);
+
 // The font the interface is drawn in, and the pixel height its body text is baked at.
 // A path of NULL or "" keeps the engine's own; a height of 0 keeps the default. The
 // other sizes a theme asks for are baked alongside it, so this is one number rather
@@ -359,6 +400,211 @@ RDA_C_API int rda_viewport_draw(const char* name, const rda_draw_cmd* commands, 
 // Added in ABI 1.1. Refused, with the reason, if the file will not load -- and the
 // interface keeps the theme it had rather than falling back to the built-in look.
 RDA_C_API int rda_set_theme(const char* path);
+
+// The window's title, after it has opened. `config.name` sets the first one.
+// Added in ABI 1.2.
+RDA_C_API int rda_set_title(const char* title);
+
+// The window's icon, after it has opened. Same files as rda_config_set_icon; "" puts the
+// platform's default back. Returns 0 if the file could not be read.
+RDA_C_API int rda_set_icon(const char* path);
+
+// Puts the keyboard on a widget, by the id its layout gave it.
+//
+// The full path, the way the log and the blueprint spell it: "root/composer", not
+// "composer". An application that has just opened a new screen otherwise starts every
+// interaction with a click it knew was coming.
+//
+// Passing "" or NULL takes the keyboard away from whatever has it. Added in ABI 1.3.
+RDA_C_API int rda_focus(const char* id);
+
+// ---- asking for a path -------------------------------------------------------------
+//
+// The platform's own file and folder choosers. Without these an application that needs a
+// path brings a second GUI toolkit into the process for one dialog -- which is what the
+// application that asked for this was doing, on a thread of its own, with tkinter.
+//
+// Two-call shape like rda_signal_get_text: pass NULL to be told the length, then a
+// buffer. Returns the length on success, 0 when the reader cancelled, and -1 on an
+// error. Cancelling is not an error; it is the other answer to the question.
+//
+// `filter` is for rda_pick_file and names one kind, as a description and patterns
+// separated by '|' -- "Images|*.png;*.jpg". NULL means every file.
+//
+// **These block the calling thread until the reader answers**, because a dialog is a
+// question. They do not block the engine: the window goes on drawing behind it.
+// Added in ABI 1.3.
+RDA_C_API int rda_pick_folder(const char* title, const char* start,
+                              char* buffer, int capacity);
+RDA_C_API int rda_pick_file(const char* title, const char* start, const char* filter,
+                            char* buffer, int capacity);
+
+// ---- files dropped on the window ---------------------------------------------------
+//
+// The next path somebody let go over the window, or 0 when none is waiting. Drained the
+// way commands are, and for the same reason: a callback from the engine's thread is
+// something a JavaScript binding cannot take, so what crosses is a queue.
+//
+// Like rda_poll_command this does not hop to the loop -- it reads a queue of its own
+// behind a mutex, so a backend may ask as often as its loop turns.
+//
+// One path per call; a drop of five files answers five times. The queue is bounded, and
+// a backend that stops asking loses the oldest with a line in the log. Returns -1 on a
+// bad argument. Added in ABI 1.4.
+RDA_C_API int rda_poll_dropped_file(char* buffer, int capacity);
+
+// ---- pictures a backend made -------------------------------------------------------
+//
+// `<image src="res/logo.png">` reads a file and needs none of this. This is the other
+// case: a vision model hands back bytes, a plot is rendered into a buffer, a frame
+// arrives from a camera. Registering it gives it a name, and a layout shows it with
+// `src="mem:<name>"` -- explicit, so what a layout means is visible in the layout rather
+// than depending on whether a file of that name happens to exist.
+//
+// The registry owns the picture. Two <image>s naming it share one texture, and
+// registering the same name again replaces what both of them draw, which is what makes
+// this the right shape for a preview that updates.
+//
+// Encoded bytes: PNG, JPEG, BMP, TGA, GIF, PSD, HDR, PNM -- whatever stb_image reads.
+// Copied before this returns, so the caller may free them immediately. Added in ABI 1.5.
+RDA_C_API int rda_image_define(const char* name, const void* bytes, int size);
+
+// The same, from raw pixels: four bytes each (R, G, B, A), rows tightly packed, no
+// header, `width * height * 4` bytes in all. For a buffer already in the right shape --
+// encoding it to PNG so the engine could decode it again would be a strange way to spend
+// a millisecond. Added in ABI 1.5.
+RDA_C_API int rda_image_define_pixels(const char* name, const void* pixels,
+                                      int width, int height);
+
+// Drops it. An <image> still naming it draws nothing and says so once, the same as a file
+// that is not there. Added in ABI 1.5.
+RDA_C_API int rda_image_forget(const char* name);
+
+// ---- pictures that keep arriving ---------------------------------------------------
+//
+// A still is an image: registered once, shown as `<image src="mem:name">`. Something live
+// is a stream, and the difference is what happens on the second frame. Registering an
+// image builds a texture; pushing a frame writes into the one already there. At thirty
+// frames a second that is the difference between a feed and a stall.
+//
+// A layout shows one with `<stream name="camera">`. The size is settled by the first
+// frame and only a change of size builds a new surface.
+//
+// Raw pixels: four bytes each (R, G, B, A), rows tightly packed, `width * height * 4`
+// bytes. Copied before this returns. Added in ABI 1.6.
+RDA_C_API int rda_stream_push(const char* name, const void* pixels, int width, int height);
+
+// The same from an encoded frame -- PNG, JPEG, and the rest. An MJPEG camera hands over
+// exactly this. Added in ABI 1.6.
+RDA_C_API int rda_stream_push_encoded(const char* name, const void* bytes, int size);
+
+// Whether a <stream> showing this has been drawn lately -- that is, whether anybody is
+// looking. Zero for one on a screen that is not showing, which is when a producer should
+// stop decoding rather than keep feeding a texture nothing samples. This is the half of
+// "pull" that saves anything; a callback asking for a frame is something a JavaScript
+// binding cannot take, so what crosses is a question the producer asks.
+//
+// Reads a flag, so it does not hop to the loop and may be asked as often as a loop turns.
+// Added in ABI 1.6.
+RDA_C_API int rda_stream_wanted(const char* name);
+
+// Frames pushed, and frames that were still current when a widget drew them. The gap is
+// what a producer is wasting. Either pointer may be null. Added in ABI 1.6.
+RDA_C_API int rda_stream_counts(const char* name, long long* pushed, long long* shown);
+
+// Drops it. A <stream> naming it then draws nothing. Added in ABI 1.6.
+RDA_C_API int rda_stream_close(const char* name);
+
+// ---- a filter over a picture -------------------------------------------------------
+//
+// Applying a compute shader to an image is about two hundred lines of Vulkan that are the
+// same every time, around four that are the filter. The engine owns the two hundred. What
+// is defined here is the four, against a fixed contract:
+//
+//   src        a sampler2D of the first input
+//   tap(i, at) the i'th input sampled at `at`, i in 0..3
+//   dst        a writeonly image2D of the output
+//   uv()       this invocation's position, 0..1
+//   coord()    the same as integer pixels
+//   size()     the output's size in pixels
+//   param(i)   one of the eight floats passed to rda_effect_apply, i in 0..7
+//   store(c)   write the result for this invocation
+//
+// so greyscale is one statement:
+//
+//   void main() {
+//       vec4 c = texture(src, uv());
+//       store(vec4(vec3(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))), c.a));
+//   }
+//
+// Colours inside an effect are **linear light**, not the sRGB a theme is written in: the
+// source is decoded on the way in and the result is encoded on the way to the screen.
+// That is also the only space image arithmetic is correct in -- a blur averaged in sRGB
+// is the wrong average.
+//
+// GLSL beginning with `#version` is taken as a whole shader and nothing is prepended, for
+// anyone who would rather declare the bindings themselves.
+//
+// Refused, with the compiler's own message in the log, if it will not build. The message
+// names the line, counted from the first line written here. Added in ABI 1.6.
+RDA_C_API int rda_effect_define(const char* name, const char* glsl);
+
+// Runs it over one stream into another. The destination is made if it is not there and
+// re-made when the source changes size, so a caller never sizes it. The two may not be
+// the same stream -- a compute shader reading the image it is writing sees whatever its
+// neighbours got to first.
+//
+// `params` is eight floats, or null for none. Added in ABI 1.6.
+RDA_C_API int rda_effect_apply(const char* name, const char* source, const char* into,
+                               const float* params, int count);
+
+// Drops it. Added in ABI 1.6.
+RDA_C_API int rda_effect_forget(const char* name);
+
+// The same over several pictures at once -- a blend, a mask, a difference. Up to four,
+// named in order, reachable in the shader as `tap(0..3, at)`; `src` is the first.
+//
+// The output is the size of the **first** source, and the rest are sampled in 0..1, so a
+// mask or a lookup of another size is resized rather than refused. The destination may
+// not be one of the sources. Added in ABI 1.6.
+RDA_C_API int rda_effect_apply_many(const char* name, const char* const* sources,
+                                    int sourceCount, const char* into,
+                                    const float* params, int paramCount);
+
+// The current frame of a stream, copied back into ordinary memory as RGBA8, rows tightly
+// packed -- for saving a filtered picture, or handing one to a model.
+//
+// Asked for twice, the way text is: with a null buffer it answers the number of bytes the
+// frame needs and fills width and height; with a buffer it copies. A caller that guessed
+// too small is told the real size rather than given a truncated picture.
+//
+// What comes back is **the picture as it looks on screen**. A surface an effect wrote
+// holds linear light and is encoded on the way out, so saving the result as a PNG gives a
+// PNG of what was displayed rather than something too dark.
+//
+// Costs a round trip to the GPU and a wait. Right for saving a frame, wrong for doing
+// every frame -- that is what a <stream> is for. Returns -1 on a bad argument or when
+// there is no frame. Added in ABI 1.6.
+RDA_C_API int rda_stream_read(const char* name, unsigned char* buffer, int capacity,
+                              int* width, int* height);
+
+// ---- the clipboard ---------------------------------------------------------------
+// The OS clipboard, which the engine already holds for its editable fields. Without
+// these an application that wants a Copy button has to make the text editable and hope
+// the reader presses Ctrl+C in it.
+//
+// Reading uses the same two-call shape as rda_signal_get_text: pass NULL to be told the
+// length, then a buffer. Added in ABI 1.2.
+RDA_C_API int rda_clipboard_set(const char* text);
+RDA_C_API int rda_clipboard_get(char* buffer, int capacity);
+
+// ---- measuring -------------------------------------------------------------------
+// How wide and tall `text` would be drawn at `size` (0 for the interface's own), in the
+// pixels a layout is laid out in.
+//
+// A backend that wraps text -- because a <list> row is one line -- otherwise guesses a
+// column count and repeats it as a constant. Added in ABI 1.2.
+RDA_C_API int rda_measure_text(const char* text, float size, float* out_width, float* out_height);
 
 // The size the viewport was last laid out at, in the same pixels the drawing uses. Both
 // zero until a frame has placed it, so a backend that wants to fit its drawing to the

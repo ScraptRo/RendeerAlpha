@@ -2,6 +2,7 @@
 
 #include <Core/Utf8.h>
 #include <GraphicalSrc/GlyphRanges.h>
+#include <GraphicalObjects/GuiTypes.h>
 
 #include <string>
 
@@ -203,4 +204,66 @@ TEST(the_replacement_box_is_the_last_slot) {
 	CHECK_EQ(glyphSlot(0xFFFD), kReplacementSlot);
 	CHECK_EQ(kReplacementSlot, kGlyphCount - 1);
 	CHECK_EQ(glyphSlot(0x20), kSpaceSlot);
+}
+
+
+// ---- which keystroke sends -------------------------------------------------------
+//
+// A text field's send gesture, as a table.
+//
+// This is here rather than driven through a window because one row of it cannot be
+// pressed from outside the process: Windows refuses synthesised input aimed at another
+// program's window unless the caller owns the input desktop, and GLFW releases a Shift
+// it cannot see held on the real keyboard -- so Shift+Enter is the one gesture a harness
+// cannot produce. Every other row has been driven through a running field as well; this
+// is what covers the one that cannot be.
+
+TEST(a_field_that_says_nothing_sends_the_way_its_mode_always_did) {
+	using namespace RDA;
+	const SubmitKey mine = SubmitKey::Default;
+
+	// A single line: Enter sends, and always has.
+	CHECK(submitsOn(mine, /*multiline*/false, /*ctrl*/false, /*shift*/false));
+	// Ctrl+Enter on a single line is not a second way to do the same thing.
+	CHECK(!submitsOn(mine, false, true, false));
+
+	// A multi-line one: Enter is a line, Ctrl+Enter is the send. Enter has always made
+	// a line here, and Ctrl+Enter has always been swallowed -- now it is heard.
+	CHECK(!submitsOn(mine, /*multiline*/true, false, false));
+	CHECK(submitsOn(mine, true, true, false));
+}
+
+TEST(a_composer_can_be_multi_line_and_still_send_on_enter) {
+	using namespace RDA;
+	// The combination the modes could not express, and the reason this property exists.
+	CHECK(submitsOn(SubmitKey::Enter, /*multiline*/true, /*ctrl*/false, /*shift*/false));
+	// Shift+Enter is the line break. This is the row no harness can press.
+	CHECK(!submitsOn(SubmitKey::Enter, true, false, /*shift*/true));
+	// And Ctrl+Enter is not a send here: the field named one gesture, not two.
+	CHECK(!submitsOn(SubmitKey::Enter, true, true, false));
+}
+
+TEST(both_means_both_and_none_means_neither) {
+	using namespace RDA;
+	CHECK(submitsOn(SubmitKey::Both, true, false, false));   // Enter
+	CHECK(submitsOn(SubmitKey::Both, true, true, false));    // Ctrl+Enter
+	CHECK(!submitsOn(SubmitKey::Both, true, false, true));   // Shift+Enter is still a line
+
+	CHECK(!submitsOn(SubmitKey::None, true, false, false));
+	CHECK(!submitsOn(SubmitKey::None, true, true, false));
+	CHECK(!submitsOn(SubmitKey::None, false, false, false)); // even on a single line
+
+	// CtrlEnter on its own: the multi-line default, said out loud.
+	CHECK(submitsOn(SubmitKey::CtrlEnter, true, true, false));
+	CHECK(!submitsOn(SubmitKey::CtrlEnter, true, false, false));
+}
+
+TEST(a_misspelled_submit_key_leaves_the_field_alone) {
+	using namespace RDA;
+	// Not silently unsendable: a name nobody recognises keeps whatever was there.
+	CHECK(RDA::submitFrom("enter", SubmitKey::None) == SubmitKey::Enter);
+	CHECK(RDA::submitFrom("ctrlenter", SubmitKey::Enter) == SubmitKey::Enter);  // case matters
+	CHECK(RDA::submitFrom("", SubmitKey::CtrlEnter) == SubmitKey::CtrlEnter);
+	CHECK(RDA::submitFrom("both", SubmitKey::None) == SubmitKey::Both);
+	CHECK(RDA::submitFrom("none", SubmitKey::Enter) == SubmitKey::None);
 }

@@ -5,7 +5,7 @@ Four folders. Start with the first.
 | | |
 | --- | --- |
 | [setup/](setup/README.md) | What to do after cloning, on Windows and on Linux. Adding the engine to a project in each of the four languages. Your first interface, file by file, in C++, Python, Node or C#. |
-| [frontend/](frontend/README.md) | The layout language: what a property may be, what an expression may contain, and every one of the nineteen elements with its properties. |
+| [frontend/](frontend/README.md) | The layout language: what a property may be, what an expression may contain, and every one of the twenty-one elements with its properties. |
 | [backend/](backend/README.md) | The other half. What a backend does, the one declaration everything is generated from, and how C++, Python, Node, C# — or anything with an FFI — reaches it. |
 | [architecture/](architecture/README.md) | How it fits together and why it is built this way. The reasoning behind the reference, in full. |
 

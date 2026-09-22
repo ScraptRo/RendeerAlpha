@@ -23,21 +23,36 @@ interpreter, so **the only things that exist inside a thunk are the ones listed 
 | ternary | `state.n === 1 ? "item" : "items"` |
 | row cell, inside a `<list row=...>` | `item.price` |
 | the window's size | `state.rda.width`, `state.rda.height` |
+| the window's state | `state.rda.maximized`, `.minimized`, `.fullscreen`, `.open`, `.focused` |
 | a size with an offset | `` width={() => `content-${state.gap}`} `` |
 | an alignment with an offset | `` hAlignSelf={() => `start+${state.indent}`} `` |
 
-### The window's size
+### The window
 
-`state.rda.width` and `state.rda.height` are the only two-level names there are, and the
-only ones the engine writes. Use them for a layout that changes shape:
+`state.rda` holds the only two-level names there are, and the only ones the engine
+writes. Use the size for a layout that changes shape:
 
 ```tsx
 <stack id="root" arrange={() => state.rda.width < 700 ? "vertical" : "horizontal"}
        spacing={8} padding={12}>
 ```
 
-Read-only: writing one is a build error. They are in pixels, the same ones every width
-and height is in, and they follow a resize by themselves.
+`width`, `height` and `focused` are the engine reporting, and writing one is a build
+error. They are in pixels, the same ones every width and height is in, and they follow a
+resize by themselves.
+
+`maximized`, `minimized`, `fullscreen` and `open` read **and** write. That is how a
+window opened with `decorated = false` gets buttons that do something -- the layout draws
+its own title bar, `dragWindow` makes it a handle, and the buttons are assignments:
+
+```tsx
+<panel id="bar" height={34} dragWindow={true}>
+  <button id="close" text="x" width={30} height={22}
+          onClick={() => state.rda.open = false} />
+</panel>
+```
+
+See `docs/frontend/window.md` for the config that opens a window without a frame.
 
 ## Allowed only in a handler
 

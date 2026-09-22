@@ -1,5 +1,10 @@
 ﻿#include <GraphicalObjects/Widget.h>
+#include <GraphicalObjects/Images.h>
+#include <GraphicalObjects/Streams.h>
+#include <Core/Svg.h>
+#include <Core/Route.h>
 #include <GraphicalObjects/Viewports.h>
+#include <Core/Tables.h>
 #include <cmath>
 #include <GraphicalObjects/Gui.h>
 #include <Logger/Logger.h>
@@ -71,11 +76,44 @@ namespace RDA {
 	}
 
 	Rect Widget::placement(Gui& gui, glm::vec2 origin) {
-		if (mArrangedValid) {
-			mArrangedValid = false; // consumed; re-set by the parent next frame
-			return mArranged;
+		const Rect where = [&] {
+			if (mArrangedValid) {
+				mArrangedValid = false; // consumed; re-set by the parent next frame
+				return mArranged;
+			}
+			const Rect resolved = resolveRect(origin, gui.currentClipRect());
+			// A widget a container placed by its own x and y was never eased at all --
+			// only a stack's children were, and a stack has no x and y to move between.
+			// So this is the other half of what a route is for, and it is opt-in twice
+			// over: a route has to be written, and a duration has to be given.
+			const float seconds = motionSeconds();
+			if (route.empty() || seconds <= 0.0f) return resolved;
+			const Route::Shape* shape = Route::named(route);
+			Motion& motion = gui.motion();
+			const uint32_t key = gui.motionKey(mId.c_str(), kMotionPlace);
+			const glm::vec2 travelled =
+				motion.along(key, { resolved.x, resolved.y }, seconds, pace, shape);
+			return Rect{ travelled.x, travelled.y, resolved.w, resolved.h };
+		}();
+
+		// Where this ended up, for whoever asked -- a <popup> anchored to it, and nothing
+		// else so far. Free when nobody is asking.
+		gui.noteAnchorIfWanted(mId, where);
+
+		// Declared before this widget's children paint, so a button sitting on the bar
+		// wins the press over the bar itself.
+		if (dragWindow) gui.windowGrip(mId.c_str(), where);
+
+		// Hover, for whoever asked. Only the change is reported: a handler wants to know
+		// the pointer arrived, not that it is still here.
+		if (onHover) {
+			const bool over = where.contains(gui.input().pointer);
+			if (over != mHovered) {
+				mHovered = over;
+				onHover(over);
+			}
 		}
-		return resolveRect(origin, gui.currentClipRect());
+		return where;
 	}
 
 	// Where a child should be *drawn*, given where the layout just decided it goes.
@@ -98,11 +136,17 @@ namespace RDA {
 
 		Motion& motion = gui.motion();
 		const uint32_t key = gui.motionKey(child.id().c_str(), kMotionPlace);
+		// Position travels; size does not. A route is a route through space, and a widget
+		// growing is not going anywhere -- so the two halves are paced the same and only
+		// one of them follows a shape.
+		const glm::vec2 where = motion.along(
+			key, { placed.x - parentOrigin.x, placed.y - parentOrigin.y }, seconds,
+			child.pace, Route::named(child.route));
 		return Rect{
-			parentOrigin.x + motion.value(key + 0u, placed.x - parentOrigin.x, seconds),
-			parentOrigin.y + motion.value(key + 1u, placed.y - parentOrigin.y, seconds),
-			motion.value(key + 2u, placed.w, seconds),
-			motion.value(key + 3u, placed.h, seconds),
+			parentOrigin.x + where.x,
+			parentOrigin.y + where.y,
+			motion.value(key + 2u, placed.w, seconds, child.pace),
+			motion.value(key + 3u, placed.h, seconds, child.pace),
 		};
 	}
 
@@ -267,6 +311,12 @@ namespace RDA {
 				const float weight = (mainSpec.value > 0.0f ? mainSpec.value : 1.0f) * presence;
 				main = mainSpec.clamp(leftover * (weight / totalWeight), axisLength);
 			}
+			// The size it would have if it were not going anywhere, kept for what is
+			// inside it -- see the slot and the block below. A child that fills has no
+			// size of its own to preserve, so for that one the two are the same and its
+			// contents genuinely do shrink.
+			const float fullMain = (mainSpec.mode == SizeSpec::Mode::Fill)
+				? main : mainAxisRequest(*child, gui, available, vertical);
 			// The room it gets, rather than the room it asked for. Everything below is
 			// laid out from this, so a collapsing child takes the ones after it with it.
 			main *= presence;
@@ -315,9 +365,38 @@ namespace RDA {
 			//
 			// Not eased while collapsing: the size is already being animated by presence,
 			// and easing toward an easing value would arrive late and overshoot nothing.
-			const Rect drawn = (presence < 0.999f)
+			// This is the one case `route` and `pace` do not shape, and the one an author
+			// reaches for them in first -- said out loud in docs/frontend/motion.md.
+			const bool collapsing = presence < 0.999f;
+			const Rect slot = collapsing
 				? placed : easeInto(gui, *child, placed, glm::vec2(area.x, area.y));
-			child->setArranged(drawn);
+
+			// The slot is the room that is left; `inside` is the block that is in it.
+			//
+			// They are the same thing until something collapses, and then they are not:
+			// the contents keep their full size and slide, so that the far edge closing
+			// on them pushes them along rather than eating them. A panel's padding
+			// survives, a centred label stays centred, and nothing re-wraps on the way
+			// out -- which the other two answers cannot all manage at once. Laying the
+			// contents out again each frame re-wraps text while it disappears, and
+			// leaving them anchored (what this did) slices a button in half down the
+			// middle and cuts a row of text through the letters.
+			//
+			// Which way they travel follows the edge: a sidebar closing to the left takes
+			// its insides left, a panel closing upwards takes them up. In both the near
+			// edge is fixed -- that is where the widget starts -- so the far edge is the
+			// one doing the pushing.
+			Rect inside = slot;
+			if (collapsing) {
+				if (vertical) {
+					inside.y = slot.y + slot.h - fullMain;
+					inside.h = fullMain;
+				} else {
+					inside.x = slot.x + slot.w - fullMain;
+					inside.w = fullMain;
+				}
+			}
+			child->setArranged(inside);
 			// Outside what is actually visible: nothing to draw, and nothing that could
 			// be clicked either, since the clip rect is what input is tested against.
 			//
@@ -326,18 +405,20 @@ namespace RDA {
 			// is being scrolled, clipped by a dock panel, or clipped by anything else
 			// that has not been written yet. Arranged first regardless, so measuring
 			// and scroll-into-view still work on a child that was not drawn.
-			if (drawn.overlaps(gui.currentClipRect())) {
-				if (presence < 0.999f) {
-					// Clipped to the room it has left, so its contents are cut off by the
-					// edge closing on them rather than spilling past it, and faded so a
-					// half-height text field reads as leaving rather than as broken.
-					gui.pushClipRect(drawn);
+			if (slot.overlaps(gui.currentClipRect())) {
+				if (collapsing) {
+					// Clipped to the room it has left, so what has already slid past the
+					// near edge is gone rather than drawn over its neighbour -- every
+					// clip below this intersects with it, so nothing inside can widen it
+					// back out. Faded as well, so a panel on its way out reads as leaving
+					// rather than as a window onto half of itself.
+					gui.pushClipRect(slot);
 					gui.pushOpacity(presence);
-					child->paint(gui, glm::vec2(drawn.x, drawn.y));
+					child->paint(gui, glm::vec2(inside.x, inside.y));
 					gui.popOpacity();
 					gui.popClipRect();
 				} else {
-					child->paint(gui, glm::vec2(drawn.x, drawn.y));
+					child->paint(gui, glm::vec2(slot.x, slot.y));
 				}
 			}
 
@@ -678,6 +759,136 @@ namespace RDA {
 		paintChildren(gui, glm::vec2(origin.x + rect.x, origin.y + rect.y));
 	}
 
+	// ---- Popup -----------------------------------------------------------------------
+	glm::vec2 Popup::measureContent(Gui& gui, glm::vec2 available) const {
+		// As big as what is inside it. A popup is not in anyone's flow, so nothing gives
+		// it a size and this is what decides how big it comes out.
+		//
+		// A child that names a fixed size is taken at its word rather than measured. A
+		// vertical <stack width={160}> measures its *content* width, which for a stack is
+		// whatever room it was offered -- so measuring it here made every popup as wide as
+		// the window. What the layout wrote is the better answer whenever it wrote one.
+		glm::vec2 content{ 0.0f, 0.0f };
+		for (const auto& child : mChildren) {
+			if (!child || !child->visible) continue;
+			const glm::vec2 measured = child->measureContent(gui, available);
+			const float w = child->width.mode == SizeSpec::Mode::Fixed && child->width.value > 0.0f
+				? child->width.value : measured.x;
+			const float h = child->height.mode == SizeSpec::Mode::Fixed && child->height.value > 0.0f
+				? child->height.value : measured.y;
+			content.x = (std::max)(content.x, w);
+			content.y = (std::max)(content.y, h);
+		}
+		return content;
+	}
+
+	void Popup::paint(Gui& gui, glm::vec2 origin) {
+		(void)origin;
+		// Asked for every frame, open or shut. The note is only taken for anchors
+		// somebody wants, and "somebody wants it" has to be true before the frame the
+		// popup opens on -- otherwise it would have nowhere to appear the first time.
+		if (!anchor.empty()) gui.wantAnchor(anchor);
+		if (!open) return;
+
+		// Nothing is drawn here: a popup that drew in the tree would be clipped by
+		// whatever panel it happens to live in, and covered by whatever comes after it.
+		gui.drawAbove(this, glm::vec2(0.0f));
+
+		// Asked for now rather than in paintAbove, because the claim is for the *next*
+		// frame's walk and paintAbove runs after this frame's has finished either way.
+		if (blocking) gui.claimPointer();
+	}
+
+	void Popup::paintAbove(Gui& gui, glm::vec2 origin) {
+		(void)origin;
+		const glm::vec2 viewport = gui.input().viewport;
+
+		// How big it wants to be. A size written on the popup wins, the way it does
+		// everywhere else; otherwise it is as big as what is inside it.
+		const glm::vec2 wanted = measureContent(gui, viewport);
+		float w = rect.w > 0.0f ? rect.w : wanted.x + padding * 2.0f;
+		float h = rect.h > 0.0f ? rect.h : wanted.y + padding * 2.0f;
+		w = (std::min)(w, viewport.x);
+		h = (std::min)(h, viewport.y);
+
+		// Where it goes. With no anchor it is placed like anything else -- its own x/y --
+		// so a popup can be a plain floating panel without inventing a second mechanism.
+		Rect anchorRect{ rect.x, rect.y, 0.0f, 0.0f };
+		bool anchored = false;
+		if (!anchor.empty()) anchored = gui.anchorRect(anchor, anchorRect);
+
+		float x = anchorRect.x;
+		float y = anchorRect.y;
+		if (anchored) {
+			switch (placement) {
+			case Placement::Below: y = anchorRect.y + anchorRect.h + gap; break;
+			case Placement::Above: y = anchorRect.y - gap - h;            break;
+			case Placement::Right: x = anchorRect.x + anchorRect.w + gap; break;
+			case Placement::Left:  x = anchorRect.x - gap - w;            break;
+			case Placement::Over:  break;
+			}
+
+			// Flipped rather than pushed when it would fall off the edge it is growing
+			// towards. A menu near the bottom of the window opening upwards is what every
+			// reader expects; sliding it up so it covers its own button is not.
+			if (placement == Placement::Below && y + h > viewport.y &&
+			    anchorRect.y - gap - h >= 0.0f) {
+				y = anchorRect.y - gap - h;
+			} else if (placement == Placement::Above && y < 0.0f &&
+			           anchorRect.y + anchorRect.h + gap + h <= viewport.y) {
+				y = anchorRect.y + anchorRect.h + gap;
+			} else if (placement == Placement::Right && x + w > viewport.x &&
+			           anchorRect.x - gap - w >= 0.0f) {
+				x = anchorRect.x - gap - w;
+			} else if (placement == Placement::Left && x < 0.0f &&
+			           anchorRect.x + anchorRect.w + gap + w <= viewport.x) {
+				x = anchorRect.x + anchorRect.w + gap;
+			}
+		}
+
+		// And kept on screen either way. A popup half outside the window is a popup with
+		// half its options unreachable.
+		x = std::clamp(x, 0.0f, (std::max)(0.0f, viewport.x - w));
+		y = std::clamp(y, 0.0f, (std::max)(0.0f, viewport.y - h));
+		mShown = Rect{ x, y, w, h };
+
+		gui.beginPanel(mId.c_str(), mShown, variant);
+		// Inside the padding, the way a button holds its children.
+		paintChildren(gui, glm::vec2(mShown.x + padding, mShown.y + padding));
+		gui.endPanel();
+
+		// ---- and when it goes away ----
+		//
+		// After the children, so a press on one of them is not also a press outside.
+		//
+		// Whether the anchor counts as outside depends on who has the pointer. While this
+		// is blocking, the anchor's own onClick cannot fire -- the walk ran without a
+		// pointer -- so a press there is an ordinary outside press and closes the menu,
+		// which is what clicking a menu's button a second time should do. When it is not
+		// blocking, that same press *does* reach the button, and if this closed as well
+		// the two would cancel: the menu would shut and the toggle would reopen it in the
+		// same click. So it is excluded there, and the button's own handler is what
+		// closes it.
+		const GuiInput& in = gui.input();
+		const bool anchorIsOutside = blocking;
+		bool dismissed = false;
+		if (in.pressed && !mShown.contains(in.pointer) &&
+		    !(anchored && !anchorIsOutside && anchorRect.contains(in.pointer))) {
+			dismissed = true;
+		}
+		// Escape, which is the other way out of anything on this screen -- the same
+		// meaning it has in a text field.
+		for (const GuiEditKey key : in.editKeys) {
+			if (key == GuiEditKey::Escape) dismissed = true;
+		}
+		if (dismissed) {
+			// `open` is not written here. It is a binding, and a widget that wrote its own
+			// bound property would be overwritten by the signal on the next frame and
+			// flicker. The layout closes itself, which is what onClose is for.
+			if (onClose) onClose();
+		}
+	}
+
 	void Panel::paint(Gui& gui, glm::vec2 origin) {
 		Rect abs = placement(gui, origin);
 		gui.beginPanel(mId.c_str(), abs, variant);
@@ -686,18 +897,82 @@ namespace RDA {
 		gui.endPanel();
 	}
 
+	const std::vector<TextSpan>& Label::runs() const {
+		if (mRunsFrom == spans && mRunsTextSize == text.size()) return mRuns;
+		mRunsFrom = spans;
+		mRunsTextSize = text.size();
+		mRuns.clear();
+
+		// "start:length:colour;start:length:colour" -- three fields, two separators, and
+		// nothing that needs a tokenizer. Anything malformed is skipped rather than
+		// refused: this arrives from a backend a character at a time while a model is
+		// still writing, and half a triple should draw as plain text, not as nothing.
+		const int size = static_cast<int>(text.size());
+		size_t at = 0;
+		while (at < spans.size()) {
+			size_t semi = spans.find(';', at);
+			if (semi == std::string::npos) semi = spans.size();
+			const std::string_view one(spans.data() + at, semi - at);
+			at = semi + 1;
+
+			const size_t a = one.find(':');
+			if (a == std::string_view::npos) continue;
+			const size_t b = one.find(':', a + 1);
+			if (b == std::string_view::npos) continue;
+
+			TextSpan span;
+			span.start  = std::atoi(std::string(one.substr(0, a)).c_str());
+			span.length = std::atoi(std::string(one.substr(a + 1, b - a - 1)).c_str());
+			if (!parseColor(std::string(one.substr(b + 1)).c_str(), span.color)) continue;
+
+			// Clamped to the text it indexes. A span past the end is what a backend that
+			// coloured one string and sent it with another looks like, and clipping it is
+			// the only answer that does not read out of bounds.
+			if (span.length <= 0) continue;
+			if (span.start < 0) { span.length += span.start; span.start = 0; }
+			if (span.start >= size || span.length <= 0) continue;
+			span.length = (std::min)(span.length, size - span.start);
+			mRuns.push_back(span);
+		}
+
+		// Sorted and made disjoint, which is what the draw below relies on. An overlap is
+		// resolved in favour of whichever starts first -- a rule, rather than whatever
+		// order the sender happened to write them in.
+		std::sort(mRuns.begin(), mRuns.end(),
+		          [](const TextSpan& l, const TextSpan& r) { return l.start < r.start; });
+		int reach = 0;
+		size_t kept = 0;
+		for (TextSpan& span : mRuns) {
+			if (span.start < reach) {
+				span.length -= reach - span.start;
+				span.start = reach;
+				if (span.length <= 0) continue;
+			}
+			reach = span.start + span.length;
+			mRuns[kept++] = span;
+		}
+		mRuns.resize(kept);
+		return mRuns;
+	}
+
 	void Label::paint(Gui& gui, glm::vec2 origin) {
 		// A named variant's color takes precedence; otherwise the per-instance `color`.
 		const LabelStyle& style = gui.theme().label(variant);
 		uint32_t c = (variant != kDefaultVariant) ? style.color : color;
 		Rect abs = placement(gui, origin);
 		const float line = gui.lineHeight(style.font);
+		const std::vector<TextSpan>& coloured = runs();
 
 		if (!wrap) {
 			const float x = abs.x + alignOffset(hAlign, abs.w,
 			                                    gui.measureText(text.c_str(), style.font), hAlignOffset);
-			gui.label(text.c_str(), glm::vec2(x, abs.y + alignOffset(vAlign, abs.h, line, vAlignOffset)),
-			          c, style.font);
+			const glm::vec2 at(x, abs.y + alignOffset(vAlign, abs.h, line, vAlignOffset));
+			if (coloured.empty()) {
+				gui.label(text.c_str(), at, c, style.font);
+			} else {
+				gui.labelSpans(text.c_str(), 0, static_cast<int>(text.size()), at, c,
+				               coloured.data(), coloured.size(), style.font);
+			}
 			return;
 		}
 		// Broken to the width it was actually given, not the width it asked for: a
@@ -712,7 +987,17 @@ namespace RDA {
 			const std::string one = text.substr(span.first, span.second);
 			const float x = abs.x + alignOffset(hAlign, abs.w,
 			                                    gui.measureText(one.c_str(), style.font), hAlignOffset);
-			gui.label(one.c_str(), glm::vec2(x, y), c, style.font);
+			if (coloured.empty()) {
+				gui.label(one.c_str(), glm::vec2(x, y), c, style.font);
+			} else {
+				// The whole string with this line's slice named, rather than the copy
+				// above: the spans are written against the string, so a run crossing a
+				// line break is drawn in its colour on both of them without the caller
+				// having to work out where the breaks fell.
+				gui.labelSpans(text.c_str(), static_cast<int>(span.first),
+				               static_cast<int>(span.second), glm::vec2(x, y), c,
+				               coloured.data(), coloured.size(), style.font);
+			}
 			y += line;
 		}
 	}
@@ -785,12 +1070,49 @@ namespace RDA {
 	//
 	// So ownership goes to the engine, which destroys it at the top of a frame -- once the
 	// GPU is idle and the GUI has released the descriptor set it cached by that address.
+	void Image::retireFrames() const {
+		for (auto& frame : mFrames) {
+			if (frame) rendeerRetireTexture(std::move(frame));
+		}
+		mFrames.clear();
+		mPlayhead = 0.0f;
+	}
+
 	void Image::release() const {
 		if (mTexture) rendeerRetireTexture(std::move(mTexture));
 		mTexture.reset();
+		retireFrames();
+		// Borrowed, so there is nothing to free -- but it must stop pointing at it, or a
+		// source that changed from a registered picture to a file would go on drawing the
+		// picture.
+		mShared = nullptr;
 	}
 
 	void Image::ensureLoaded() const {
+		const std::string_view prefix(kMemoryImagePrefix);
+		const bool registered = source.compare(0, prefix.size(), prefix) == 0;
+
+		// A registered picture is re-asked for whenever the registry moves, because a
+		// redefine replaces the texture behind the same name -- and may well reuse the
+		// address, so comparing pointers would miss it.
+		if (registered) {
+			if (mLoaded == source && mSharedRevision == images().revision()) return;
+			release();
+			mLoaded = source;
+			mSharedRevision = images().revision();
+			mShared = images().find(source.substr(prefix.size()));
+			if (!mShared && !mFailed) {
+				mFailed = true;
+				RDA_LOG_WARNING("Image '" << mId << "': nothing registered as '"
+				                << source.substr(prefix.size())
+				                << "'. Register it before the frame that shows it -- in "
+				                   "Python rda.define_image(name, bytes).");
+			} else if (mShared) {
+				mFailed = false;
+			}
+			return;
+		}
+
 		if (mLoaded == source && ((mTexture && mTexture->isValid()) || mFailed)) return;
 		release();
 		mLoaded = source;
@@ -804,12 +1126,106 @@ namespace RDA {
 		}
 	}
 
+	bool Image::isDrawing() const {
+		// By extension, which is how every other picture decides what it is. A drawing has
+		// no size of its own until somebody says how big to draw it, which is the whole
+		// reason it cannot go down the same path as a file.
+		return source.size() > 4 &&
+		       (source.compare(source.size() - 4, 4, ".svg") == 0 ||
+		        source.compare(source.size() - 4, 4, ".SVG") == 0);
+	}
+
+	void Image::ensureDrawn(uint32_t width, uint32_t height) const {
+		if (width == 0 || height == 0) return;
+		// Read once. Changing size re-draws the shape; it does not re-read the file, which
+		// is the point of keeping the parsed document.
+		if (mLoaded != source || !mDrawing) {
+			release();
+			mLoaded = source;
+			mFailed = false;
+			mDrawnWidth = mDrawnHeight = 0;
+			std::shared_ptr<Svg::Picture> parsed = Svg::load(source);
+			if (!parsed) {
+				mFailed = true;
+				mDrawing.reset();
+				return;
+			}
+			mDrawing = parsed;
+		}
+		if (mFailed || !mDrawing) return;
+		const bool sized = mDrawnWidth == width && mDrawnHeight == height;
+		if (sized && (mTexture || !mFrames.empty())) return;
+
+
+		const Svg::Picture& picture = *static_cast<const Svg::Picture*>(mDrawing.get());
+		mLoopSeconds = Svg::duration(picture);
+		mDrawnWidth = width;
+		mDrawnHeight = height;
+		// Handed over rather than dropped. These are the frames the *previous* size was
+		// drawn at, and the GUI is holding a descriptor set for each one that it looks up
+		// by address -- so destroying them here frees a sampler a frame in flight is
+		// still reading from, and the address is then handed straight back by the
+		// allocator to one of the new frames below, which is what made the GUI find a set
+		// describing an image that had been rebuilt underneath it.
+		retireFrames();
+
+		// A still icon is one picture. A moving one is its whole loop, rasterised now so
+		// that playing it later is free -- see the note beside mFrames.
+		//
+		// Thirty a second rather than sixty: an icon is small and a loop is short, and
+		// nobody has ever looked at a spinner and wanted more frames. Capped, because a
+		// long loop at a large size is memory somebody did not ask for, and a slower icon
+		// is better than a hitch.
+		const int wanted = mLoopSeconds > 0.0f
+			? std::clamp(static_cast<int>(std::ceil(mLoopSeconds * 30.0f)), 2, 120) : 1;
+
+		std::vector<unsigned char> pixels;
+		for (int i = 0; i < wanted; ++i) {
+			const float at = wanted > 1
+				? mLoopSeconds * static_cast<float>(i) / static_cast<float>(wanted) : 0.0f;
+			if (!Svg::rasterise(picture, width, height, pixels, at)) {
+				mFailed = true;
+				return;
+			}
+			auto frame = std::make_unique<Texture>(
+				Texture::fromPixels(pixels.data(), width, height));
+			if (!frame->isValid()) {
+				mFailed = true;
+				retireFrames();
+				RDA_LOG_WARNING("Image '" << mId << "': cannot make a " << width << "x"
+				                << height << " surface for " << source);
+				return;
+			}
+			mFrames.push_back(std::move(frame));
+		}
+		if (mTexture) rendeerRetireTexture(std::move(mTexture));
+		mTexture.reset();
+	}
+
 	glm::vec2 Image::measureContent(Gui& gui, glm::vec2 available) const {
 		(void)gui;
+		// A drawing is whatever size it says it is, without drawing anything: asking how
+		// big it wants to be must not need a texture, because the answer is what decides
+		// how big the texture will be.
+		if (isDrawing()) {
+			if (mLoaded != source || !mDrawing) {
+				mLoaded = source;
+				mFailed = false;
+				std::shared_ptr<Svg::Picture> parsed = Svg::load(source);
+				if (!parsed) { mFailed = true; return { 0.0f, 0.0f }; }
+				mDrawing = parsed;
+			}
+			float w = 0.0f, h = 0.0f;
+			Svg::size(*static_cast<const Svg::Picture*>(mDrawing.get()), w, h);
+			const glm::vec2 own(w, h);
+			if (available.x <= 0.0f || own.x <= available.x) return own;
+			return { available.x, own.y * (available.x / own.x) };
+		}
 		ensureLoaded();
-		if (!mTexture) return { 0.0f, 0.0f };
-		const glm::vec2 own(static_cast<float>(mTexture->extent().width),
-		                    static_cast<float>(mTexture->extent().height));
+		const Texture* picture = active();
+		if (!picture) return { 0.0f, 0.0f };
+		const glm::vec2 own(static_cast<float>(picture->extent().width),
+		                    static_cast<float>(picture->extent().height));
 		// A picture bigger than the room it is in asks for the room, keeping its shape --
 		// otherwise width="content" on a photograph asks for four thousand pixels.
 		if (available.x <= 0.0f || own.x <= available.x) return own;
@@ -817,21 +1233,78 @@ namespace RDA {
 	}
 
 	void Image::paint(Gui& gui, glm::vec2 origin) {
-		ensureLoaded();
-		if (!mTexture) return;
 		const Rect box = placement(gui, origin);
-		if (fit == Fit::Stretch) { gui.image(box, mTexture.get()); return; }
+		if (isDrawing()) {
+			// Drawn at the box, not at some size it was exported at. `contain` is already
+			// what the rasteriser does with the shape inside the box it is given, so both
+			// fits come out of one call and there is no second scaling afterwards to go
+			// soft.
+			ensureDrawn(static_cast<uint32_t>((std::max)(1.0f, std::round(box.w))),
+			            static_cast<uint32_t>((std::max)(1.0f, std::round(box.h))));
+			if (mFrames.empty()) return;
+			size_t frame = 0;
+			if (mFrames.size() > 1 && mLoopSeconds > 0.0f) {
+				mPlayhead = std::fmod(mPlayhead + gui.input().dt, mLoopSeconds);
+				frame = (std::min)(mFrames.size() - 1,
+				                   static_cast<size_t>(mPlayhead / mLoopSeconds *
+				                                       static_cast<float>(mFrames.size())));
+				// It will look different next frame, and nothing else on this window can
+				// tell -- the tree has not changed and neither has the input.
+				gui.keepAwake();
+			}
+			gui.image(box, mFrames[frame].get(), tint);
+			return;
+		}
+		ensureLoaded();
+		const Texture* picture = active();
+		if (!picture) return;
+		if (fit == Fit::Stretch) { gui.image(box, picture, tint); return; }
 
 		// Contain: the largest rectangle of the picture's shape that fits, centred. Done
 		// here rather than in a shader, which keeps the quad the thing that is positioned
 		// -- the same as everything else in this file.
-		const float ow = static_cast<float>(mTexture->extent().width);
-		const float oh = static_cast<float>(mTexture->extent().height);
+		const float ow = static_cast<float>(picture->extent().width);
+		const float oh = static_cast<float>(picture->extent().height);
 		if (ow <= 0.0f || oh <= 0.0f || box.w <= 0.0f || box.h <= 0.0f) return;
 		const float scale = (std::min)(box.w / ow, box.h / oh);
 		const float w = ow * scale;
 		const float h = oh * scale;
-		gui.image({ box.x + (box.w - w) * 0.5f, box.y + (box.h - h) * 0.5f, w, h }, mTexture.get());
+		gui.image({ box.x + (box.w - w) * 0.5f, box.y + (box.h - h) * 0.5f, w, h }, picture,
+		          tint);
+	}
+
+	// ---- Stream ----------------------------------------------------------------------
+	glm::vec2 Stream::measureContent(Gui& gui, glm::vec2 available) const {
+		(void)gui;
+		const Texture* frame = name.empty() ? nullptr : streams().find(name);
+		if (!frame) return { 0.0f, 0.0f };
+		const glm::vec2 own(static_cast<float>(frame->extent().width),
+		                    static_cast<float>(frame->extent().height));
+		// A frame bigger than the room it is in asks for the room, keeping its shape --
+		// the same answer <image> gives, and for the same reason.
+		if (available.x <= 0.0f || own.x <= available.x) return own;
+		return { available.x, own.y * (available.x / own.x) };
+	}
+
+	void Stream::paint(Gui& gui, glm::vec2 origin) {
+		const Rect box = placement(gui, origin);
+		if (name.empty()) return;
+
+		// Said whether or not there is a frame yet: this is what tells a producer anybody
+		// is looking, and a stream with no frame is exactly the one waiting for its first.
+		streams().markSeen(name);
+
+		const Texture* frame = streams().find(name);
+		if (!frame) return;    // nothing pushed yet; the box stays empty rather than black
+
+		if (fit == Fit::Stretch) { gui.image(box, frame); return; }
+		const float ow = static_cast<float>(frame->extent().width);
+		const float oh = static_cast<float>(frame->extent().height);
+		if (ow <= 0.0f || oh <= 0.0f || box.w <= 0.0f || box.h <= 0.0f) return;
+		const float scale = (std::min)(box.w / ow, box.h / oh);
+		const float w = ow * scale;
+		const float h = oh * scale;
+		gui.image({ box.x + (box.w - w) * 0.5f, box.y + (box.h - h) * 0.5f, w, h }, frame);
 	}
 
 	// ---- Tabs ----------------------------------------------------------------------
@@ -939,15 +1412,56 @@ namespace RDA {
 	}
 
 	// ---- Select --------------------------------------------------------------------
+	size_t Select::choiceCount() const {
+		if (!of.empty()) {
+			const uint32_t id = tables().find(of);
+			return (id == kNoTable) ? 0 : tables().at(id).rows();
+		}
+		size_t count = 0;
+		for (const auto& child : children()) {
+			const Option* one = dynamic_cast<const Option*>(child.get());
+			if (one && one->visible) ++count;
+		}
+		return count;
+	}
+
+	bool Select::choiceAt(size_t index, std::string_view& text, std::string_view& value) const {
+		if (!of.empty()) {
+			const uint32_t id = tables().find(of);
+			if (id == kNoTable) return false;
+			Table& table = tables().at(id);
+			if (index >= table.rows()) return false;
+			const uint32_t textCol = table.column(textColumn);
+			const uint32_t valueCol = table.column(valueColumn);
+			// A column the table does not have reads as empty rather than refusing: a
+			// select whose value column is missing still shows its text, which is enough
+			// to see what went wrong.
+			text  = (textCol  == kNoColumn) ? std::string_view{} : table.text(index, textCol);
+			value = (valueCol == kNoColumn) ? std::string_view{} : table.text(index, valueCol);
+			return true;
+		}
+		size_t at = 0;
+		for (const auto& child : children()) {
+			const Option* one = dynamic_cast<const Option*>(child.get());
+			if (!one || !one->visible) continue;
+			if (at++ != index) continue;
+			text = one->text;
+			value = one->value;
+			return true;
+		}
+		return false;
+	}
+
 	glm::vec2 Select::measureContent(Gui& gui, glm::vec2 available) const {
 		(void)available;
 		// Wide enough for the longest choice, so opening the list does not change what
 		// the closed box looks like.
 		float widest = gui.measureText(placeholder.c_str());
-		for (const auto& child : children()) {
-			if (const Option* one = dynamic_cast<const Option*>(child.get())) {
-				widest = (std::max)(widest, gui.measureText(one->text.c_str()));
-			}
+		const size_t choices = choiceCount();
+		for (size_t i = 0; i < choices; ++i) {
+			std::string_view text, ignored;
+			if (!choiceAt(i, text, ignored)) continue;
+			widest = (std::max)(widest, gui.measureText(std::string(text).c_str()));
 		}
 		return { widest + 34.0f, std::round(gui.lineHeight() + 10.0f) };
 	}
@@ -968,22 +1482,20 @@ namespace RDA {
 		// separately from choosing.
 		const uint32_t wid = gui.widgetId(mId.c_str());
 		gui.focusable(wid, box);
-		int options = 0;
-		for (const auto& child : children()) {
-			if (dynamic_cast<const Option*>(child.get())) ++options;
-		}
+		// Through the accessors, not by counting <option> children: the choices may come
+		// from a table now, and counting children gave one of `of=` and none of the other
+		// -- a dropdown filled from data that the keyboard could open and not move in.
+		const int options = static_cast<int>(choiceCount());
 		if (gui.focusActivated(wid)) {
 			if (!mOpen) {
 				mOpen = true;
 				// Opened from the keyboard, it starts on whatever is already chosen, so
 				// the first arrow moves from there rather than from the top.
 				mHighlight = 0;
-				int at = 0;
-				for (const auto& child : children()) {
-					const Option* one = dynamic_cast<const Option*>(child.get());
-					if (!one) continue;
-					if (one->value == value) { mHighlight = at; break; }
-					++at;
+				for (int at = 0; at < options; ++at) {
+					std::string_view text, oneValue;
+					if (!choiceAt(static_cast<size_t>(at), text, oneValue)) continue;
+					if (oneValue == value) { mHighlight = at; break; }
 				}
 			} else {
 				chooseHighlighted();
@@ -1015,16 +1527,16 @@ namespace RDA {
 
 		// Whatever is chosen, or the placeholder when the value matches no option -- which
 		// is what an unset signal looks like, and reads better than an empty box.
-		const char* shown = placeholder.c_str();
-		int count = 0;
-		for (const auto& child : children()) {
-			const Option* one = dynamic_cast<const Option*>(child.get());
-			if (!one) continue;
-			++count;
-			if (one->value == value) shown = one->text.c_str();
+		std::string shown = placeholder;
+		const size_t choices = choiceCount();
+		const int count = static_cast<int>(choices);
+		for (size_t i = 0; i < choices; ++i) {
+			std::string_view text, oneValue;
+			if (!choiceAt(i, text, oneValue)) continue;
+			if (oneValue == value) { shown.assign(text); break; }
 		}
 		const float textY = box.y + (box.h - gui.lineHeight(s.font)) * 0.5f;
-		gui.drawText(shown, { box.x + 10.0f, textY }, s.text, s.font);
+		gui.drawText(shown.c_str(), { box.x + 10.0f, textY }, s.text, s.font);
 
 		// The chevron. There is no transform to turn one over with -- every quad this GUI
 		// draws is axis-aligned -- so the two glyphs cross-fade in place instead, which
@@ -1046,16 +1558,11 @@ namespace RDA {
 	void Select::chooseHighlighted() {
 		mOpen = false;
 		if (mHighlight < 0) return;
-		int at = 0;
-		for (const auto& child : children()) {
-			const Option* one = dynamic_cast<const Option*>(child.get());
-			if (!one) continue;
-			if (at++ != mHighlight) continue;
-			if (value != one->value) {
-				value = one->value;
-				if (onChange) onChange(one->value);
-			}
-			return;
+		std::string_view text, chosen;
+		if (!choiceAt(static_cast<size_t>(mHighlight), text, chosen)) return;
+		if (value != chosen) {
+			value.assign(chosen);
+			if (onChange) onChange(value);
 		}
 	}
 
@@ -1063,10 +1570,7 @@ namespace RDA {
 		(void)origin;
 		const ButtonStyle& s = gui.theme().button(variant);
 		const float rowHeight = std::round(gui.lineHeight(s.font) + 8.0f);
-		size_t count = 0;
-		for (const auto& child : children()) {
-			if (dynamic_cast<const Option*>(child.get())) ++count;
-		}
+		const size_t count = choiceCount();
 		const Rect list{ mClosedRect.x, mClosedRect.y + mClosedRect.h + 2.0f,
 		                 mClosedRect.w, rowHeight * static_cast<float>(count) };
 
@@ -1099,32 +1603,35 @@ namespace RDA {
 		gui.drawRectRounded(shown, opaque, s.radius);
 
 		float y = list.y;
-		int index = 0;
-		for (const auto& child : children()) {
-			const Option* one = dynamic_cast<const Option*>(child.get());
-			if (!one) continue;
+		for (size_t index = 0; index < count; ++index) {
+			std::string_view oneText, oneValue;
+			if (!choiceAt(index, oneText, oneValue)) continue;
 			const Rect row{ list.x, y, list.w, rowHeight };
 			// The keyboard's row looks exactly like the pointer's: there is one
 			// highlight in a list, however the reader is moving it.
-			const bool over = row.contains(gui.input().pointer) || (index == mHighlight);
-			++index;
+			const bool over = row.contains(gui.input().pointer) ||
+			                  (static_cast<int>(index) == mHighlight);
 			// Faded to nothing rather than not drawn, so a pointer running down the list
 			// leaves each row on its way out instead of switching them on and off. Only
 			// the alpha moves: the two ends are the same colour.
+			//
+			// Keyed by position rather than by the option widget, because a table-backed
+			// select has no widget per row -- and a row is the same row whichever it
+			// came from.
 			gui.drawRectRounded(row, gui.motion().colour(
-				gui.motionKey(one->id().c_str(), kMotionFill),
+				gui.motionKey(mId.c_str(), kMotionFill ^ static_cast<uint32_t>(index * 2654435761u)),
 				over ? s.hovered : fadeTo(s.hovered, 0.0f),
 				s.motion.seconds, s.motion.curve), 0.0f);
-			gui.drawText(one->text.c_str(),
+			gui.drawText(std::string(oneText).c_str(),
 			             { row.x + 10.0f, row.y + (row.h - gui.lineHeight(s.font)) * 0.5f },
 			             s.text, s.font);
 			// Chosen on release rather than press: the press is what opened the list, and
 			// acting on it would pick whatever happened to be under the pointer then.
 			if (over && gui.input().released) {
 				mOpen = false;
-				if (value != one->value) {
-					value = one->value;
-					if (onChange) onChange(one->value);
+				if (value != oneValue) {
+					value.assign(oneValue);
+					if (onChange) onChange(value);
 				}
 			}
 			y += rowHeight;
@@ -1220,10 +1727,46 @@ namespace RDA {
 		Rect abs = legacyFill ? gui.currentClipRect() : placement(gui, origin);
 		// A named variant supplies the whole style; otherwise the per-instance one.
 		const TextFieldStyle& used = (variant != kDefaultVariant) ? gui.theme().textField(variant) : style;
-		if (gui.textField(mId.c_str(), mText, mPlaceholder, abs, used, &focused, mTextVersion)) {
+		Gui::TextFieldExtras extras;
+		int  caretNow = mLastCaret;
+		bool accepted = false;
+		bool dismissed = false;
+		bool submitted = false;
+		extras.suggestion = mSuggestion.empty() ? nullptr : mSuggestion.c_str();
+		extras.language = language.empty() ? nullptr : language.c_str();
+		extras.submit = submitKey;
+		extras.caret = &caretNow;
+		extras.accepted = &accepted;
+		extras.dismissed = &dismissed;
+		extras.submitted = &submitted;
+
+		if (gui.textField(mId.c_str(), mText, mPlaceholder, abs, used, &focused,
+		                  mTextVersion, &extras)) {
 			// The field edited the string in place, so nothing else can have noticed.
 			++mTextVersion;
 			if (onChange) onChange(mText);
+		}
+
+		// Taken or dropped, the offer is spent. Cleared here rather than left to the
+		// application, so a suggestion cannot survive the keystroke that answered it and
+		// be offered again on the next frame.
+		if (accepted) {
+			mSuggestion.clear();
+			if (onAccept) onAccept();
+		} else if (dismissed) {
+			mSuggestion.clear();
+			if (onDismiss) onDismiss();
+		}
+		// After onChange, so a handler that reads the text sees what was just typed
+		// rather than what was there before the last keystroke.
+		if (submitted && onSubmit) onSubmit();
+
+		// Only on a move. This runs every frame the field paints, and a handler that fired
+		// sixty times a second while nothing happened would be asked to debounce something
+		// the engine already knows the answer to.
+		if (caretNow != mLastCaret) {
+			mLastCaret = caretNow;
+			if (onCaret) onCaret(static_cast<float>(caretNow));
 		}
 	}
 

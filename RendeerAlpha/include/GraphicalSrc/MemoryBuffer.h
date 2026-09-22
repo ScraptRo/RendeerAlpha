@@ -8,6 +8,11 @@ namespace RDA{
 	enum class MemoryResidence {
 		GpuOnly,   // device-local; fastest for the GPU, uploaded through a staging buffer
 		CpuToGpu,  // host-visible & mappable; good for uniforms / staging
+		// The same memory, named for the other direction: what the GPU wrote and the CPU
+		// is about to read. VMA picks cached memory for it, which matters -- reading
+		// uncached, write-combined memory a byte at a time is slower than the copy that
+		// filled it.
+		GpuToCpu,
 	};
 
 	class MemoryBuffer

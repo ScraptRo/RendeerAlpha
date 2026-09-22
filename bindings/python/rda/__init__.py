@@ -50,6 +50,11 @@ __all__ = [
     "open_routes", "set_transition_ms", "back", "forward",
     "can_go_back", "can_go_forward",
     "draw", "viewport_size", "set_theme",
+    "set_title", "set_icon", "clipboard", "set_clipboard", "measure_text",
+    "focus", "pick_folder", "pick_file", "dropped_files",
+    "define_image", "define_image_pixels", "forget_image",
+    "push_frame", "push_frame_pixels", "stream_wanted", "stream_counts", "close_stream",
+    "define_effect", "apply_effect", "forget_effect", "read_frame",
 ]
 
 
@@ -65,6 +70,10 @@ class StartupConfig:
     """
 
     __slots__ = ("name", "theme", "languages", "vsync", "font", "font_height",
+                 "width", "height",
+                 "icon", "decorated", "resizable", "maximized", "fullscreen",
+                 "always_on_top", "transparent", "opacity",
+                 "min_width", "min_height", "max_width", "max_height", "x", "y",
                  "_on_start", "_on_update", "_on_shutdown")
 
     def __init__(self):
@@ -74,6 +83,34 @@ class StartupConfig:
         self.vsync = True
         self.font = ""        # a .ttf; empty keeps the engine's own
         self.font_height = 0  # pixels for body text; 0 keeps the default
+        # The size the window opens at; 0 keeps the engine's default. Only the opening
+        # size -- where the reader leaves it is read back through state.rda.
+        self.width = 0
+        self.height = 0
+
+        # The picture the OS shows for the window -- the title bar, the alt-tab card,
+        # the taskbar. A .png, or an .svg, which is drawn at every size an OS picks
+        # from. Not the executable's icon: that one is built into the binary.
+        self.icon = ""
+        # The OS frame. False means your layout draws its own, and something in it wants
+        # dragWindow or the window cannot be moved.
+        self.decorated = True
+        self.resizable = True
+        self.maximized = False
+        self.fullscreen = False
+        self.always_on_top = False
+        # A framebuffer with a real alpha channel, so a clear colour that is not opaque
+        # lets the desktop through. Decided when the window is created and nowhere else.
+        self.transparent = False
+        self.opacity = 1.0
+        # Bounds the reader cannot drag past; 0 on an axis means no bound there.
+        self.min_width = 0
+        self.min_height = 0
+        self.max_width = 0
+        self.max_height = 0
+        # Where the top-left corner opens. None leaves it to the platform.
+        self.x = None
+        self.y = None
         self._on_start = None
         self._on_update = None
         self._on_shutdown = None
@@ -121,9 +158,40 @@ def init(config=None):
     if config.languages:
         lib.rda_config_set_languages(handle, str(config.languages).encode("utf-8"))
     lib.rda_config_set_vsync(handle, 1 if config.vsync else 0)
+    if config.width or config.height:
+        lib.rda_config_set_size(handle, int(config.width), int(config.height))
     if config.font or config.font_height:
         lib.rda_config_set_font(handle, str(config.font).encode("utf-8"),
                                 float(config.font_height))
+
+    # How the window is dressed. Each one is sent only when it differs from the engine's
+    # own default, so a config nobody touched makes no calls at all.
+    if config.icon:
+        lib.rda_config_set_icon(handle, str(config.icon).encode("utf-8"))
+    if not config.decorated:
+        lib.rda_config_set_decorated(handle, 0)
+    if not config.resizable:
+        lib.rda_config_set_resizable(handle, 0)
+    if config.maximized:
+        lib.rda_config_set_maximized(handle, 1)
+    if config.fullscreen:
+        lib.rda_config_set_fullscreen(handle, 1)
+    if config.always_on_top:
+        lib.rda_config_set_always_on_top(handle, 1)
+    if config.transparent:
+        lib.rda_config_set_transparent(handle, 1)
+    if config.opacity != 1.0:
+        lib.rda_config_set_opacity(handle, float(config.opacity))
+    if config.min_width or config.min_height or config.max_width or config.max_height:
+        lib.rda_config_set_size_limits(handle, int(config.min_width), int(config.min_height),
+                                       int(config.max_width), int(config.max_height))
+    if config.x is not None or config.y is not None:
+        # An axis nobody set stays the platform's choice, which is not the same answer
+        # as 0 -- that is a corner of the screen.
+        unplaced = -2147483648
+        lib.rda_config_set_position(handle,
+                                    unplaced if config.x is None else int(config.x),
+                                    unplaced if config.y is None else int(config.y))
 
     # Held for the life of the process for the same reason a command handler is: the
     # engine calls these long after this function has returned.
@@ -251,6 +319,314 @@ def wait():
     """Blocks until the engine has stopped and its thread has been joined."""
     from . import _engine
     _engine.load().rda_wait()
+
+
+def dropped_files():
+    """Every file let go over the window since the last call, as a list of paths.
+
+    Empty most of the time. Ask on the same beat as everything else -- a drop is queued
+    rather than delivered, so nothing is lost between one look and the next.
+    """
+    from ctypes import create_string_buffer
+    lib = _engine.load()
+    paths = []
+    buffer = create_string_buffer(4096)
+    while True:
+        answer = lib.rda_poll_dropped_file(buffer, 4096)
+        if answer <= 0:
+            break
+        paths.append(buffer.value.decode("utf-8", "replace"))
+    return paths
+
+
+def define_image(name, data):
+    """Registers a picture a backend made, under `name`.
+
+    `data` is an encoded image -- PNG, JPEG, BMP, TGA, GIF, PSD, HDR, PNM -- as bytes.
+    A layout shows it with `src="mem:<name>"`.
+
+    Registering the same name again replaces what every <image> naming it draws, which is
+    what makes this the shape a preview wants. The bytes are copied, so the caller may let
+    them go as soon as this returns.
+    """
+    from ctypes import c_char_p
+    payload = bytes(data)
+    if not payload:
+        # Raised rather than _fail'd: _fail appends the engine's last error, and the
+        # engine has not been asked anything yet, so what it would append belongs to
+        # whatever was called before this.
+        raise _engine.RdaError("there are no bytes to make an image from")
+    if not _engine.load().rda_image_define(str(name).encode("utf-8"),
+                                           c_char_p(payload), len(payload)):
+        _engine._fail("cannot register the image '{}'".format(name))
+
+
+def define_image_pixels(name, pixels, width, height):
+    """The same, from raw pixels: four bytes each (R, G, B, A), rows tightly packed.
+
+    `width * height * 4` bytes in all. For a buffer already in the right shape -- a numpy
+    array's `.tobytes()`, a framebuffer -- where encoding it to PNG so the engine could
+    decode it again would be a strange way to spend a millisecond.
+    """
+    from ctypes import c_char_p
+    payload = bytes(pixels)
+    wanted = int(width) * int(height) * 4
+    if len(payload) < wanted:
+        raise _engine.RdaError("a {}x{} image needs {} bytes, and there are {}"
+                               .format(width, height, wanted, len(payload)))
+    if not _engine.load().rda_image_define_pixels(str(name).encode("utf-8"),
+                                                  c_char_p(payload),
+                                                  int(width), int(height)):
+        _engine._fail("cannot register the image '{}'".format(name))
+
+
+def push_frame(name, data):
+    """Pushes an encoded frame -- PNG, JPEG, and the rest -- into the stream `name`.
+
+    A layout shows it with `<stream name="...">`. Unlike `define_image`, the surface is
+    kept and written into, so a feed does not build a texture per frame.
+    """
+    from ctypes import c_char_p
+    payload = bytes(data)
+    if not payload:
+        raise _engine.RdaError("there are no bytes to push")
+    if not _engine.load().rda_stream_push_encoded(str(name).encode("utf-8"),
+                                                  c_char_p(payload), len(payload)):
+        _engine._fail("cannot push a frame into '{}'".format(name))
+
+
+def push_frame_pixels(name, pixels, width, height):
+    """The same, from raw pixels: four bytes each (R, G, B, A), rows tightly packed."""
+    from ctypes import c_char_p
+    payload = bytes(pixels)
+    wanted = int(width) * int(height) * 4
+    if len(payload) < wanted:
+        raise _engine.RdaError("a {}x{} frame needs {} bytes, and there are {}"
+                               .format(width, height, wanted, len(payload)))
+    if not _engine.load().rda_stream_push(str(name).encode("utf-8"), c_char_p(payload),
+                                          int(width), int(height)):
+        _engine._fail("cannot push a frame into '{}'".format(name))
+
+
+def stream_wanted(name):
+    """Whether anybody is looking at this stream.
+
+    False for one on a screen that is not showing. Ask before decoding the next frame:
+    this is what stops a feed nobody can see from costing anything.
+    """
+    return _engine.load().rda_stream_wanted(str(name).encode("utf-8")) == 1
+
+
+def stream_counts(name):
+    """(pushed, shown) -- frames sent, and frames still current when something drew them.
+
+    The gap is what is being wasted: pushing sixty a second into a window drawing thirty
+    means half of them were replaced before anything sampled them.
+    """
+    from ctypes import c_int64, byref
+    pushed, shown = c_int64(0), c_int64(0)
+    _engine.load().rda_stream_counts(str(name).encode("utf-8"), byref(pushed), byref(shown))
+    return pushed.value, shown.value
+
+
+def close_stream(name):
+    """Drops a stream. A <stream> naming it then draws nothing."""
+    if not _engine.load().rda_stream_close(str(name).encode("utf-8")):
+        _engine._fail("cannot close the stream '{}'".format(name))
+
+
+def define_effect(name, glsl):
+    """Compiles a filter and keeps it under `name`.
+
+    Write the filter, not the Vulkan around it. `src` is the input, `store(c)` writes the
+    result, and `uv()`, `coord()`, `size()` and `param(i)` say where you are and what you
+    were passed:
+
+        rda.define_effect("grey", GREY)   # GREY being the two lines below
+
+        void main() {
+            vec4 c = texture(src, uv());
+            store(vec4(vec3(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))), c.a));
+        }
+
+    Colours inside an effect are linear light, not the sRGB a theme is written in -- which
+    is the only space image arithmetic is correct in. GLSL beginning with `#version` is
+    taken as a whole shader and nothing is prepended.
+
+    Raises with the compiler's message, which names the line, if it will not build.
+    """
+    if not _engine.load().rda_effect_define(str(name).encode("utf-8"),
+                                            str(glsl).encode("utf-8")):
+        _engine._fail("cannot define the effect '{}'".format(name))
+
+
+def apply_effect(name, source, into, params=()):
+    """Runs the effect over `source` into the stream `into`.
+
+    `source` is one stream's name, or a list of up to four. Several are reachable in the
+    shader as `tap(0, at)` .. `tap(3, at)`, and `src` is the first:
+
+        rda.apply_effect("blend", ["a", "b"], "mixed", [0.5])
+
+    `into` is made if it is not there and re-made when the **first** source changes size;
+    the rest are sampled in 0..1, so a mask of another size is resized rather than refused.
+    It may not be one of the sources. `params` is up to eight floats, as `param(0..7)`.
+    """
+    from ctypes import c_char_p, c_float
+    names = [source] if isinstance(source, str) else list(source)
+    if not names:
+        raise _engine.RdaError("an effect needs something to read")
+    if len(names) > 4:
+        raise _engine.RdaError(
+            "{} sources, and a filter reads at most four. Chain two effects instead."
+            .format(len(names)))
+    values = [float(v) for v in params][:8]
+    block = (c_float * len(values))(*values) if values else None
+    encoded = [str(n).encode("utf-8") for n in names]
+    block_names = (c_char_p * len(encoded))(*encoded)
+    if not _engine.load().rda_effect_apply_many(str(name).encode("utf-8"),
+                                                block_names, len(encoded),
+                                                str(into).encode("utf-8"),
+                                                block, len(values)):
+        _engine._fail("cannot apply the effect '{}'".format(name))
+
+
+def read_frame(name):
+    """The current frame of a stream, as (pixels, width, height).
+
+    RGBA8, rows tightly packed, and **as it looks on screen**: a surface an effect wrote
+    holds linear light and is encoded on the way out, so saving this as a PNG gives a PNG
+    of what was displayed.
+
+    Costs a round trip to the GPU and a wait. Right for saving a frame or handing one to a
+    model, wrong for doing every frame -- that is what <stream> is for.
+    """
+    from ctypes import c_char_p, c_int, byref, create_string_buffer
+    lib = _engine.load()
+    width, height = c_int(0), c_int(0)
+    needed = lib.rda_stream_read(str(name).encode("utf-8"), None, 0,
+                                 byref(width), byref(height))
+    if needed < 0:
+        _engine._fail("cannot read the stream '{}'".format(name))
+    if needed == 0:
+        return b"", 0, 0
+    buffer = create_string_buffer(needed)
+    got = lib.rda_stream_read(str(name).encode("utf-8"), buffer, needed,
+                              byref(width), byref(height))
+    if got < 0:
+        _engine._fail("cannot read the stream '{}'".format(name))
+    return buffer.raw[:needed], width.value, height.value
+
+
+def forget_effect(name):
+    """Drops a compiled effect."""
+    if not _engine.load().rda_effect_forget(str(name).encode("utf-8")):
+        _engine._fail("cannot forget the effect '{}'".format(name))
+
+
+def forget_image(name):
+    """Drops a registered picture. An <image> still naming it draws nothing."""
+    if not _engine.load().rda_image_forget(str(name).encode("utf-8")):
+        _engine._fail("cannot forget the image '{}'".format(name))
+
+
+def focus(widget_id=""):
+    """Puts the keyboard on a widget, by the full id its layout gave it.
+
+    The path the log and the blueprint spell -- "root/composer", not "composer". Empty
+    takes the keyboard away, which is what a click on nothing does.
+    """
+    if not _engine.load().rda_focus(str(widget_id).encode("utf-8")):
+        _engine._fail("cannot focus '{}'".format(widget_id))
+
+
+def _pick(call, *args):
+    """The two-call shape, for a dialog that answers with a path."""
+    from ctypes import create_string_buffer
+    length = call(*args, None, 0)
+    if length < 0:
+        _engine._fail("cannot open the chooser")
+    if length == 0:
+        return None            # cancelled, which is an answer
+    buffer = create_string_buffer(length + 1)
+    call(*args, buffer, length + 1)
+    return buffer.value.decode("utf-8", "replace")
+
+
+def pick_folder(title="", start=""):
+    """The platform's folder chooser. Returns the path, or None if it was cancelled.
+
+    Blocks this thread until the reader answers -- the window goes on drawing behind it,
+    because this is the one call that does not cross to the engine's loop.
+    """
+    lib = _engine.load()
+    return _pick(lib.rda_pick_folder, str(title).encode("utf-8"), str(start).encode("utf-8"))
+
+
+def pick_file(title="", start="", filter=""):
+    """The platform's file chooser. `filter` is "Images|*.png;*.jpg"; empty means any."""
+    lib = _engine.load()
+    return _pick(lib.rda_pick_file, str(title).encode("utf-8"), str(start).encode("utf-8"),
+                 str(filter).encode("utf-8"))
+
+
+def set_title(text):
+    """The window's title, after it has opened. `StartupConfig.name` sets the first one."""
+    if not _engine.load().rda_set_title(str(text).encode("utf-8")):
+        _engine._fail("cannot set the title")
+
+
+def set_icon(path=""):
+    """The window's icon, after it has opened.
+
+    A .png, or an .svg -- which is drawn at every size an OS picks from, so one file
+    covers the title bar, the alt-tab card and the taskbar. "" puts the platform's
+    default back. `StartupConfig.icon` sets the first one.
+
+    Not the executable's icon: that one is a resource inside the binary, put there when
+    the program is built rather than when it runs.
+    """
+    if not _engine.load().rda_set_icon(str(path).encode("utf-8")):
+        _engine._fail("cannot set the icon")
+
+
+def set_clipboard(text):
+    """Puts `text` on the OS clipboard."""
+    if not _engine.load().rda_clipboard_set(str(text).encode("utf-8")):
+        _engine._fail("cannot write the clipboard")
+
+
+def clipboard():
+    """What is on the OS clipboard, as text. Empty when it holds none."""
+    from ctypes import create_string_buffer
+    lib = _engine.load()
+    length = lib.rda_clipboard_get(None, 0)
+    if length < 0:
+        _engine._fail("cannot read the clipboard")
+    if length == 0:
+        return ""
+    buffer = create_string_buffer(length + 1)
+    lib.rda_clipboard_get(buffer, length + 1)
+    return buffer.value.decode("utf-8", "replace")
+
+
+def measure_text(text, size=0.0):
+    """(width, height) `text` would be drawn at, in the pixels a layout uses.
+
+    `size` of 0 is the interface's own. This is what a backend that wraps text should
+    ask instead of assuming a column count -- the wrap then follows the window and the
+    font rather than a number somebody guessed.
+    """
+    from ctypes import byref, c_float
+    # Rejected rather than stringified: str(None) is "None", four characters wide, and
+    # silently measuring those is the kind of answer that is believed.
+    if text is None:
+        raise RdaError("measure_text() needs some text")
+    width, height = c_float(0.0), c_float(0.0)
+    if not _engine.load().rda_measure_text(str(text).encode("utf-8"), float(size),
+                                           byref(width), byref(height)):
+        _engine._fail("cannot measure text")
+    return width.value, height.value
 
 
 def set_theme(path):

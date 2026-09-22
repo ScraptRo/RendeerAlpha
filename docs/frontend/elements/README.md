@@ -11,10 +11,11 @@ thing you can see, rather than as blank space.
 
 | | |
 | --- | --- |
-| [Containers](containers.md) | `<container>`, `<panel>`, `<stack>`, `<scroll>`, `<splitter>` |
+| [Containers](containers.md) | `<container>`, `<panel>`, `<stack>`, `<scroll>`, `<splitter>`, `<popup>` |
 | [Text and input](text-and-input.md) | `<label>`, `<button>`, `<checkbox>`, `<slider>`, `<textfield>` |
 | [Choices and pages](choices-and-pages.md) | `<select>` and `<option>`, `<tabs>` and `<tab>`, `<image>` |
 | [Large data](list.md) | `<list>` — rows from a declared table, through a pool of widgets |
+| [Live pictures](stream.md) | `<stream>` — a picture the backend replaces, frame after frame |
 | [Docking](docking.md) | `<dockspace>`, `<dock>` |
 | [The viewport](viewport.md) | `<viewport>` — a hole the application fills, with Vulkan or with 2D commands |
 | [The common properties](common-properties.md) | `id`, `visible`, `animate`, sizing, `hAlignSelf` / `vAlignSelf`, placement |

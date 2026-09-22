@@ -77,6 +77,22 @@ namespace RDA {
 		// What that leaves is a process whose only visible windows are ones it opened
 		// itself with rendeerCreateWindow, and a headless run that still has a device.
 		bool         hiddenMainWindow = false;
+
+		// The size the main window opens at. Zero means the engine's own default, which
+		// is what every application got before this existed.
+		//
+		// Only the opening size: the reader may resize afterwards, and the interface
+		// reads where it ended up through state.rda.width and .height. An application
+		// that wants to remember what size it was left at writes these at startup from
+		// whatever it stored.
+		uint32_t     windowWidth = 0;
+		uint32_t     windowHeight = 0;
+
+		// Everything else about the main window: whether it has an OS frame at all, what
+		// it may be resized to, where it opens, and the icon the OS shows for it. See
+		// WindowStyle. The size stays above because it was there first, and because it
+		// is the one thing every application sets.
+		WindowStyle  window;
 		ThreadMode   threadMode = ThreadMode::Caller;
 		ViewportMode viewportMode = ViewportMode::Fullscreen; // scene to surface, or to a Viewport widget
 		RedrawMode   redrawMode = RedrawMode::OnDemand;     // every frame, or only on change

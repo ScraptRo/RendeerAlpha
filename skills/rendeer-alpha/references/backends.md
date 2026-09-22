@@ -16,6 +16,10 @@ from state import State, Commands, Tables, ROUTES, define
 config = rda.StartupConfig()
 config.name = "Files"
 config.theme = "res/themes/app.rdth"
+config.icon = "res/icons/app.svg"   # .png, or .svg drawn at every size an OS asks for
+# The rest of the window: decorated, resizable, maximized, fullscreen, always_on_top,
+# transparent, opacity, min_width/min_height/max_width/max_height, x/y. All read when
+# the window is created. What it does afterwards is state -- see below.
 
 @Commands.refresh                 # at module level: bound before the engine exists
 def on_refresh():
@@ -183,6 +187,62 @@ Node is `new rda.Drawing()` / `rda.draw(name, d)` / `rda.viewportSize(name)`; C#
 `new Drawing()` / `Rda.Draw(name, d)` / `Rda.ViewportSize(name)`. Colours are what a theme
 takes. Coordinates are the viewport's own, `0, 0` at its top-left, and anything past its
 edge is clipped.
+
+## Files, and where the keyboard is
+
+Three things a desktop application needs that a layout cannot express on its own.
+
+**Putting the keyboard somewhere.** `rda.focus("root/composer")` -- Node `rda.focus`, C#
+`Rda.Focus`. The argument is the full id the layout gave the widget, the same path the
+probe and the log use; an empty string takes focus away from everything. Use it when a
+screen opens on a field the reader is meant to type in, or after a command clears one.
+
+**The platform's own chooser.**
+
+```python
+folder = rda.pick_folder("Where should exports go?", start="C:/Users")
+if folder is None:
+    return                                   # cancelled, which is an answer
+picture = rda.pick_file("Open", filter="Images|*.png;*.jpg")
+```
+
+Node `rda.pickFolder` / `rda.pickFile` answer `null`; C# `Rda.PickFolder` / `Rda.PickFile`
+answer `null` as well. These are the one pair that does **not** cross to the engine's loop:
+they block the calling thread for as long as a person is looking at a dialog, and the window
+goes on drawing behind them. Call them from your own thread, never from inside a command
+handler, which runs on the loop.
+
+On Windows it is the real shell dialog. Elsewhere it is `zenity` or `kdialog`, whichever is
+installed -- on a machine with neither, the call answers nothing and says so in the log, so
+offer a text field as well if that is a machine you ship to.
+
+**A picture without a file.** A vision model hands back bytes; there is no reason for them
+to become a temp file first.
+
+```python
+rda.define_image("answer", png_bytes)            # PNG, JPEG, BMP, TGA, GIF, PSD, HDR, PNM
+rda.define_image_pixels("plot", rgba, 320, 240)  # four bytes a pixel, rows packed
+```
+
+The layout shows it with `<image src="mem:answer">`. Node is `defineImage` /
+`defineImagePixels` / `forgetImage`, C# `DefineImage` / `DefineImagePixels` / `ForgetImage`,
+C++ `RDA::images().define(...)`. The engine owns the texture, so registering the same name
+again replaces what every `<image>` naming it draws, and it reaches the screen without a
+click or a signal write. The bytes are copied, so you may free them as soon as the call
+returns.
+
+**Files let go over the window.** Drops are queued rather than delivered, because a callback
+from the engine's thread is something a JavaScript binding cannot take:
+
+```python
+for path in rda.dropped_files():          # empty most of the time
+    load(path)
+```
+
+Node `rda.droppedFiles()`, C# `Rda.DroppedFiles()`. Ask on the same beat as everything else
+you poll. Nothing is lost between one look and the next; a backend that never asks loses the
+oldest and gets a line in the log saying so. C++ takes the callback directly, through
+`config.input.onFilesDropped`.
 
 **C++ gets Vulkan instead**: `RDA::viewports().onDraw(name, [](const RDA::ViewportFrame&
 frame) { ... })` hands over the command buffer inside the render pass, with

@@ -11,7 +11,14 @@ set(RDA_SOURCES
 	src/Core/Commands.cpp
 	src/Core/Tables.cpp
 	src/Core/Utf8.cpp
+	src/Core/Colour.cpp
 	src/Core/Location.cpp
+	src/Core/FileDialog.cpp
+	src/Core/Svg.cpp
+	src/Core/Route.cpp
+	src/GraphicalObjects/Images.cpp
+	src/GraphicalObjects/Streams.cpp
+	src/GraphicalObjects/Effects.cpp
 	src/Logger/Logger.cpp
 
 	src/GraphicalSrc/DeviceHandler.cpp
@@ -61,6 +68,7 @@ list(APPEND RDA_SOURCES
 	src/GraphicalObjects/Syntax.cpp
 	src/GraphicalObjects/Docking.cpp
 	src/GraphicalObjects/DockTree.cpp
+	src/GraphicalObjects/TileGrid.cpp
 
 	src/Layout/Blueprint.cpp
 	src/Layout/WidgetSchema.cpp

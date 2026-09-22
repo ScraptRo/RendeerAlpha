@@ -7,6 +7,47 @@
 
 namespace RDA {
 
+	void immediateSubmit(const std::function<void(VkCommandBuffer)>& record) {
+		GPUInfo& gpu = getGPU();
+		VkDevice device = gpu.LDevice;
+
+		VkCommandPoolCreateInfo poolInfo{};
+		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+		poolInfo.queueFamilyIndex = gpu.graphicsFamily;
+		VkCommandPool pool = VK_NULL_HANDLE;
+		vkCreateCommandPool(device, &poolInfo, nullptr, &pool);
+
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandPool = pool;
+		allocInfo.commandBufferCount = 1;
+		VkCommandBuffer cmd = VK_NULL_HANDLE;
+		vkAllocateCommandBuffers(device, &allocInfo, &cmd);
+
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		vkBeginCommandBuffer(cmd, &beginInfo);
+
+		record(cmd);
+
+		vkEndCommandBuffer(cmd);
+
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &cmd;
+		vkQueueSubmit(gpu.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+		vkQueueWaitIdle(gpu.graphicsQueue);
+
+		vkFreeCommandBuffers(device, pool, 1, &cmd);
+		vkDestroyCommandPool(device, pool, nullptr);
+	}
+
+
+
     // ---- Engine-owned device state -------------------------------------------------
     static GPUInfo      gGPU;
     static VmaAllocator gAllocator = nullptr;

@@ -22,10 +22,21 @@ cmake_minimum_required(VERSION 3.21)
 # footprint they protected is protected by static linking anyway — the linker leaves out
 # a compiler that nothing calls. See RendeerAlpha/include/Core/BuildMode.h.
 
-# 0.9: everything the interface layer needs is here and working, and none of it has
-# been through a release. It builds and tests from a clone on Windows and Linux; beta
-# until the loose ends in docs/architecture/where-things-stand.md are closed.
-project(RendeerAlpha VERSION 0.9.0 LANGUAGES C CXX)
+# 1.0: the interface layer is what this engine is, four languages have driven it, and the
+# behaviour it has now is the behaviour it is promising. It builds and tests from a clone
+# on Windows and Linux.
+#
+# 1.0 is not "nothing left to do" -- the known limits are listed, as they were before, in
+# docs/architecture/where-things-stand.md, and none of them is a thing that has to change
+# shape to be fixed. It is the point at which a colour is the colour you wrote, a package
+# built against ABI 1.0 keeps working, and both of those are commitments rather than
+# observations.
+#
+# The one break on the way here: theme colours used to be written into an sRGB surface
+# undecoded, so every one of them reached the screen too light. They are decoded now, which
+# means a palette picked by eye against the old behaviour renders differently -- correctly,
+# for the first time. See docs/frontend/themes.md.
+project(RendeerAlpha VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

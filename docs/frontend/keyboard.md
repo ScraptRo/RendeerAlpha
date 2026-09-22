@@ -35,7 +35,35 @@ export const focus: RdaFocusTheme = {
 | `<checkbox>` | **Space** or **Enter** toggles it |
 | `<slider>` | **Left/Right** or **Up/Down** move it a twentieth of its range |
 | `<select>` | **Enter** opens it; then the arrows move the highlight, **Enter** takes it, **Escape** leaves without changing anything |
-| `<textfield>` | typing, the usual editing keys, and **Escape** to leave the field |
+| `<textfield>` | typing, the usual editing keys, and **Escape** to leave the field. **Enter** sends from a single line and **Ctrl+Enter** from a multi-line one, unless `submitKey` says otherwise — and **Shift+Enter** is the line break wherever Enter sends |
+
+Inside a field, the shortcuts are the ones every other field on the machine has:
+
+| | |
+| --- | --- |
+| **Ctrl+C** / **Ctrl+X** / **Ctrl+V** | copy, cut, paste. Copy works on a read-only field too |
+| **Ctrl+A** | select everything |
+| **Ctrl+Z** | undo |
+| **Ctrl+Y**, **Ctrl+Shift+Z** | redo |
+
+## Taking something back
+
+Undo is per field and needs nothing from the layout or the backend. A run of edits of the
+same kind, made without a pause, is **one** step: typing a word and pressing Ctrl+Z once
+leaves the word gone rather than its last letter. A pause of about three quarters of a
+second, a different kind of edit, or the caret being moved by hand ends the run and starts
+a new step.
+
+A step carries the caret as well as the text, so undoing puts the reader back where they
+were, not just back to what they had. Anything typed after an undo throws away what was
+undone, the way it does everywhere else.
+
+Each field remembers up to a hundred steps or a megabyte of text, whichever comes first,
+and then forgets the oldest. A field's history belongs to that field and lives as long as
+the interface does; nothing about it crosses to the backend, and a signal written from
+outside the field is not something undo can take back — it was not an edit.
+
+A read-only field has no history, because it has nothing to undo.
 
 A dropdown opened from the keyboard starts on whatever is already chosen, so the first
 arrow moves from there rather than from the top. The highlight it moves looks exactly like

@@ -104,12 +104,53 @@ Ask for the workflow explicitly, because a small model will not invent it:
 
 ## With Claude Code
 
-`SKILL.md` has the frontmatter a skill needs. Either copy the folder into
-`.claude/skills/`, or add the MCP server:
+`SKILL.md` has the frontmatter a skill needs. Install the skill and the server; they are
+independent, and either is useful alone.
+
+**The skill — link it, do not copy it.** A copy is a snapshot: it stops matching this
+folder the moment either changes, and nothing says so. Link the whole directory instead,
+so a `git pull` is the update.
 
 ```bash
-claude mcp add rendeer-alpha -- python /abs/path/to/skills/rendeer-alpha/mcp/rda_mcp.py
+# Linux / macOS
+ln -s "$PWD/skills/rendeer-alpha" ~/.claude/skills/rendeer-alpha
 ```
+
+```powershell
+# Windows. A junction needs no administrator rights, and works across drives.
+New-Item -ItemType Directory -Force "$HOME\.claude\skills" | Out-Null
+cmd /c mklink /J "$HOME\.claude\skills\rendeer-alpha" "$PWD\skills\rendeer-alpha"
+```
+
+`~/.claude/skills` is personal scope, which is what you want: the layouts get written in
+an application's checkout, not in this one, and a skill under this repo's `.claude/skills`
+would not be there.
+
+Check it took by listing through the link — all seven reference pages have to be visible,
+not just `SKILL.md`:
+
+```bash
+ls ~/.claude/skills/rendeer-alpha/references
+```
+
+That is worth checking, because `SKILL.md` on its own loads and looks healthy while being
+useless: its last section is a table routing every question to a `references/` page, so a
+half-installed skill answers from memory instead of from the tables.
+
+**The server.**
+
+```bash
+claude mcp add rendeer-alpha --scope user -- /abs/path/to/python /abs/path/to/skills/rendeer-alpha/mcp/rda_mcp.py
+```
+
+Name the interpreter by absolute path rather than `python`: the server is started by the
+editor, which need not have your shell's `PATH` — on Windows a bare `python` can reach the
+Microsoft Store stub, which exits immediately. `--scope user` for the same reason the
+skill is personal: the tools are for the project you are writing, not for this one.
+
+`RDA_ENGINE` is not needed while the script sits in this checkout — it finds `bin/` by
+walking up from itself. Run `--selftest` first either way; it prints which engine it
+found.
 
 ## Keeping it true
 

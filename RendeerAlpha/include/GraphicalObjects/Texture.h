@@ -48,9 +48,36 @@ namespace RDA{
 		bool create(const TextureDesc& desc);
 		// Load an image file (via stb_image) into a sampled device-local texture.
 		static Texture loadFromFile(const std::string& path, bool srgb = true);
+		// The same, from encoded bytes already in memory -- PNG, JPEG, and the rest of
+		// what stb_image reads. For a picture a backend produced rather than one that
+		// was ever a file.
+		static Texture loadFromMemory(const void* bytes, size_t size, bool srgb = true);
+		// And from raw pixels: four bytes each, rows tightly packed, no header. Skips the
+		// decoder for a buffer that is already in the right shape.
+		static Texture fromPixels(const void* rgba, uint32_t width, uint32_t height,
+		                          bool srgb = true);
 
 		// Copy tightly-packed pixel data in and leave the image ready to sample.
 		bool uploadPixels(const void* pixels, VkDeviceSize sizeBytes);
+
+		// One rectangle of level 0, from tightly packed rows of `bytesPerPixel`.
+		//
+		// For a texture that is added to rather than replaced -- a font atlas baking a
+		// glyph the first time somebody writes it. uploadPixels would re-send the whole
+		// image for a 20x20 box, and at a megabyte an atlas that is being filled in as
+		// text arrives would spend the session copying itself.
+		//
+		// Mip levels are not rebuilt: a partially updated chain would be worse than none,
+		// and nothing that grows this way is mipmapped.
+		bool uploadRegion(const void* pixels, uint32_t x, uint32_t y,
+		                  uint32_t width, uint32_t height, uint32_t bytesPerPixel = 1);
+
+		// Records the barrier that puts this image in `newLayout`, and remembers it.
+		//
+		// For work outside this class -- a compute pass writing into it, which needs
+		// GENERAL going in and SHADER_READ_ONLY_OPTIMAL coming out. Recorded rather than
+		// submitted, so it joins whatever the caller is already building.
+		void transitionTo(VkCommandBuffer cmd, VkImageLayout newLayout);
 
 		VkImage        image()   const { return mImage; }
 		VkImageView    view()    const { return mView; }

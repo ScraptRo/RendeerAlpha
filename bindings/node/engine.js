@@ -22,7 +22,7 @@ const koffi = require('koffi')
 // exactly and the engine's minor has to be at least this one -- the contract is in
 // RendeerC.h.
 export const ABI_MAJOR = 1
-export const ABI_MINOR = 1
+export const ABI_MINOR = 6
 
 // Laid out exactly as rda_draw_cmd. Registered once, at module load, because koffi
 // interns a struct type by name and registering it twice is an error.
@@ -190,6 +190,38 @@ function declare() {
 		getCellBool: f('int rda_table_get_bool(uint32_t table, int column, int row, _Out_ int *out)'),
 		getCellText: f('int rda_table_get_text(uint32_t table, int column, int row, _Out_ char *buffer, int capacity)'),
 
+		setSize: f('void rda_config_set_size(void *config, int width, int height)'),
+		setIcon: f('void rda_config_set_icon(void *config, const char *path)'),
+		setDecorated: f('void rda_config_set_decorated(void *config, int on)'),
+		setResizable: f('void rda_config_set_resizable(void *config, int on)'),
+		setMaximized: f('void rda_config_set_maximized(void *config, int on)'),
+		setFullscreen: f('void rda_config_set_fullscreen(void *config, int on)'),
+		setAlwaysOnTop: f('void rda_config_set_always_on_top(void *config, int on)'),
+		setTransparent: f('void rda_config_set_transparent(void *config, int on)'),
+		setOpacity: f('void rda_config_set_opacity(void *config, float value)'),
+		setSizeLimits: f('void rda_config_set_size_limits(void *config, int min_width, int min_height, int max_width, int max_height)'),
+		setPosition: f('void rda_config_set_position(void *config, int x, int y)'),
+		setTitle: f('int rda_set_title(const char *title)'),
+		setIconNow: f('int rda_set_icon(const char *path)'),
+		focus: f('int rda_focus(const char *id)'),
+		pollDropped: f('int rda_poll_dropped_file(_Out_ char *buffer, int capacity)'),
+		imageDefine: f('int rda_image_define(const char *name, void *bytes, int size)'),
+		imageDefinePixels: f('int rda_image_define_pixels(const char *name, void *pixels, int width, int height)'),
+		imageForget: f('int rda_image_forget(const char *name)'),
+		streamPush: f('int rda_stream_push(const char *name, void *pixels, int width, int height)'),
+		streamPushEncoded: f('int rda_stream_push_encoded(const char *name, void *bytes, int size)'),
+		streamWanted: f('int rda_stream_wanted(const char *name)'),
+		streamClose: f('int rda_stream_close(const char *name)'),
+		effectDefine: f('int rda_effect_define(const char *name, const char *glsl)'),
+		effectApply: f('int rda_effect_apply(const char *name, const char *source, const char *into, float *params, int count)'),
+		effectForget: f('int rda_effect_forget(const char *name)'),
+		effectApplyMany: f('int rda_effect_apply_many(const char *name, char **sources, int sourceCount, const char *into, float *params, int paramCount)'),
+		streamRead: f('int rda_stream_read(const char *name, _Out_ uint8_t *buffer, int capacity, _Out_ int *width, _Out_ int *height)'),
+		pickFolder: f('int rda_pick_folder(const char *title, const char *start, _Out_ char *buffer, int capacity)'),
+		pickFile: f('int rda_pick_file(const char *title, const char *start, const char *filter, _Out_ char *buffer, int capacity)'),
+		clipboardSet: f('int rda_clipboard_set(const char *text)'),
+		clipboardGet: f('int rda_clipboard_get(_Out_ char *buffer, int capacity)'),
+		measureText: f('int rda_measure_text(const char *text, float size, _Out_ float *w, _Out_ float *h)'),
 		setTheme: f('int rda_set_theme(const char *path)'),
 		viewportDraw: f('int rda_viewport_draw(const char *name, rda_draw_cmd *commands, int count)'),
 		viewportSize: f('int rda_viewport_size(const char *name, _Out_ float *width, _Out_ float *height)'),

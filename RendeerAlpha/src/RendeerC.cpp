@@ -2,15 +2,22 @@
 
 #include <RendeerAlpha.h>
 #include <Core/Commands.h>
+#include <Core/FileDialog.h>
 #include <Core/LoopWork.h>
 #include <Core/Signals.h>
 #include <Core/Tables.h>
 #include <GraphicalObjects/Gui.h>
 #include <GraphicalObjects/Viewports.h>
+#include <GraphicalObjects/Images.h>
+#include <GraphicalObjects/Streams.h>
+#include <GraphicalObjects/Effects.h>
 #include <GraphicalObjects/Window.h>
 #include <Layout/LayoutHost.h>
 #include <Layout/Router.h>
 #include <Logger/Logger.h>
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 #include <atomic>
 #include <chrono>
@@ -124,6 +131,13 @@ namespace {
 	constexpr size_t kMaxPending = 256;
 	std::mutex               gQueueLock;
 	std::vector<std::string> gPending;
+
+	// Paths dropped on the window, waiting to be asked for. Its own lock: a drop arrives
+	// on the loop thread while a backend may be draining from anywhere, and the command
+	// queue's lock has nothing to do with it.
+	std::mutex               gDropLock;
+	std::vector<std::string> gDropped;
+	bool                     gWarnedDropsLost = false;
 	bool                     gWarnedOverflow = false;
 
 	void markReady() {
@@ -173,6 +187,55 @@ void rda_config_set_languages(rda_config* config, const char* path) {
 void rda_config_set_vsync(rda_config* config, int on) {
 	if (config) config->config.vsync = on != 0;
 }
+
+void rda_config_set_size(rda_config* config, int width, int height) {
+	if (!config) return;
+	// Negatives are the same answer as zero -- the engine's default -- rather than an
+	// error: this is a hint, and refusing one is worse than ignoring it.
+	config->config.windowWidth = width > 0 ? static_cast<uint32_t>(width) : 0u;
+	config->config.windowHeight = height > 0 ? static_cast<uint32_t>(height) : 0u;
+}
+void rda_config_set_icon(rda_config* config, const char* path) {
+	if (config) config->config.window.icon = path ? path : "";
+}
+void rda_config_set_decorated(rda_config* config, int on) {
+	if (config) config->config.window.decorated = on != 0;
+}
+void rda_config_set_resizable(rda_config* config, int on) {
+	if (config) config->config.window.resizable = on != 0;
+}
+void rda_config_set_maximized(rda_config* config, int on) {
+	if (config) config->config.window.maximized = on != 0;
+}
+void rda_config_set_fullscreen(rda_config* config, int on) {
+	if (config) config->config.window.fullscreen = on != 0;
+}
+void rda_config_set_always_on_top(rda_config* config, int on) {
+	if (config) config->config.window.alwaysOnTop = on != 0;
+}
+void rda_config_set_transparent(rda_config* config, int on) {
+	if (config) config->config.window.transparent = on != 0;
+}
+void rda_config_set_opacity(rda_config* config, float value) {
+	if (config) config->config.window.opacity = value;
+}
+void rda_config_set_size_limits(rda_config* config, int min_width, int min_height,
+                                int max_width, int max_height) {
+	if (!config) return;
+	// Negatives read as zero -- no bound -- rather than as an error, the same answer
+	// rda_config_set_size gives a negative size.
+	RDA::WindowStyle& window = config->config.window;
+	window.minWidth  = min_width  > 0 ? static_cast<unsigned>(min_width)  : 0u;
+	window.minHeight = min_height > 0 ? static_cast<unsigned>(min_height) : 0u;
+	window.maxWidth  = max_width  > 0 ? static_cast<unsigned>(max_width)  : 0u;
+	window.maxHeight = max_height > 0 ? static_cast<unsigned>(max_height) : 0u;
+}
+void rda_config_set_position(rda_config* config, int x, int y) {
+	if (!config) return;
+	config->config.window.x = x;
+	config->config.window.y = y;
+}
+
 void rda_config_set_font(rda_config* config, const char* path, float height) {
 	if (!config) return;
 	if (path && *path) config->config.gui.fontPath = path;
@@ -214,6 +277,25 @@ int rda_init(rda_config* handle) {
 
 	// Copied, because the caller may free its handle the moment this returns and the
 	// callbacks outlive it by the length of the program.
+	// Every drop is remembered whether or not anybody is asking yet: the files land in
+	// one frame and a backend polls on its own schedule, so dropping them on the floor
+	// because nothing had asked in that millisecond would lose what somebody just did.
+	handle->config.input.onFilesDropped = [](const std::vector<std::string>& paths) {
+		std::lock_guard<std::mutex> held(gDropLock);
+		for (const std::string& path : paths) {
+			if (gDropped.size() >= kMaxPending) {
+				if (!gWarnedDropsLost) {
+					gWarnedDropsLost = true;
+					RDA_LOG_WARNING("dropped files are piling up unread; the oldest are being "
+					                "discarded. Call rda_poll_dropped_file after a drop.");
+				}
+				gDropped.erase(gDropped.begin());
+			}
+			gDropped.push_back(path);
+		}
+		rendeerRequestRedraw();
+	};
+
 	RDA::AppConfig config = handle->config;
 	const rda_callback        onStart = handle->onStart;
 	void* const               onStartUser = handle->onStartUser;
@@ -872,6 +954,324 @@ int rda_set_theme(const char* path) {
 		ok = window->gui().theme().replaceWithFile(wanted);
 	})) return false;
 	return ok ? 1 : fail("cannot load that theme; the log says why");
+}
+
+int rda_set_icon(const char* path) {
+	const std::string wanted = path ? path : "";
+	bool ok = false;
+	if (!onLoop([&] {
+		RDA::Window* window = getMainWindow();
+		if (!window) return;
+		ok = window->setIcon(wanted);
+	})) {
+		return 0;
+	}
+	// The engine has already said in the log what was wrong with the file; this is only
+	// the caller's half of it.
+	return ok ? 1 : fail("cannot read that icon");
+}
+
+int rda_set_title(const char* title) {
+	if (!title) return fail("no title");
+	const std::string wanted = title;
+	bool ok = false;
+	if (!onLoop([&] {
+		RDA::Window* window = getMainWindow();
+		if (!window || !window->getGLFW()) return;
+		glfwSetWindowTitle(window->getGLFW(), wanted.c_str());
+		ok = true;
+	})) return false;
+	return ok ? 1 : fail("there is no window to title");
+}
+
+int rda_focus(const char* id) {
+	const std::string wanted = (id && *id) ? id : std::string();
+	bool ok = false;
+	if (!onLoop([&] {
+		RDA::Window* window = getMainWindow();
+		if (!window) return;
+		// An empty name means "nobody", which is what a click on nothing does.
+		window->gui().setFocus(wanted.empty() ? 0u : window->gui().widgetId(wanted.c_str()));
+		ok = true;
+	})) return false;
+	return ok ? 1 : fail("there is no window to focus in");
+}
+
+// Deliberately not through onLoop.
+//
+// Everything else here marshals to the loop thread and waits, which is what makes a call
+// from any thread safe. A dialog would then hold the loop for as long as somebody took to
+// find their file, and the window would stop drawing -- so these run where they were
+// called and the engine goes on painting behind them. Nothing they touch is engine state.
+static int pickInto(bool folders, const char* title, const char* start, const char* filter,
+                    char* buffer, int capacity) {
+	if (capacity < 0 || (capacity > 0 && !buffer)) { fail("no buffer"); return -1; }
+	if (!rendeerRunning()) { fail("the engine is not running"); return -1; }
+
+	std::string chosen;
+	const bool answered = folders
+		? RDA::pickFolder(title ? title : "", start ? start : "", chosen)
+		: RDA::pickFile(title ? title : "", start ? start : "", filter ? filter : "", chosen);
+	if (!answered) return 0;   // cancelled, or no chooser: an answer, not an error
+
+	const int length = static_cast<int>(chosen.size());
+	if (!buffer || capacity <= 0) return length;
+	const int room = capacity - 1 < length ? capacity - 1 : length;
+	std::memcpy(buffer, chosen.data(), static_cast<size_t>(room));
+	buffer[room] = '\0';
+	return length;
+}
+
+int rda_poll_dropped_file(char* buffer, int capacity) {
+	if (!buffer || capacity <= 0) { fail("no buffer"); return -1; }
+	std::string next;
+	{
+		std::lock_guard<std::mutex> held(gDropLock);
+		if (gDropped.empty()) return 0;
+		next = std::move(gDropped.front());
+		gDropped.erase(gDropped.begin());
+	}
+	const int length = static_cast<int>(next.size());
+	const int room = capacity - 1 < length ? capacity - 1 : length;
+	std::memcpy(buffer, next.data(), static_cast<size_t>(room));
+	buffer[room] = '\0';
+	return 1;
+}
+
+int rda_image_define(const char* name, const void* bytes, int size) {
+	if (!name || !*name) return fail("no image name");
+	if (!bytes || size <= 0) return fail("no image bytes");
+	// Copied before the hop, not after: the caller owns that buffer and is free to let it
+	// go the moment this returns, while the loop may not run for another frame.
+	const std::string wanted = name;
+	const std::vector<unsigned char> copy(static_cast<const unsigned char*>(bytes),
+	                                      static_cast<const unsigned char*>(bytes) + size);
+	bool ok = false;
+	if (!onLoop([&] { ok = RDA::images().define(wanted, copy.data(), copy.size()); })) {
+		return false;
+	}
+	return ok ? 1 : fail("those bytes are not a picture this engine can read");
+}
+
+int rda_image_define_pixels(const char* name, const void* pixels, int width, int height) {
+	if (!name || !*name) return fail("no image name");
+	if (!pixels) return fail("no pixels");
+	if (width <= 0 || height <= 0) return fail("an image needs a width and a height");
+	const std::string wanted = name;
+	const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+	const std::vector<unsigned char> copy(static_cast<const unsigned char*>(pixels),
+	                                      static_cast<const unsigned char*>(pixels) + bytes);
+	bool ok = false;
+	if (!onLoop([&] {
+		ok = RDA::images().definePixels(wanted, copy.data(), static_cast<uint32_t>(width),
+		                                static_cast<uint32_t>(height));
+	})) return false;
+	return ok ? 1 : fail("cannot make a texture that size");
+}
+
+int rda_image_forget(const char* name) {
+	if (!name || !*name) return fail("no image name");
+	const std::string wanted = name;
+	if (!onLoop([&] { RDA::images().forget(wanted); })) return false;
+	return 1;
+}
+
+int rda_stream_push(const char* name, const void* pixels, int width, int height) {
+	if (!name || !*name) return fail("no stream name");
+	if (!pixels) return fail("no pixels");
+	if (width <= 0 || height <= 0) return fail("a frame needs a width and a height");
+	const std::string wanted = name;
+	const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+	// Copied before the hop: the caller owns that buffer and may let it go the moment
+	// this returns, while the loop may not run for another frame.
+	const std::vector<unsigned char> copy(static_cast<const unsigned char*>(pixels),
+	                                      static_cast<const unsigned char*>(pixels) + bytes);
+	bool ok = false;
+	if (!onLoop([&] {
+		ok = RDA::streams().push(wanted, copy.data(), static_cast<uint32_t>(width),
+		                         static_cast<uint32_t>(height));
+	})) return false;
+	return ok ? 1 : fail("cannot push that frame");
+}
+
+int rda_stream_push_encoded(const char* name, const void* bytes, int size) {
+	if (!name || !*name) return fail("no stream name");
+	if (!bytes || size <= 0) return fail("no frame bytes");
+	const std::string wanted = name;
+	const std::vector<unsigned char> copy(static_cast<const unsigned char*>(bytes),
+	                                      static_cast<const unsigned char*>(bytes) + size);
+	bool ok = false;
+	if (!onLoop([&] { ok = RDA::streams().pushEncoded(wanted, copy.data(), copy.size()); })) {
+		return false;
+	}
+	return ok ? 1 : fail("those bytes are not a frame this engine can read");
+}
+
+int rda_stream_wanted(const char* name) {
+	if (!name || !*name) return fail("no stream name");
+	// Does not hop: it reads two numbers, and a producer asks this on every turn of its
+	// own loop. A round trip to the next frame for a question about whether to do work
+	// would cost more than the work.
+	return RDA::streams().wanted(name) ? 1 : 0;
+}
+
+int rda_stream_counts(const char* name, long long* pushed, long long* shown) {
+	if (!name || !*name) return fail("no stream name");
+	uint64_t a = 0, b = 0;
+	RDA::streams().counts(name, a, b);
+	if (pushed) *pushed = static_cast<long long>(a);
+	if (shown)  *shown  = static_cast<long long>(b);
+	return 1;
+}
+
+int rda_stream_close(const char* name) {
+	if (!name || !*name) return fail("no stream name");
+	const std::string wanted = name;
+	if (!onLoop([&] { RDA::streams().close(wanted); })) return false;
+	return 1;
+}
+
+int rda_effect_define(const char* name, const char* glsl) {
+	if (!name || !*name) return fail("no effect name");
+	if (!glsl || !*glsl) return fail("no shader");
+	const std::string wanted = name;
+	const std::string source = glsl;
+	bool ok = false;
+	if (!onLoop([&] { ok = RDA::effects().define(wanted, source); })) return false;
+	return ok ? 1 : fail("that shader will not compile; the log has the compiler's message");
+}
+
+int rda_effect_apply(const char* name, const char* source, const char* into,
+                     const float* params, int count) {
+	if (!name || !*name) return fail("no effect name");
+	if (!source || !*source) return fail("no source stream");
+	if (!into || !*into) return fail("no destination stream");
+	const std::string wantedName = name;
+	const std::string wantedFrom = source;
+	const std::string wantedInto = into;
+	RDA::EffectParams values;
+	const int take = count < 0 ? 0 : (count > 8 ? 8 : count);
+	for (int i = 0; params && i < take; ++i) values.value[i] = params[i];
+	bool ok = false;
+	if (!onLoop([&] {
+		ok = RDA::effects().apply(wantedName, wantedFrom, wantedInto, values);
+	})) return false;
+	return ok ? 1 : fail("cannot run that effect; the log says why");
+}
+
+int rda_effect_apply_many(const char* name, const char* const* sources, int sourceCount,
+                          const char* into, const float* params, int paramCount) {
+	if (!name || !*name) return fail("no effect name");
+	if (!sources || sourceCount <= 0) return fail("no source streams");
+	if (!into || !*into) return fail("no destination stream");
+	std::vector<std::string> from;
+	from.reserve(static_cast<size_t>(sourceCount));
+	for (int i = 0; i < sourceCount; ++i) {
+		if (!sources[i] || !*sources[i]) return fail("a source stream has no name");
+		from.emplace_back(sources[i]);
+	}
+	const std::string wantedName = name;
+	const std::string wantedInto = into;
+	RDA::EffectParams values;
+	const int take = paramCount < 0 ? 0 : (paramCount > 8 ? 8 : paramCount);
+	for (int i = 0; params && i < take; ++i) values.value[i] = params[i];
+	bool ok = false;
+	if (!onLoop([&] {
+		ok = RDA::effects().apply(wantedName, from, wantedInto, values);
+	})) return false;
+	return ok ? 1 : fail("cannot run that effect; the log says why");
+}
+
+int rda_stream_read(const char* name, unsigned char* buffer, int capacity,
+                    int* width, int* height) {
+	if (!name || !*name) { fail("no stream name"); return -1; }
+	const std::string wanted = name;
+	std::vector<unsigned char> pixels;
+	uint32_t w = 0, h = 0;
+	bool ok = false;
+	if (!onLoop([&] { ok = RDA::streams().read(wanted, pixels, w, h); })) return -1;
+	if (!ok) { fail("there is no frame to read"); return -1; }
+
+	if (width)  *width  = static_cast<int>(w);
+	if (height) *height = static_cast<int>(h);
+	const int needed = static_cast<int>(pixels.size());
+	// Asked with no buffer: this is the size to make one.
+	if (!buffer || capacity <= 0) return needed;
+	if (capacity < needed) {
+		fail("that buffer is too small for the frame");
+		return needed;   // the real size, so a caller can make one and ask again
+	}
+	std::memcpy(buffer, pixels.data(), pixels.size());
+	return needed;
+}
+
+int rda_effect_forget(const char* name) {
+	if (!name || !*name) return fail("no effect name");
+	const std::string wanted = name;
+	if (!onLoop([&] { RDA::effects().forget(wanted); })) return false;
+	return 1;
+}
+
+int rda_pick_folder(const char* title, const char* start, char* buffer, int capacity) {
+	return pickInto(true, title, start, nullptr, buffer, capacity);
+}
+
+int rda_pick_file(const char* title, const char* start, const char* filter,
+                  char* buffer, int capacity) {
+	return pickInto(false, title, start, filter, buffer, capacity);
+}
+
+int rda_clipboard_set(const char* text) {
+	if (!text) return fail("no text");
+	const std::string wanted = text;
+	bool ok = false;
+	if (!onLoop([&] {
+		RDA::Window* window = getMainWindow();
+		if (!window || !window->getGLFW()) return;
+		glfwSetClipboardString(window->getGLFW(), wanted.c_str());
+		ok = true;
+	})) return false;
+	return ok ? 1 : fail("there is no window to reach the clipboard through");
+}
+
+int rda_clipboard_get(char* buffer, int capacity) {
+	if (capacity < 0 || (capacity > 0 && !buffer)) return fail("no buffer");
+	std::string held;
+	bool ok = false;
+	if (!onLoop([&] {
+		RDA::Window* window = getMainWindow();
+		if (!window || !window->getGLFW()) return;
+		const char* text = glfwGetClipboardString(window->getGLFW());
+		if (text) held = text;
+		ok = true; // an empty clipboard is an answer, not a failure
+	})) return -1;
+	if (!ok) { fail("there is no window to reach the clipboard through"); return -1; }
+	// Same two-call shape as rda_signal_get_text: the length first, then the bytes.
+	const int length = static_cast<int>(held.size());
+	if (!buffer || capacity <= 0) return length;
+	const int room = capacity - 1 < length ? capacity - 1 : length;
+	std::memcpy(buffer, held.data(), static_cast<size_t>(room));
+	buffer[room] = '\0';
+	return length;
+}
+
+int rda_measure_text(const char* text, float size, float* out_width, float* out_height) {
+	if (!text) return fail("no text");
+	if (!out_width || !out_height) return fail("no destination");
+	bool ok = false;
+	float width = 0.0f, height = 0.0f;
+	if (!onLoop([&] {
+		RDA::Window* window = getMainWindow();
+		if (!window) return;
+		RDA::TextStyle style;
+		style.size = size > 0.0f ? size : 0.0f; // 0 is the interface's own size
+		width = window->gui().measureText(text, style);
+		height = window->gui().lineHeight(style);
+		ok = true;
+	})) return false;
+	*out_width = width;
+	*out_height = height;
+	return ok ? 1 : fail("there is no window to measure against");
 }
 
 int rda_viewport_size(const char* name, float* out_width, float* out_height) {

@@ -45,6 +45,52 @@ wherever the interface has not drawn anything. It lives here rather than in a st
 config because it is a look like any other: one line, reloaded with the rest of the theme,
 and the same for a backend in any of the four languages without a call of its own.
 
+## A colour is the colour you wrote
+
+`#3A6AD0` in a theme comes off the screen as `#3A6AD0`. Sample a screenshot and you get
+back the byte you typed, for every colour in a theme, a layout, an `<image>` tint and a
+drawing sent over the C ABI.
+
+That is worth stating because it was not true before. The engine wrote a theme's colour
+into an sRGB surface without decoding it first, so the hardware encoded something that was
+already encoded: `#808080` reached the screen as `#BCBCBC`, `#1A1F29` as `#5A6270`, and
+every dark theme came out washed. `#000` and `#FFF` were the only two that survived, which
+is exactly why it went unnoticed.
+
+**If you built a theme by eye against the old behaviour, it will now look darker** — it is
+being shown as written for the first time. Pick the colours again against what you see, and
+delete any helper that pre-compensated for the old encode; applying one now makes the same
+mistake twice, in the other direction.
+
+Alpha is unaffected: it is coverage, not light, and was never gamma-encoded. Semi-
+transparent panels do change, though — blending now happens in linear light, which is what
+blending physically is.
+
+## Fonts, and what is drawn when one runs out
+
+`config.font` names the body font. It may name **several, separated by `;`**:
+
+```python
+config.font = "res/fonts/CascadiaMono.ttf;C:/Windows/Fonts/seguisym.ttf"
+```
+
+The first is the body and decides the line metrics. The rest are asked, in order, only
+about a codepoint the ones before them do not have — so a monospace interface keeps its
+alphabet and still shows an emoji. A fallback that is not on this machine is skipped with
+a line in the log; a body font that is missing is fatal, because there would be nothing
+to draw with.
+
+**Latin is baked at startup; everything else is baked the first time it is written.** The
+preloaded set is the seven blocks in `GlyphRanges.h` — 349 codepoints — and a character
+outside it is rasterised on demand into spare room in the atlas, at the size it is needed,
+from the first face that has it. Nothing declares what an application will show, which
+matters when the text comes from somewhere the application does not control.
+
+What it cannot do: **colour emoji**. Faces like `seguiemj.ttf` are COLR/CPAL and would
+rasterise as their base layer only, so the atlas is monochrome coverage and `seguisym.ttf`
+is the face to point at. ZWJ sequences and skin-tone modifiers draw as their parts. When
+no face has a codepoint at all it draws as a hollow box and the log names it once.
+
 ## Changing it while the window is open
 
 ```python

@@ -33,6 +33,19 @@ namespace RDA {
 		return style;
 	}
 
+	// How much a text field remembers, and how long a run of edits stays one step.
+	//
+	// 0.7s is the gap that separates "still typing" from "came back to it". Long enough
+	// that a sentence typed at speed is one Ctrl+Z, short enough that a pause to think
+	// puts a boundary where the reader would draw one themselves.
+	//
+	// The caps are what stops a field that is never closed from keeping every version of
+	// itself: whichever is reached first drops the oldest step, and a step older than a
+	// hundred edits ago is not one anybody is reaching for.
+	static constexpr float  kUndoCoalesceSeconds = 0.7f;
+	static constexpr size_t kUndoSteps = 100;
+	static constexpr size_t kUndoBytes = 1u << 20;   // 1 MB of remembered text per field
+
 	// ---- checkbox -----------------------------------------------------------------
 	bool Gui::checkbox(const char* id, const char* label, bool& value, const Rect& rect, Variant variant) {
 		const CheckboxStyle& s = mTheme.checkbox(variant);
@@ -200,9 +213,14 @@ namespace RDA {
 	}
 
 	bool Gui::textField(const char* id, std::string& text, const std::string& placeholder, const Rect& rect, const TextFieldStyle& style,
-	                    bool* outFocused, uint64_t version) {
+	                    bool* outFocused, uint64_t version, const TextFieldExtras* extras) {
 		uint32_t wid = scopedId(id);
 		TextState& st = mTextStates[wid];
+
+		// A suggestion only exists while there is one to show. Everything below asks this
+		// rather than the pointer, so a field handed an empty string behaves as a field
+		// that was handed nothing.
+		const bool offering = extras && extras->suggestion && *extras->suggestion;
 
 		const float lineH = mFont ? mFont->lineAdvance() : 16.0f;
 		bool inside = rect.contains(mInput.pointer);
@@ -374,6 +392,9 @@ namespace RDA {
 				}
 			}
 			st.blink = 0.0f;
+			// Putting the caret somewhere by hand ends the run of edits: typing a word,
+			// clicking elsewhere and typing another should be two undos, not one.
+			st.undoKind = TextState::EditKind::None;
 		} else if (mInput.pressed && inside) {
 			mFocused = wid; mFocusClaimed = true; // press on the scroll-bar strip: keep focus
 		}
@@ -402,9 +423,87 @@ namespace RDA {
 		// step with the text.
 		bool& changed = textEdited;
 		bool activity = false;
+
+		// --- undo ---
+		//
+		// A step is taken before an edit, not after: what Ctrl+Z wants is the text as it
+		// was, and the only moment that exists is just before something changes it.
+		//
+		// Runs of the same kind of edit collapse into one step while they keep coming, so
+		// typing a word and pressing Ctrl+Z once leaves the word gone rather than its
+		// last letter. A pause, a different kind of edit, or the caret being moved by
+		// hand ends the run -- which is what puts the boundaries where a reader expects.
+		st.undoAge += mInput.dt;
+		auto noteForUndo = [&](TextState::EditKind kind) {
+			const bool joinsRun = kind == st.undoKind &&
+			                      kind != TextState::EditKind::Other &&
+			                      st.undoAge <= kUndoCoalesceSeconds;
+			st.undoKind = kind;
+			st.undoAge = 0.0f;
+			// An edit made after undoing is a new future; the old one is unreachable.
+			st.redo.clear();
+			if (joinsRun) return;
+			st.undoBytes += text.size();
+			st.undo.push_back({ text, st.caret, st.selectAnchor });
+			while (!st.undo.empty() &&
+			       (st.undo.size() > kUndoSteps || st.undoBytes > kUndoBytes)) {
+				st.undoBytes -= st.undo.front().text.size();
+				st.undo.erase(st.undo.begin());
+			}
+		};
+
+		if (focused && !style.readOnly && (mInput.undo || mInput.redo)) {
+			auto stepBack = [&](std::vector<TextState::Step>& from,
+			                    std::vector<TextState::Step>& to) {
+				if (from.empty()) { activity = true; return; }
+				to.push_back({ text, st.caret, st.selectAnchor });
+				TextState::Step& into = from.back();
+				text = std::move(into.text);
+				st.caret = into.caret;
+				st.selectAnchor = into.anchor;
+				from.pop_back();
+				st.boxMode = false;
+				// The other ring is bounded by this one -- every entry in it came from
+				// here -- so only `undo`'s weight is tracked.
+				st.undoBytes = 0;
+				for (const TextState::Step& step : st.undo) st.undoBytes += step.text.size();
+				// Whatever is typed next begins its own step rather than joining the run
+				// this interrupted.
+				st.undoKind = TextState::EditKind::None;
+				changed = true;
+				activity = true;
+				computeLineStarts(text, starts);
+				lineCount = static_cast<int>(starts.size());
+			};
+			if (mInput.undo) stepBack(st.undo, st.redo);
+			else             stepBack(st.redo, st.undo);
+		}
+
+		// Copy and select-all, before the guard below shuts read-only out.
+		//
+		// Selecting with the mouse already works on any field -- drag, double-click for a
+		// word, triple-click for a line -- because that is handled above. Leaving Ctrl+C
+		// down with the edits meant a read-only field you could select and could not
+		// copy, which is the one thing selecting it was for. Neither of these changes the
+		// text, so neither belongs behind a flag that means "the text cannot change".
+		if (focused) {
+			if (mInput.selectAll) {
+				st.boxMode = false;
+				st.selectAnchor = 0;
+				st.caret = static_cast<int>(text.size());
+				activity = true;
+			}
+			if (mInput.copy) {
+				const std::string sel = selectionText();
+				if (!sel.empty() && mSetClipboard) mSetClipboard(sel.c_str());
+				activity = true;
+			}
+		}
+
 		if (focused && !style.readOnly) {
 			// Typed text replaces any selection.
 			if (!mInput.typed.empty()) {
+				noteForUndo(TextState::EditKind::Typing);
 				deleteSelection();
 				for (char c : mInput.typed) {
 					if (c == '\n' || c == '\r') continue;
@@ -419,6 +518,9 @@ namespace RDA {
 				bool shift = mInput.shift, ctrl = mInput.ctrl;
 				int size = static_cast<int>(text.size());
 				auto beginMove = [&]() {
+					// Moving the caret by hand ends the run of edits, for the same reason
+					// clicking does: what follows is a separate thing the reader did.
+					st.undoKind = TextState::EditKind::None;
 					if (shift) { if (st.selectAnchor < 0 && !st.boxMode) st.selectAnchor = st.caret; }
 					else { st.selectAnchor = -1; st.boxMode = false; }
 				};
@@ -428,6 +530,7 @@ namespace RDA {
 				// not half of it -- and half of it is a broken sequence the rest of this
 				// field would then have to survive.
 				case GuiEditKey::Backspace:
+					noteForUndo(TextState::EditKind::Deleting);
 					if (hasLinearSel() || st.boxMode) deleteSelection();
 					else if (st.caret > 0) {
 						const int from = static_cast<int>(Utf8::prev(text, static_cast<size_t>(st.caret)));
@@ -436,6 +539,7 @@ namespace RDA {
 					}
 					changed = true; break;
 				case GuiEditKey::Delete:
+					noteForUndo(TextState::EditKind::Deleting);
 					if (hasLinearSel() || st.boxMode) deleteSelection();
 					else if (st.caret < size) {
 						const int to = static_cast<int>(Utf8::next(text, static_cast<size_t>(st.caret)));
@@ -460,18 +564,51 @@ namespace RDA {
 				case GuiEditKey::Down:
 					if (style.multiline && line + 1 < lineCount) { beginMove(); int len = lineLength(starts, text, line + 1); st.caret = starts[line + 1] + (std::min)(col, len); }
 					break;
-				case GuiEditKey::Enter:
-					// Ctrl+Enter is a submit gesture, not a newline: the application reads
-					// GuiInput::submit and decides what it means (run the cell, commit the
-					// value). Without this the field would swallow it as a line break.
-					if (ctrl) break;
-					if (style.multiline) { deleteSelection(); text.insert(text.begin() + st.caret, '\n'); st.caret++; changed = true; }
-					else { mFocused = 0; }
+				case GuiEditKey::Enter: {
+					// Which chord sends -- submitsOn in GuiTypes.h, where the rule is
+					// stated once and checked against a table. A multi-line field's
+					// Ctrl+Enter used to be swallowed in silence, so hearing about it is
+					// new and takes nothing away from anybody.
+					const bool sending = submitsOn(extras ? extras->submit : SubmitKey::Default,
+					                               style.multiline, ctrl, shift);
+					if (sending && extras && extras->submitted) *extras->submitted = true;
+
+					if (!style.multiline) {
+						// A single line has nowhere to put a newline, so Enter means
+						// "done with this" whether or not anybody is listening.
+						if (!ctrl) mFocused = 0;
+						break;
+					}
+					// Anything that did not send is a line break -- except Ctrl+Enter,
+					// which is a gesture rather than a character. Swallowed either way,
+					// so a field that does not send on it does not grow a line from it.
+					if (sending || ctrl) break;
+					noteForUndo(TextState::EditKind::Other);
+					deleteSelection(); text.insert(text.begin() + st.caret, '\n'); st.caret++; changed = true;
 					break;
+				}
 				case GuiEditKey::Tab:
+					// With a completion showing, Tab takes it. Before the indent, because
+					// a code field is exactly where completions are offered and taking
+					// one is what the reader meant.
+					//
+					// The insert is an ordinary edit, so undo and onChange see it the way
+					// they see typing -- which is right: once it is taken it is text.
+					if (offering) {
+						noteForUndo(TextState::EditKind::Other);
+						deleteSelection();
+						const std::string_view add(extras->suggestion);
+						text.insert(static_cast<size_t>(st.caret), add);
+						st.caret += static_cast<int>(add.size());
+						changed = true;
+						if (extras->accepted) *extras->accepted = true;
+						consumeFocusMove();
+						break;
+					}
 					// A code field indents with it, and then it is not a focus move: the
 					// walk is told so rather than both happening.
 					if (style.mode == TextFieldMode::Code) {
+						noteForUndo(TextState::EditKind::Other);
 						deleteSelection();
 						for (int i = 0; i < 4; ++i) { text.insert(text.begin() + st.caret, ' '); st.caret++; }
 						changed = true;
@@ -479,6 +616,14 @@ namespace RDA {
 					}
 					break;
 				case GuiEditKey::Escape:
+					// With a completion showing, Escape drops that rather than the focus.
+					// One key, two meanings, in the order the reader expects: the nearest
+					// thing goes first, and pressing it again leaves the field.
+					if (offering) {
+						if (extras->dismissed) *extras->dismissed = true;
+						activity = true;
+						break;
+					}
 					// Leaves the field rather than the application: a field is the one
 					// thing on screen that swallows every other key, so it owes the
 					// reader a way out that does not involve the mouse.
@@ -490,16 +635,21 @@ namespace RDA {
 				activity = true;
 			}
 
-			// Clipboard + select-all.
-			if (mInput.selectAll) { st.boxMode = false; st.selectAnchor = 0; st.caret = static_cast<int>(text.size()); activity = true; }
-			if (mInput.copy || mInput.cut) {
+			// Cut is an edit, so it stays here. Copy and select-all are not, and have
+			// moved above the guard -- see there.
+			if (mInput.cut) {
 				std::string sel = selectionText();
-				if (!sel.empty() && mSetClipboard) mSetClipboard(sel.c_str());
-				if (mInput.cut && !sel.empty()) { deleteSelection(); changed = true; }
+				if (!sel.empty()) {
+					if (mSetClipboard) mSetClipboard(sel.c_str());
+					noteForUndo(TextState::EditKind::Other);
+					deleteSelection();
+					changed = true;
+				}
 				activity = true;
 			}
 			if (mInput.paste && mGetClipboard) {
 				std::string clip = mGetClipboard();
+				noteForUndo(TextState::EditKind::Other);
 				deleteSelection();
 				for (char c : clip) {
 					if (c == '\r') continue;
@@ -617,7 +767,11 @@ namespace RDA {
 		// --- syntax highlighting ---
 		// Re-lex only when the text or the language actually changed; an idle editor
 		// reuses the cached spans.
-		const Language* lang = mSyntax.forField(style.language);
+		// The element's grammar wins over the variant's, so one `code` variant carries
+		// the palette and each field says what it is holding.
+		const bool ownLanguage = extras && extras->language && *extras->language;
+		const Language* lang = ownLanguage ? mSyntax.forField(std::string(extras->language))
+		                                   : mSyntax.forField(style.language);
 		if (lang && versioned) {
 			// Hashing the text to notice a change is itself a walk of the whole string,
 			// so a caller that knows is asked rather than measured.
@@ -784,6 +938,22 @@ namespace RDA {
 				else if (phase < 1.0f - fade) caretAlpha = 0.0f;
 				else                          caretAlpha = (phase - (1.0f - fade)) / fade;
 			}
+			// The completion on offer, ahead of the caret.
+			//
+			// Drawn from the caret rather than from the end of the line, because that is
+			// what it completes -- and one line only: a multi-line ghost would overdraw
+			// whatever is below it, and reserving height for text that is not in the
+			// value is a layout problem for a later day.
+			if (focused && offering) {
+				const float gx = contentLeft + drawnCaretX - st.scrollX;
+				const float gy = contentTop + drawnCaretY - st.scrollY;
+				std::string oneLine(extras->suggestion);
+				if (const size_t brk = oneLine.find('\n'); brk != std::string::npos) {
+					oneLine.resize(brk);
+				}
+				addText(gx, gy + mFont->ascent(), oneLine.c_str(), style.suggestion);
+			}
+
 			if (focused && caretAlpha > 0.004f) {
 				float cx = contentLeft + drawnCaretX - st.scrollX;
 				float cy = contentTop + drawnCaretY - st.scrollY;
@@ -791,6 +961,11 @@ namespace RDA {
 				        fadeTo(style.caret, caretAlpha));
 			}
 		}
+		// Where the caret ended up, after everything that could have moved it. A
+		// completion is a function of the prefix and the suffix, and this is the only
+		// thing that says where the two meet.
+		if (extras && extras->caret) *extras->caret = st.caret;
+
 		popClip();
 
 		// Line numbers in the gutter (clipped to it, scrolled vertically only).

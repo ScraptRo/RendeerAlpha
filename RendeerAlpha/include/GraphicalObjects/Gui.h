@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace RDA {
 
@@ -60,6 +61,63 @@ namespace RDA {
 		//
 		// Only valid from inside a paint. One entry per widget per frame.
 		void drawAbove(Widget* widget, glm::vec2 origin);
+
+		// ---- where a widget was drawn -------------------------------------------------
+		//
+		// Nothing in this GUI remembers where anything ended up: a widget is placed,
+		// drawn and forgotten, which is what an immediate-mode pass is. A <popup> that
+		// hangs off a button needs the exception -- it draws in the overlay pass, long
+		// after the button's paint returned, and has nothing else to hang off.
+		//
+		// So the note is taken only for ids something asked about. Nothing asking costs
+		// one empty check per widget per frame; something asking costs one hash lookup,
+		// and only for as long as it is asking.
+		//
+		// Read in the overlay pass, which runs after the whole tree has been walked, so
+		// what a popup reads is where its anchor is *this* frame rather than last.
+		void wantAnchor(const std::string& path);
+		void noteAnchorIfWanted(const std::string& path, const Rect& where) {
+			if (mAnchorWanted.empty()) return;
+			if (mAnchorWanted.count(path) == 0) return;
+			mAnchorRect[path] = where;
+		}
+		bool anchorRect(const std::string& path, Rect& out) const;
+
+		// ---- an overlay that owns the pointer ------------------------------------------
+		//
+		// An open menu is in front of the interface, so the interface should not be
+		// hovering and clicking underneath it. The overlay pass runs *after* the walk, so
+		// by the time a popup could object, everything under it has already decided.
+		//
+		// Claimed for the next frame instead. While a blocking overlay is up, the walk
+		// runs with the pointer held off the screen and the buttons cleared -- so nothing
+		// underneath hovers, highlights or fires -- and the real input is put back for the
+		// overlay pass, where the popup and its dismissal use it.
+		//
+		// Re-claimed every frame it is open, so letting go of it needs no call at all.
+		void claimPointer() { mPointerClaimedNext = true; }
+
+		// Something is playing and will look different next frame.
+		//
+		// The retained cache decides whether to walk by looking at input, and a picture
+		// advancing is not input -- the same gap a stream's frames and a theme's swap both
+		// fall into. An animated icon on an idle window would otherwise show one frame and
+		// stop, which looks exactly like the animation not working.
+		void keepAwake() { mAwake = true; }
+
+		// A region the window can be dragged by.
+		//
+		// For a window with no frame of its own: the layout draws the bar, and this is
+		// what makes it behave like one. Ordinary immediate-mode interaction, so a button
+		// drawn inside the bar still wins the press -- it runs after this, and hot is
+		// last-writer-wins.
+		//
+		// The GUI only records that it is happening. Moving a window is the platform's
+		// business and belongs to whatever owns the GLFW handle, which reads this once
+		// the walk is over.
+		bool windowGrip(const char* id, const Rect& rect);
+		bool windowGrabbed() const { return mWindowGrabbed; }
+		bool pointerClaimed() const { return mPointerClaimed; }
 
 		// Structural edits, applied at the top of the next frame rather than immediately.
 		// This is what a widget callback should use: a button that adds or removes a
@@ -146,7 +204,10 @@ namespace RDA {
 		void drawRectRounded(const Rect& rect, uint32_t color, float radius);
 		void drawText(const char* text, glm::vec2 topLeft, uint32_t color,
 		              TextStyle font = {});
-		void image(const Rect& rect, const Texture* texture); // full-texture quad
+		// A full-texture quad, multiplied by `tint`. White leaves the picture alone; a
+		// colour is what makes one white-drawn icon every colour a theme has.
+		void image(const Rect& rect, const Texture* texture,
+		           uint32_t tint = rgba(255, 255, 255));
 		// A straight line of a given thickness, at any angle. The one piece of geometry
 		// a 2D drawing needs that a widget never did -- an interface is made of boxes,
 		// and a plot is not.
@@ -228,6 +289,19 @@ namespace RDA {
 		// theme() (falling back to "default"), so omitting it keeps the built-in look.
 		void beginPanel(const char* id, const Rect& rect, Variant variant = kDefaultVariant);
 		void endPanel();
+		// The same text, drawn in more than one colour.
+		//
+		// `text` is the whole string and the spans index into it, while begin/count say
+		// which slice of it to draw -- so a wrapped label hands over one line at a time
+		// and the spans stay in the coordinates the caller wrote them in. Nothing is
+		// copied: each run is drawn straight out of the string.
+		//
+		// Spans must be sorted by `start` and must not overlap. Label::runs() is what
+		// makes them so; a caller of this that builds its own is on its honour.
+		void labelSpans(const char* text, int begin, int count, glm::vec2 pos,
+		                uint32_t base, const TextSpan* spans, size_t spanCount,
+		                TextStyle font = {});
+
 		void label(const char* text, glm::vec2 pos, uint32_t color = rgba(230, 230, 235),
 		           TextStyle font = {});
 		// `align` is where the label sits across the button. Centred by default, which is
@@ -253,8 +327,39 @@ namespace RDA {
 		// from the whole string on every one of them. Zero means "cannot say", which
 		// rebuilds everything each frame -- correct, and what an immediate-mode caller
 		// holding a string it does not own has to pass.
+		// What a field offering completions passes in and reads back.
+		//
+		// A struct rather than four more parameters: the signature is already long, and
+		// these four only ever appear together. Every one is optional, so a field that
+		// offers nothing passes nothing and behaves exactly as it did.
+		struct TextFieldExtras {
+			// Drawn after the caret in the suggestion colour, and never part of `text`.
+			// That is the whole trick: it cannot be selected, cannot be copied, and
+			// cannot enter the undo history, because it is not in the value.
+			const char* suggestion = nullptr;
+
+			// The grammar to colour with, overriding the style's. In here rather than in
+			// the style because a language is the *document's*, not the theme's: a
+			// variant owns the palette a code view is drawn in, and one palette should
+			// serve every language rather than being copied once per grammar.
+			const char* language = nullptr;
+
+			// Which keystroke sends. Default asks the mode, which is what every field
+			// that says nothing gets. See SubmitKey.
+			SubmitKey submit = SubmitKey::Default;
+
+			int*  caret = nullptr;      // out: where the caret is now, in bytes
+			// out: the send gesture, whichever one this field listens for. A composer
+			// that sends on Enter is the reason this exists, and every application was
+			// clicking a button for it.
+			bool* submitted = nullptr;
+			bool* accepted = nullptr;   // out: Tab, with a suggestion showing
+			bool* dismissed = nullptr;  // out: Escape, with a suggestion showing
+		};
+
 		bool textField(const char* id, std::string& text, const std::string& placeholder, const Rect& rect, const TextFieldStyle& style,
-		               bool* outFocused = nullptr, uint64_t version = 0);
+		               bool* outFocused = nullptr, uint64_t version = 0,
+		               const TextFieldExtras* extras = nullptr);
 
 		// Whether anything currently holds keyboard focus.
 		bool hasKeyboardFocus() const { return mFocused != 0; }
@@ -349,6 +454,35 @@ namespace RDA {
 			size_t           indexedSize = 0;
 			// Which version the cached spans were lexed from, for the same reason.
 			uint64_t         tokenVersion = 0;
+
+			// --- undo ---
+			//
+			// One step is the whole text and where the caret was in it, taken before an
+			// edit changed either. Whole copies rather than a diff: the text a field
+			// edits is owned by its caller and can be replaced from a binding between
+			// two frames, which a chain of patches has no way to notice and would
+			// silently apply the wrong one against. A copy cannot be wrong about what it
+			// is a copy of.
+			//
+			// Bounded in both directions -- kUndoSteps and kUndoBytes in GuiWidgets.cpp
+			// -- because this state is kept for the life of the Gui, keyed by the
+			// field's id, and a document editor left open all day would otherwise keep
+			// every version of itself.
+			struct Step {
+				std::string text;
+				int         caret = 0;
+				int         anchor = -1;
+			};
+			std::vector<Step> undo;
+			std::vector<Step> redo;
+			size_t            undoBytes = 0;  // what `undo` holds, so the cap is a subtraction
+
+			// What kind of edit the run in progress is making, and how long since the
+			// last one. Together they decide whether the next edit joins that run or
+			// begins a step of its own.
+			enum class EditKind : uint8_t { None, Typing, Deleting, Other };
+			EditKind undoKind = EditKind::None;
+			float    undoAge = 0.0f;
 		};
 		uint32_t hashId(const char* str) const;   // FNV-1a
 		uint32_t scopedId(const char* id) const;   // combine with the panel scope
@@ -392,6 +526,10 @@ namespace RDA {
 		Rect                   mViewportRect{};           // last Viewport widget's rect this frame
 		uint64_t               mLastViewportRevision = 0; // drawings as of the last walk
 		uint64_t               mLastThemeRevision = 0;    // the look as of the last walk
+		uint64_t               mLastTableRevision = 0;    // the rows as of the last walk
+		uint64_t               mLastFontRevision = 0;     // the glyphs as of the last walk
+		uint64_t               mLastImageRevision = 0;    // the registered pictures, likewise
+		uint64_t               mLastStreamRevision = 0;   // and the live ones
 		uint32_t               mBackgroundColor = 0;      // eased in begin()
 		uint32_t               mCmdStart = 0; // first index of the in-progress command
 
@@ -448,6 +586,21 @@ namespace RDA {
 		std::vector<GuiInput> mInputStack;
 		// Widgets that asked to be painted last, and where they were when they asked.
 		std::vector<std::pair<Widget*, glm::vec2>> mOverlays;
+
+		// Which widgets' rects somebody wants, and where they were this frame. The first
+		// persists across frames -- a popup asks once and goes on asking -- and is bounded
+		// by how many distinct anchors a layout ever names, so a hot reload leaves a few
+		// stale names in it that are simply never noted again.
+		std::unordered_set<std::string>     mAnchorWanted;
+		std::unordered_map<std::string, Rect> mAnchorRect;
+
+		// An overlay asked for the pointer last frame, and this frame's walk runs without
+		// one. The real input, kept so the overlay pass can have it back.
+		bool     mAwake = false;          // something is playing; walk again next frame
+		bool     mWindowGrabbed = false;  // a dragWindow region is being held
+		bool     mPointerClaimed = false;
+		bool     mPointerClaimedNext = false;
+		GuiInput mRealInput;
 		Container      mRetainedRoot{ "__root" }; // invisible root of the persistent tree
 		bool           mScrollConsumed = false;   // wheel already claimed this frame
 		DockSpace      mDockSpace;                // dockable containers, above the tree

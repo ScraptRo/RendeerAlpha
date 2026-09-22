@@ -43,6 +43,9 @@ any of them.
 | [Writing a binding for a new language](new-binding.md) | the six steps the three existing ones took |
 | [What is given up, compared with a separate process](process-isolation.md) | one trade, made deliberately |
 
+See also [filters over a picture](effects.md) — a compute shader applied to a stream,
+written as the filter and nothing else.
+
 ---
 
 Back to [all documentation](../README.md)

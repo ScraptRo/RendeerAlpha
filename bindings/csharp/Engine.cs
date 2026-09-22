@@ -51,7 +51,7 @@ namespace Rendeer {
 		// engine's exactly and the engine's minor has to be at least this one -- the
 		// contract is in RendeerC.h.
 		internal const int AbiMajor = 1;
-		internal const int AbiMinor = 1;
+		internal const int AbiMinor = 6;
 		internal const uint NoSignal = 0xFFFFFFFFu;
 		internal const uint NoTable = 0xFFFFFFFFu;
 
@@ -494,6 +494,104 @@ namespace Rendeer {
 
 		[DllImport(Library, CallingConvention = Cdecl)]
 		internal static extern int rda_set_theme([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_size(IntPtr config, int width, int height);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_icon(IntPtr config, [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_decorated(IntPtr config, int on);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_resizable(IntPtr config, int on);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_maximized(IntPtr config, int on);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_fullscreen(IntPtr config, int on);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_always_on_top(IntPtr config, int on);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_transparent(IntPtr config, int on);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_opacity(IntPtr config, float value);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_size_limits(IntPtr config, int minWidth, int minHeight,
+		                                                       int maxWidth, int maxHeight);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern void rda_config_set_position(IntPtr config, int x, int y);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_set_title([MarshalAs(UnmanagedType.LPUTF8Str)] string title);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_set_icon([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_focus([MarshalAs(UnmanagedType.LPUTF8Str)] string id);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_poll_dropped_file(byte[] buffer, int capacity);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_image_define(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name, byte[] bytes, int size);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_image_define_pixels(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name, byte[] pixels,
+			int width, int height);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_image_forget(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_stream_push(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name, byte[] pixels,
+			int width, int height);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_stream_push_encoded(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name, byte[] bytes, int size);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_stream_wanted(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_stream_close(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_effect_define(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string glsl);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_effect_apply(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string source,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string into,
+			float[]? values, int count);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_effect_forget(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		// The array of names is marshalled by hand -- .NET will not pair string[] with
+		// LPUTF8Str, and the alternatives it does accept are ANSI or UTF-16, neither of
+		// which is what the ABI takes. See Rda.ApplyEffect.
+		internal static extern int rda_effect_apply_many(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+			IntPtr[] sources, int sourceCount,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string into,
+			float[]? values, int paramCount);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_stream_read(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name, byte[]? buffer, int capacity,
+			out int width, out int height);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_pick_folder(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string title,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string start, byte[]? buffer, int capacity);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_pick_file(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string title,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string start,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string filter, byte[]? buffer, int capacity);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_clipboard_set([MarshalAs(UnmanagedType.LPUTF8Str)] string text);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_clipboard_get(byte[]? buffer, int capacity);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		internal static extern int rda_measure_text(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string text, float size,
+			out float width, out float height);
 
 		// ---- viewports ----
 		// Laid out exactly as rda_draw_cmd. The text is an IntPtr rather than a string

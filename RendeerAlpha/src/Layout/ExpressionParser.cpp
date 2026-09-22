@@ -201,15 +201,16 @@ namespace RDA::Layout {
 				skipSpace();
 				if (const std::string name = tryStateName(); !name.empty()) {
 					skipSpace();
-					// Written by the engine every frame, so a write here would be
-					// overwritten before anyone saw it. Said plainly rather than
-					// allowed and ignored.
+					// Some of what the engine publishes is a report and some of it is a
+					// conversation. A write to a report would be overwritten before
+					// anyone saw it, so it is refused where it is written rather than
+					// allowed and quietly undone.
 					const bool writesToIt =
 						(peek() == '=' && peek(1) != '=') ||   // and not ==
 						startsWith("+=") || startsWith("-=") ||
 						startsWith("*=") || startsWith("/=") ||
 						startsWith("++") || startsWith("--");
-					if (isEngineName(name) && writesToIt) {
+					if (isEngineName(name) && writesToIt && !isEngineNameWritable(name)) {
 						fail("state." + name + " is the engine's, and read-only: it is "
 						     "rewritten every frame from the window itself");
 					}
@@ -348,6 +349,22 @@ namespace RDA::Layout {
 			static bool isEngineName(const std::string& name) {
 				const std::string prefix = std::string(kEngineNamespace) + ".";
 				return name.compare(0, prefix.size(), prefix) == 0;
+			}
+
+			// The engine's values a layout may also write.
+			//
+			// These are the window's own state -- whether it is maximised, minimised,
+			// covering the monitor, still open -- and they are a conversation rather than
+			// a report: the OS changes them when the reader does something, and the
+			// interface changes them when a title bar it drew is pressed. A window with
+			// no frame of its own has to draw those buttons, and they have to do
+			// something; making them state is how they do it without a new kind of call.
+			//
+			// Listed rather than derived, so that adding a value the engine merely
+			// reports does not quietly make it writable.
+			static bool isEngineNameWritable(const std::string& name) {
+				return name == "rda.maximized" || name == "rda.minimized" ||
+				       name == "rda.fullscreen" || name == "rda.open";
 			}
 
 			static bool isIdentifierStart(char c) {

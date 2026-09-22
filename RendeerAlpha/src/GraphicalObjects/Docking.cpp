@@ -119,6 +119,10 @@ namespace RDA {
 		if (mDragging == c) mDragging = nullptr;
 		if (mPressTab == c) mPressTab = nullptr;
 		if (mResizingFloat == c) mResizingFloat = nullptr;
+		if (mTileDrag == c) mTileDrag = nullptr;
+		if (mTileResize == c) mTileResize = nullptr;
+		// The hole closes behind it, which is TileGrid::remove's whole job.
+		mGrid.remove(c->id());
 		// Out of the tree first: that may collapse its pane away, and every pointer we
 		// hold into the tree has just been dropped by structuralChange().
 		mTree.remove(c->id());
@@ -194,7 +198,12 @@ namespace RDA {
 	// ---- layout persistence -------------------------------------------------------
 	std::string DockSpace::saveLayout() const {
 		std::ostringstream out;
+		// Both arrangements are written, not just the one in use. A space that was
+		// switched from one to the other keeps what the reader had done on each side,
+		// and a file is readable by either -- the grid's block begins with "tiles" and
+		// the tree's with its own header, so neither can be mistaken for the other.
 		out << mTree.save(); // version header + the pane tree
+		if (!mGrid.empty()) out << mGrid.save();
 		// Every container, so a spawned instance can be recreated and a floating one
 		// gets its window back. Whether it is docked is the tree's business.
 		for (const auto& c : mContainers) {
@@ -241,6 +250,13 @@ namespace RDA {
 		}
 
 		mTree.load(data); // ignores the lines above; migrates the old format if needed
+		// The grid's block, if the file has one. Found rather than parsed in step with
+		// the rest, because the two blocks are independent and either may be missing.
+		if (const size_t at = data.find("\ntiles "); at != std::string::npos) {
+			mGrid.load(data.substr(at + 1));
+		} else if (data.rfind("tiles ", 0) == 0) {
+			mGrid.load(data);
+		}
 		structuralChange();
 	}
 
@@ -385,7 +401,249 @@ namespace RDA {
 	}
 
 	// ---- the frame -----------------------------------------------------------------
+	// One tile: the same chrome a floating panel wears, because it is the same thing --
+	// a rectangle with a bar you pick it up by. What differs is where the rectangle comes
+	// from, and that is decided before this is called.
+	void DockSpace::drawTile(Gui& gui, DockContainer* c, const Rect& r, bool active,
+	                         float arrive) {
+		const DockStyle& s = gui.theme().dock(c->variant);
+		const GuiInput& in = gui.input();
+		Motion& motion = gui.motion();
+		const float seconds = s.motion.seconds;
+
+		Rect shown = r;
+		if (arrive < 0.999f) {
+			const float grow = 0.94f + arrive * 0.06f;
+			shown = Rect{ r.x + r.w * (1.0f - grow) * 0.5f,
+			              r.y + r.h * (1.0f - grow) * 0.5f,
+			              r.w * grow, r.h * grow };
+			gui.pushOpacity(arrive);
+		}
+		c->computedRect = shown;   // what the next frame's input is tested against
+
+		if (s.radius > 0.0f) gui.drawRectRounded(shown, s.pane, s.radius);
+		else                 gui.drawRect(shown, s.pane);
+		gui.drawRect({ shown.x, shown.y, shown.w, s.tabHeight },
+		             motion.colour(gui.motionKey(c->id().c_str(), kMotionFill),
+		                           active ? s.titleBarActive : s.titleBar,
+		                           seconds, s.motion.curve));
+		gui.drawText(c->title.c_str(), { shown.x + s.tabPadding - 2.0f, shown.y + 3.0f }, s.tabText);
+		if (c->closable) {
+			const Rect xr{ shown.x + shown.w - 20.0f, shown.y, 18.0f, s.tabHeight };
+			const bool hot = xr.contains(in.pointer);
+			gui.drawText("x", { xr.x + 6.0f, xr.y + 3.0f },
+			             motion.colour(gui.motionKey(c->id().c_str(), kMotionMark),
+			                           hot ? s.closeHover : s.close, seconds, s.motion.curve));
+		}
+
+		const Rect body{ shown.x, shown.y + s.tabHeight, shown.w, shown.h - s.tabHeight };
+		gui.pushId(c->id().c_str());
+		gui.pushClipRect(body);
+		c->drawContents(gui, body);
+		gui.popClipRect();
+		gui.popId();
+
+		// The same stair of marks a floating panel has, and it means the same thing.
+		for (int g = 0; g < 3; ++g) {
+			const float o = 4.0f + g * 4.0f;
+			gui.drawRect({ shown.x + shown.w - o - 2.0f, shown.y + shown.h - 6.0f, 2.0f, 2.0f }, s.grip);
+			gui.drawRect({ shown.x + shown.w - 6.0f, shown.y + shown.h - o - 2.0f, 2.0f, 2.0f }, s.grip);
+		}
+
+		if (arrive < 0.999f) gui.popOpacity();
+	}
+
+	void DockSpace::updateTiles(Gui& gui, const Rect& area) {
+		if (!mPendingSpawns.empty()) {
+			std::vector<std::string> pending;
+			pending.swap(mPendingSpawns);
+			for (const std::string& type : pending) spawn(type.c_str());
+		}
+
+		const GuiInput& in = gui.input();
+		const DockStyle& chrome = gui.theme().dock(kDefaultVariant);
+
+		// Every panel that is showing has a place. A panel that said where it goes gets
+		// that; one that did not gets the first hole. Placing happens once -- after that
+		// the grid owns it, so a panel somebody dragged is not pulled back next frame.
+		for (auto& cp : mContainers) {
+			DockContainer* c = cp.get();
+			if (!c->visible) { c->fresh = true; continue; }
+			if (mGrid.find(c->id())) continue;
+			if (c->tileCol >= 0 && c->tileRow >= 0) {
+				mGrid.placeAt(c->id(), c->tileCol, c->tileRow, c->tileCols, c->tileRows);
+			} else {
+				mGrid.place(c->id(), c->tileCols, c->tileRows);
+			}
+			structuralChange();
+		}
+
+		// --- advance a drag --------------------------------------------------------
+		//
+		// Two positions at once, which is the whole feel of this arrangement: the tile
+		// follows the pointer exactly, and the *grid* follows in whole cells behind it,
+		// pushing its neighbours as it goes. What you carry is smooth; what it does to
+		// the others snaps.
+		if (mTileDrag) {
+			Tile* tile = mGrid.find(mTileDrag->id());
+			if (!tile) {
+				mTileDrag = nullptr;
+			} else {
+				const Rect landing = mGrid.rectFor(*tile, area);
+				mTileGhost = Rect{ in.pointer.x - mTileGrab.x, in.pointer.y - mTileGrab.y,
+				                   landing.w, landing.h };
+				int col = 0, row = 0;
+				mGrid.cellAt(area, { mTileGhost.x, mTileGhost.y }, col, row);
+				mGrid.moveTo(mTileDrag->id(), col, row, tile->cols, tile->rows,
+				             mTileDrag->id());
+				if (in.released) {
+					// Let go: the tile stops being the one thing that may not move, so
+					// it settles up into the grid with everything else.
+					Tile* dropped = mGrid.find(mTileDrag->id());
+					if (dropped) {
+						mGrid.moveTo(mTileDrag->id(), dropped->col, dropped->row,
+						             dropped->cols, dropped->rows);
+					}
+					mTileDrag = nullptr;
+					structuralChange();
+				}
+			}
+		}
+
+		// --- advance a resize ------------------------------------------------------
+		if (mTileResize) {
+			Tile* tile = mGrid.find(mTileResize->id());
+			if (!tile) {
+				mTileResize = nullptr;
+			} else {
+				// The far corner the pointer is on, turned into a cell, is the far cell.
+				int col = 0, row = 0;
+				mGrid.cellAt(area, in.pointer, col, row);
+				mGrid.moveTo(mTileResize->id(), tile->col, tile->row,
+				             col - tile->col, row - tile->row, mTileResize->id());
+				if (in.released) {
+					Tile* sized = mGrid.find(mTileResize->id());
+					if (sized) {
+						mGrid.moveTo(mTileResize->id(), sized->col, sized->row,
+						             sized->cols, sized->rows);
+					}
+					mTileResize = nullptr;
+					structuralChange();
+				}
+			}
+		}
+
+		bool busy = mTileDrag || mTileResize;
+
+		// --- input: the topmost tile under the pointer gets it ----------------------
+		if (!busy && in.pressed) {
+			for (auto it = mContainers.rbegin(); it != mContainers.rend(); ++it) {
+				DockContainer* c = it->get();
+				if (!c->visible) continue;
+				const Tile* tile = mGrid.find(c->id());
+				if (!tile) continue;
+				const Rect r = (c->computedRect.w > 0.0f) ? c->computedRect
+				                                          : mGrid.rectFor(*tile, area);
+				if (!r.contains(in.pointer)) continue;
+
+				const Rect grip{ r.x + r.w - 16.0f, r.y + r.h - 16.0f, 16.0f, 16.0f };
+				if (grip.contains(in.pointer)) { mTileResize = c; busy = true; break; }
+				if (c->closable) {
+					const Rect xr{ r.x + r.w - 20.0f, r.y, 18.0f, chrome.tabHeight };
+					if (xr.contains(in.pointer)) { mPendingRemove = c; busy = true; break; }
+				}
+				const Rect bar{ r.x, r.y, r.w, chrome.tabHeight };
+				if (bar.contains(in.pointer)) {
+					mTileDrag = c;
+					mTileGrab = in.pointer - glm::vec2(r.x, r.y);
+					mTileGhost = r;
+					busy = true;
+					break;
+				}
+				// A press in the body belongs to whatever is drawn there, so nothing is
+				// claimed and the walk below hands it on.
+				break;
+			}
+		}
+
+		// --- where a dragged tile will land ----------------------------------------
+		//
+		// Drawn under everything, so a tile carried over it covers it rather than the
+		// other way round. It is the one piece of guidance this arrangement needs: there
+		// is no edge to dock against and no pane to share, only a rectangle of cells.
+		if (mTileDrag) {
+			if (const Tile* tile = mGrid.find(mTileDrag->id())) {
+				const Rect landing = mGrid.rectFor(*tile, area);
+				if (chrome.radius > 0.0f) {
+					gui.drawRectRounded(landing, chrome.dropPreview, chrome.radius);
+				} else {
+					gui.drawRect(landing, chrome.dropPreview);
+				}
+			}
+		}
+
+		// --- draw ------------------------------------------------------------------
+		for (auto& cp : mContainers) {
+			DockContainer* c = cp.get();
+			if (!c->visible) continue;
+			const Tile* tile = mGrid.find(c->id());
+			if (!tile) continue;
+			if (c == mTileDrag) continue;   // carried, so drawn last and on top
+
+			const DockStyle& s = gui.theme().dock(c->variant);
+			const float seconds = s.motion.seconds;
+			Motion& motion = gui.motion();
+
+			// A tile eases to where the grid put it. This is what makes a push read as
+			// the others getting out of the way rather than as the grid flickering into
+			// a new shape: the cells snap, and the rectangles travel.
+			Rect r = mGrid.rectFor(*tile, area);
+			if (seconds > 0.0f) {
+				const uint32_t key = gui.motionKey(c->id().c_str(), kMotionPlace);
+				r.x = motion.value(key + 0u, r.x, seconds, s.motion.curve);
+				r.y = motion.value(key + 1u, r.y, seconds, s.motion.curve);
+				if (c == mTileResize) {
+					motion.reset(key + 2u, r.w);
+					motion.reset(key + 3u, r.h);
+				} else {
+					r.w = motion.value(key + 2u, r.w, seconds, s.motion.curve);
+					r.h = motion.value(key + 3u, r.h, seconds, s.motion.curve);
+				}
+			}
+
+			float arrive = 1.0f;
+			if (seconds > 0.0f) {
+				const uint32_t openKey = gui.motionKey(c->id().c_str(), kMotionOpen);
+				if (c->fresh) motion.reset(openKey, 0.0f);
+				arrive = motion.value(openKey, 1.0f, seconds, s.motion.curve);
+			}
+			c->fresh = false;
+			drawTile(gui, c, r, false, arrive);
+		}
+
+		// The one being carried, over everything else, exactly where the hand is.
+		if (mTileDrag) {
+			mTileDrag->fresh = false;
+			const uint32_t key = gui.motionKey(mTileDrag->id().c_str(), kMotionPlace);
+			gui.motion().reset(key + 0u, mTileGhost.x);
+			gui.motion().reset(key + 1u, mTileGhost.y);
+			gui.motion().reset(key + 2u, mTileGhost.w);
+			gui.motion().reset(key + 3u, mTileGhost.h);
+			drawTile(gui, mTileDrag, mTileGhost, true, 1.0f);
+		}
+
+		// Nothing is the centre in a grid: no tile is the one the rest are arranged
+		// around, which is exactly what makes it a grid.
+		mCenterBody = area;
+		applyPendingRemovals();
+	}
+
 	void DockSpace::update(Gui& gui, const Rect& area) {
+		if (arrange == DockArrange::Tiles) {
+			updateTiles(gui, area);
+			return;
+		}
+
 		// Anything a callback asked for last frame, created before this frame walks the
 		// container list.
 		if (!mPendingSpawns.empty()) {

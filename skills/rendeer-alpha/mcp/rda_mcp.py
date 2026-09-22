@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "0.9.0"
+VERSION = "1.0.0"
 PROTOCOL = "2024-11-05"
 
 HERE = os.path.dirname(os.path.abspath(__file__))

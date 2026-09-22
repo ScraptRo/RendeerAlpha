@@ -1,5 +1,6 @@
 #pragma once
 #include <Core/Datatypes.h>
+#include <string>
 #include <vector>
 #include <bitset>
 #include <functional>
@@ -47,6 +48,10 @@ namespace RDA {
 		std::function<void(int button, InputAction action, int mods)>            onMouseButton;
 		std::function<void(double x, double y)>                                  onMouseMove;
 		std::function<void(double xoffset, double yoffset)>                      onScroll;
+		// Files let go over the window, in the order the platform gave them. GLFW hands
+		// this over for free and the engine simply never asked for it -- which is the
+		// first thing a person tries with any window that holds documents.
+		std::function<void(const std::vector<std::string>& paths)>               onFilesDropped;
 	};
 
 	// Per-window input. Two views of the same stream, both filled during the window's
@@ -92,6 +97,7 @@ namespace RDA {
 		void onMouseButton(int button, InputAction action, int mods);
 		void onCursorPos(double x, double y);
 		void onScroll(double xoffset, double yoffset);
+		void onFilesDropped(const std::vector<std::string>& paths);
 
 	private:
 		std::bitset<MaxKeys> mKeysCurrent;

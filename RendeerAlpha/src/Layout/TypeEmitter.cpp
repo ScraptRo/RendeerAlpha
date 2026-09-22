@@ -111,6 +111,10 @@ namespace RDA::Layout {
 			// compiler accepts one. A type that said otherwise would reject exactly the
 			// code this pipeline exists for. Events are already thunks.
 			if (prop.type == PropType::Event) out << typeExpression(prop);
+			// A variant is the one value property whose binding cannot be checked; see
+			// RdaVariantBound in the preamble for why.
+			else if (prop.type == PropType::Variant)
+				out << "RdaVariantBound<" << typeExpression(prop) << ">";
 			else out << "RdaBound<" << typeExpression(prop) << ">";
 			out << ";\n";
 		}
@@ -175,6 +179,16 @@ namespace RDA::Layout {
 		       " * around it.\n"
 		       " */\n"
 		       "type RdaBound<T> = T | (() => T);\n\n"
+		       "/**\n"
+		       " * A theme variant, as a constant or as a binding.\n"
+		       " *\n"
+		       " * A constant is checked against the names the theme declares, so a\n"
+		       " * typo is an error here. A binding is not: the name it returns is\n"
+		       " * computed while the program runs -- out of a signal, out of a row --\n"
+		       " * and nothing at build time can know it. Checking it would mean\n"
+		       " * rejecting the one thing a bound variant is for.\n"
+		       " */\n"
+		       "type RdaVariantBound<T> = T | (() => string);\n\n"
 		       "/** An event handler. Compiled like a binding, and may write state. */\n"
 		       "type RdaHandler = () => unknown;\n\n"
 		       "/**\n"
@@ -221,16 +235,30 @@ namespace RDA::Layout {
 		out << "/**\n"
 		       " * What the engine knows about itself, under `state.rda`.\n"
 		       " *\n"
-		       " * Read-only, and rewritten every frame from the window -- so a binding\n"
+		       " * Mostly read-only and rewritten every frame from the window, so a binding\n"
 		       " * that reads one follows a resize without asking for anything:\n"
 		       " *\n"
 		       " *   <stack arrange={() => state.rda.width < 700 ? \"vertical\" : \"horizontal\"}>\n"
+		       " *\n"
+		       " * Four of them are a conversation instead. `maximized`, `minimized`,\n"
+		       " * `fullscreen` and `open` may be written as well as read, which is how a\n"
+		       " * window opened with no frame of its own gets buttons that do something.\n"
 		       " */\n"
 		       "interface RdaEngineState {\n"
 		       "\t/** the window's width in pixels, the same ones a widget is sized in */\n"
 		       "\treadonly width: number;\n"
 		       "\t/** the window's height in pixels */\n"
 		       "\treadonly height: number;\n"
+		       "\t/** whether the window fills the work area. Writable: setting it maximises or restores */\n"
+		       "\tmaximized: boolean;\n"
+		       "\t/** whether the window is minimised. Writable: setting it iconifies or restores */\n"
+		       "\tminimized: boolean;\n"
+		       "\t/** whether the window covers the monitor. Writable */\n"
+		       "\tfullscreen: boolean;\n"
+		       "\t/** whether the window has the keyboard */\n"
+		       "\treadonly focused: boolean;\n"
+		       "\t/** whether the window is open. Writing false closes it */\n"
+		       "\topen: boolean;\n"
 		       "}\n\n";
 
 		if (state.ok && !state.empty()) {
@@ -280,7 +308,7 @@ namespace RDA::Layout {
 			       "declare const state: { readonly rda: RdaEngineState } & Record<string, any>;\n\n";
 		}
 
-		// A row per declared table, and the union a template's parameter is typed as.
+		// A row per declared table, and the merged shape a template's parameter takes.
 		// With one table that union is exact. With several, a template narrows it by
 		// annotating its parameter -- which is the price of the element itself not being
 		// generic over the table it names.
@@ -300,12 +328,70 @@ namespace RDA::Layout {
 				}
 				out << "}\n\n";
 			}
-			out << "/** One row of whichever table a list names. */\ntype RdaRow = ";
-			for (size_t i = 0; i < state.tables.size(); ++i) {
-				if (i) out << " | ";
-				out << rowTypeName(state.tables[i].name);
+			// Merged in first-seen order, so the generated file is stable across builds.
+			// A name in two tables with two types becomes the union of those types --
+			// truthful, and rare enough that saying so beats picking one.
+			struct Merged {
+				std::string              name;
+				std::string              doc;
+				std::vector<std::string> types;   // distinct, in first-seen order
+				std::vector<std::string> tables;
+			};
+			std::vector<Merged> merged;
+			for (const StateTable& table : state.tables) {
+				for (const StateField& column : table.columns) {
+					const char* type = "number";
+					switch (column.type) {
+					case StateType::Number: type = "number";  break;
+					case StateType::Bool:   type = "boolean"; break;
+					case StateType::Text:   type = "string";  break;
+					}
+					auto found = std::find_if(merged.begin(), merged.end(),
+						[&](const Merged& m) { return m.name == column.name; });
+					if (found == merged.end()) {
+						merged.push_back(Merged{ column.name, column.doc, { type }, { table.name } });
+						continue;
+					}
+					if (std::find(found->types.begin(), found->types.end(), type) == found->types.end()) {
+						found->types.push_back(type);
+					}
+					found->tables.push_back(table.name);
+					if (found->doc.empty()) found->doc = column.doc;
+				}
 			}
-			out << ";\n\n";
+
+			out << "/**\n"
+			       " * One row of whichever table a list names.\n"
+			       " *\n"
+			       " * Every column of every declared table, merged. A union of the row\n"
+			       " * types would read as more precise and cannot be used: TypeScript\n"
+			       " * permits a property access only when every member of the union has\n"
+			       " * it, so with two tables declared every column was an error.\n"
+			       " *\n"
+			       " * So a column declared on any table is accepted, and one declared on\n"
+			       " * none is an error -- which is the typo this is for. It cannot know\n"
+			       " * which table a given <list> named: that is a string in the layout,\n"
+			       " * and an intrinsic element cannot be generic over another of its own\n"
+			       " * props. For the exact row, annotate the parameter:\n"
+			       " *     row={(item: " << rowTypeName(state.tables.front().name) << ") => ...}\n"
+			       " */\n"
+			       "type RdaRow = {\n";
+			for (const Merged& column : merged) {
+				out << "\t/** ";
+				if (!column.doc.empty()) out << column.doc << " -- ";
+				out << "from ";
+				for (size_t i = 0; i < column.tables.size(); ++i) {
+					if (i) out << ", ";
+					out << "`" << column.tables[i] << "`";
+				}
+				out << " */\n\t" << column.name << ": ";
+				for (size_t i = 0; i < column.types.size(); ++i) {
+					if (i) out << " | ";
+					out << column.types[i];
+				}
+				out << ";\n";
+			}
+			out << "};\n\n";
 		} else {
 			out << "/**\n"
 			       " * One row of whichever table a list names. Loosely typed because no\n"

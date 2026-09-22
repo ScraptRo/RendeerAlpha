@@ -114,6 +114,15 @@ ordinary thing to write.
 Everything else is the layout's `animate={ms}`, which moves widgets rather than
 recolours them, and is inherited by children.
 
+## Fonts
+
+`config.font` may name several faces separated by `;` -- the first is the body and decides
+the metrics, the rest are asked only about codepoints it does not have. Latin is baked at
+startup; anything else is baked on demand, at the size needed, from the first face that
+has it. Monochrome only: a COLR/CPAL emoji face would rasterise as its base layer, so
+point at `seguisym.ttf` rather than `seguiemj.ttf`. A codepoint no face has draws as a
+hollow box and is named once in the log.
+
 ## Font sizes
 
 `fontSize` must be **one of the sizes baked into the atlas at startup**: by default 12,
@@ -143,6 +152,17 @@ export const button: RdaButtonTheme = {
   primary: { normal: brand, hovered: lighten(brand, 0.12), pressed: darken(brand, 0.15) },
 }
 ```
+
+**A colour is the colour you wrote.** `#3A6AD0` comes off the screen as `#3A6AD0`, exactly,
+for every colour in a theme, a layout, an `<image>` tint and a drawing sent over the C ABI.
+The engine decodes an authored sRGB colour before the surface re-encodes it.
+
+This was not true before: a theme's colour went into an sRGB surface undecoded, so `#808080`
+reached the screen as `#BCBCBC` and every dark theme came out washed. A theme picked by eye
+against that will now look darker -- it is being shown as written for the first time. **Do
+not write a helper that pre-compensates**; one applied now makes the same mistake twice.
+Alpha is unaffected, but semi-transparent panels do change, because blending now happens in
+linear light.
 
 ## Changing it at run time
 
