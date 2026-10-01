@@ -31,6 +31,33 @@ The redraw decision is per window, not per loop. An idle window costs an idle wi
 that mattered most back when windows belonged to different processes, where one animating
 application dragged every other one through a redraw it had no reason to want.
 
+## One frame at a time
+
+There is a second way into that diagram, and it exists because of one platform fact:
+`glfwPollEvents` does not return while a window is being dragged or resized. Everything
+the engine does lives after that call, so without help, moving one window freezes every
+window. The OS does keep delivering position, size and refresh events from inside that
+loop, so the engine hangs a frame off them — `serviceWhileModal`.
+
+**That second door has to be shut while a frame is already running.** The same three
+callbacks also fire *synchronously* out of `SetWindowPos`, and `SetWindowPos` is what
+moving, resizing, maximising or undecorating a window calls. So this is an ordinary thing
+for an application to do:
+
+```tsx
+<button onClick={() => state.rda.maximized = true} />
+```
+
+and the call lands in the middle of the walk that ran the handler. A frame started there
+resets the frame arena and truncates the draw list underneath the walk still using them —
+which shows up as anything from nothing at all to the process going away. `runFrame` sets
+a flag for as long as it is building a frame, and `serviceWhileModal` does nothing while
+it is set except ask for another frame.
+
+Dropping the event is safe because the thing it would have reported — a new size or
+position — is read again at the top of the next frame. It is only the *timing* that was
+ever urgent, and only in the case where there is no next frame coming.
+
 ---
 
 ## Why there is no diffing

@@ -1,5 +1,20 @@
 # Recipes
 
+## Looking at a layout with no backend behind it
+
+```bash
+rda prototype <project>                       # every signal at its declared value
+rda prototype . --set count=99                # one value, read as its declared type
+rda prototype . --rows products=50            # generated rows, to see a list full
+rda prototype . --data mock.json              # signals and tables from one file
+rda prototype . --layout catalogue            # which route (or which layout) to open on
+```
+
+It compiles the project, defines everything `res/state.ts` declares, binds each command
+to a line on the terminal, and hot-reloads a `.tsx` while the window is open. A key or a
+name it does not recognise is refused rather than ignored. See
+`docs/setup/prototyping.md`.
+
 Complete layouts. Each one compiles as written; change the names to yours.
 
 ## A screen with a toolbar

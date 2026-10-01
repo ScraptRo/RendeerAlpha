@@ -24,6 +24,14 @@ namespace RDA {
 		}
 	}
 
+	uint32_t DockSpace::nextKeySalt() {
+		// Dock spaces are created while the interface is being built, on the one thread
+		// the GUI is touched from, so a plain counter is enough. Multiplied out so two
+		// neighbouring spaces do not land in neighbouring slots.
+		static uint32_t counter = 0;
+		return ++counter * 2654435761u;
+	}
+
 	void DockSpace::structuralChange() {
 		++mRevision;      // the GUI cache watches this
 		mResizeSplit = nullptr; // a collapse can delete the node being dragged
@@ -91,6 +99,29 @@ namespace RDA {
 			c->floatingRect = { 70.0f + offset, 70.0f + offset, 280.0f, 220.0f };
 		}
 		return c;
+	}
+
+	DockHeader* DockContainer::header() const {
+		for (const std::unique_ptr<Widget>& child : children()) {
+			if (auto* found = dynamic_cast<DockHeader*>(child.get())) return found;
+		}
+		return nullptr;
+	}
+
+	float DockContainer::headerHeight(float fallback) const {
+		const DockHeader* bar = header();
+		return bar ? bar->bandHeight(fallback) : fallback;
+	}
+
+	void DockContainer::drawContents(Gui& gui, const Rect& body) {
+		// Indexed and re-read for the same reason paintChildren is: a callback in here
+		// may add or remove a sibling while this is walking them.
+		for (size_t i = 0; i < children().size(); ++i) {
+			Widget* child = children()[i].get();
+			if (!child || !child->visible) continue;
+			if (dynamic_cast<DockHeader*>(child)) continue;   // chrome, drawn in the bar
+			child->paint(gui, glm::vec2(body.x, body.y));
+		}
 	}
 
 	void DockSpace::remove(DockContainer* container) {
@@ -298,6 +329,161 @@ namespace RDA {
 	}
 
 	// ---- painting one pane ---------------------------------------------------------
+	// A panel's own header, drawn in `band`, and whether the band itself was taken hold
+	// of -- which is the press that picks the panel up and carries it somewhere else.
+	//
+	// The answer is "nothing inside it claimed the press", asked after the contents have
+	// painted rather than before. A button on the bar runs later and hot is
+	// last-writer-wins, so asking first would hand every press to the bar and a close
+	// button on a title bar would drag the window instead of closing it.
+	bool DockSpace::drawHeaderBand(Gui& gui, DockContainer* c, const Rect& band, bool busy) {
+		DockHeader* bar = c->header();
+		if (!bar) return false;
+
+		const GuiInput& in = gui.input();
+		const bool pressedInside = !busy && in.lPressed && band.contains(in.pointer);
+		const uint32_t before = gui.activeWidget();
+
+		gui.pushId(c->id().c_str());   // the same scope its contents get
+		gui.pushClipRect(band);
+		bar->setArranged(band);
+		bar->drawHeader(gui, band);
+		gui.popClipRect();
+		gui.popId();
+
+		return pressedInside && gui.activeWidget() == before;
+	}
+
+	// How far into a pane a corner drag has to go before it means anything. Below this
+	// it is a press that has not decided yet, and guessing would make the corner
+	// impossible to click without also splitting something.
+	static constexpr float kCornerSlop = 12.0f;
+	// The corner's grab square, in the bottom-right of a pane.
+	static constexpr float kCornerSize = 14.0f;
+
+	// The grip in a pane's bottom-right corner: drag it to cut this pane in two, or over
+	// a neighbour to make the two of them one.
+	//
+	// Three diagonal marks, the same vocabulary the floating panel's resize grip uses,
+	// because it is the same idea -- a corner you take hold of. It is drawn only when
+	// there is something it could do: a lone pane with a lone panel has nothing to split
+	// off and nobody to join.
+	void DockSpace::drawPaneCorner(Gui& gui, DockNode* leaf, const Rect& slot, bool& busy) {
+		if (!leaf) return;
+		const bool couldSplit = leaf->tabs.size() > 1;
+		const bool couldJoin = mTree.count() > 1;
+		if (!couldSplit && !couldJoin) return;
+
+		const DockStyle& s = gui.theme().dock(kDefaultVariant);
+		const GuiInput& in = gui.input();
+		const Rect corner{ slot.x + slot.w - kCornerSize, slot.y + slot.h - kCornerSize,
+		                   kCornerSize, kCornerSize };
+		const bool held = !mCornerId.empty() && mTree.leafFor(mCornerId) == leaf;
+		const bool hot = held || (!busy && corner.contains(in.pointer));
+		const uint32_t colour = hot ? s.splitterHover : s.splitter;
+
+		for (int i = 0; i < 3; ++i) {
+			const float o = 3.0f + static_cast<float>(i) * 4.0f;
+			gui.drawRect({ corner.x + corner.w - o - 2.0f, corner.y + corner.h - 4.0f, 2.0f, 2.0f }, colour);
+			gui.drawRect({ corner.x + corner.w - 4.0f, corner.y + corner.h - o - 2.0f, 2.0f, 2.0f }, colour);
+		}
+
+		if (!busy && in.lPressed && corner.contains(in.pointer)) {
+			if (const std::string* active = leaf->activeTab()) {
+				mCornerId = *active;
+				mCornerStart = in.pointer;
+				busy = true;
+			}
+		}
+	}
+
+	DockSpace::CornerIntent DockSpace::cornerIntentAt(glm::vec2 pointer) const {
+		CornerIntent out;
+		if (mCornerId.empty()) return out;
+		out.from = mTree.leafFor(mCornerId);
+		if (!out.from) return out;
+
+		const glm::vec2 moved = pointer - mCornerStart;
+		if (std::abs(moved.x) < kCornerSlop && std::abs(moved.y) < kCornerSlop) return out;
+
+		// Over another pane: join. This is the gesture Blender uses and it means the same
+		// thing here -- the two become one, and everything in this pane moves into that
+		// one as further tabs.
+		DockNode* under = mTree.leafAt(pointer);
+		if (under && under != out.from && !under->tabs.empty()) {
+			out.into = under;
+			out.preview = under->rect;
+			out.valid = true;
+			return out;
+		}
+
+		// Otherwise: split this pane, and the active panel goes into the new half.
+		//
+		// It *moves* rather than being copied, which is where this parts company with
+		// Blender: there an area splits into two views of the same editor, and here a
+		// panel is a thing with an identity that can only be in one place. So a pane with
+		// one panel in it has nothing to split off, and the corner does nothing.
+		if (out.from->tabs.size() < 2) return out;
+
+		const Rect& r = out.from->rect;
+		if (std::abs(moved.x) >= std::abs(moved.y)) {
+			// A vertical boundary: the new half is on the right, where the corner is.
+			const float cut = std::clamp((pointer.x - r.x) / (std::max)(1.0f, r.w), 0.15f, 0.85f);
+			out.side = DockDrop::Right;
+			// split() takes the newcomer's share, and the newcomer is what lies beyond
+			// the cut -- so it is the remainder, not the cut.
+			out.ratio = 1.0f - cut;
+			out.preview = Rect{ r.x + r.w * cut, r.y, r.w * (1.0f - cut), r.h };
+		} else {
+			const float cut = std::clamp((pointer.y - r.y) / (std::max)(1.0f, r.h), 0.15f, 0.85f);
+			out.side = DockDrop::Bottom;
+			out.ratio = 1.0f - cut;
+			out.preview = Rect{ r.x, r.y + r.h * cut, r.w, r.h * (1.0f - cut) };
+		}
+		out.valid = true;
+		return out;
+	}
+
+	void DockSpace::drawDropGhost(Gui& gui, const Rect& where, const DockStyle& chrome,
+	                              const char* title, bool asTab) {
+		if (where.w < 4.0f || where.h < 4.0f) return;
+
+		// The room, then the bar across the top of it. A tab-shaped ghost is all bar.
+		const float barH = asTab ? where.h : (std::min)(chrome.tabHeight, where.h);
+		gui.drawRect(where, chrome.dropPreview);
+		gui.drawRect({ where.x, where.y, where.w, barH }, chrome.dropBandHot);
+
+		// And the edges. Two pixels, drawn as four rectangles rather than a frame,
+		// because the one thing this must not do is disagree with the boundary the drop
+		// will actually create.
+		constexpr float kLine = 2.0f;
+		gui.drawRect({ where.x, where.y, where.w, kLine }, chrome.dropBandHot);
+		gui.drawRect({ where.x, where.y + where.h - kLine, where.w, kLine }, chrome.dropBandHot);
+		gui.drawRect({ where.x, where.y, kLine, where.h }, chrome.dropBandHot);
+		gui.drawRect({ where.x + where.w - kLine, where.y, kLine, where.h }, chrome.dropBandHot);
+
+		if (title && *title) {
+			// Clipped to the ghost: a half-width pane is a half-width bar, and a name
+			// running out of it would be the one part of this drawn somewhere the panel
+			// is not going.
+			gui.pushClipRect(where);
+			gui.drawText(title, { where.x + chrome.tabPadding, where.y + 3.0f }, chrome.tabText);
+			gui.popClipRect();
+		}
+	}
+
+	float DockSpace::tabStripEnd(Gui& gui, const DockNode* leaf) const {
+		float x = leaf ? leaf->rect.x : 0.0f;
+		if (!leaf) return x;
+		for (const std::string& id : leaf->tabs) {
+			const DockContainer* t = containerFor(id);
+			if (!t || !t->visible) continue;
+			const DockStyle& s = gui.theme().dock(t->variant);
+			x += gui.measureText(t->title.c_str()) + s.tabPadding * 2.0f;
+		}
+		return x;
+	}
+
 	void DockSpace::drawPane(Gui& gui, DockNode* leaf, bool& busy) {
 		if (!leaf || leaf->tabs.empty()) return;
 
@@ -340,11 +526,50 @@ namespace RDA {
 		// with its own container's variant, so two panels sharing a pane can look
 		// different from one another.
 		const DockStyle& pane = gui.theme().dock(kDefaultVariant);
-		const float tabH = pane.tabHeight;
+		float tabH = pane.tabHeight;
+
+		// One panel in this pane, wearing a header of its own: the header is the bar.
+		// With others beside it the strip wins, because a strip belongs to the pane and a
+		// header belongs to a panel -- and two panels in one group cannot both dress it.
+		DockContainer* only = nullptr;
+		int visibleTabs = 0;
+		for (const std::string& id : leaf->tabs) {
+			DockContainer* t = containerFor(id);
+			if (!t || !t->visible) continue;
+			++visibleTabs;
+			only = t;
+		}
+		// Nothing showing: no background, no strip, no splitter beside it. The tree has
+		// already given it no room, and painting a panel over zero pixels would be the
+		// one thing left saying it was here.
+		if (visibleTabs == 0) return;
+		DockContainer* dressed = (visibleTabs == 1 && only && only->header()) ? only : nullptr;
+		if (dressed) tabH = dressed->headerHeight(pane.tabHeight);
+
 		if (slot.w < 8.0f || slot.h < tabH) return; // squeezed to nothing
 
 		const GuiInput& in = gui.input();
 		gui.drawRect(slot, pane.pane);
+
+		if (dressed) {
+			const Rect band{ slot.x, slot.y, slot.w, tabH };
+			if (drawHeaderBand(gui, dressed, band, busy)) {
+				leaf->active = leaf->indexOf(dressed->id());
+				mPressTab = dressed;
+				mPressPos = in.pointer;
+				busy = true;
+			}
+			const Rect body{ slot.x, slot.y + tabH, slot.w, slot.h - tabH };
+			dressed->computedRect = slot;
+			gui.pushId(dressed->id().c_str());
+			gui.pushClipRect(body);
+			dressed->drawContents(gui, body);
+			gui.popClipRect();
+			gui.popId();
+			drawPaneCorner(gui, leaf, slot, busy);
+			return;
+		}
+
 		gui.drawRect({ slot.x, slot.y, slot.w, tabH }, pane.tabStrip);
 
 		float tx = slot.x;
@@ -366,7 +591,7 @@ namespace RDA {
 				gui.drawRect(tabR, tabColour);
 			}
 			gui.drawText(t->title.c_str(), { tabR.x + s.tabPadding, tabR.y + 3.0f }, s.tabText);
-			if (!busy && in.pressed && tabR.contains(in.pointer)) {
+			if (!busy && in.lPressed&& tabR.contains(in.pointer)) {
 				leaf->active = static_cast<int>(i);
 				mPressTab = t;
 				mPressPos = in.pointer;
@@ -388,7 +613,7 @@ namespace RDA {
 				gui.motionKey(act->id().c_str(), kMotionMark),
 				hot ? s.closeHover : s.close, s.motion.seconds, s.motion.curve);
 			gui.drawText("x", { xr.x + 6.0f, xr.y + 3.0f }, closeColour);
-			if (!busy && in.pressed && hot) { mPendingRemove = act; busy = true; }
+			if (!busy && in.lPressed && hot) { mPendingRemove = act; busy = true; }
 		}
 
 		const Rect body{ slot.x, slot.y + tabH, slot.w, slot.h - tabH };
@@ -398,6 +623,8 @@ namespace RDA {
 		act->drawContents(gui, body);
 		gui.popClipRect();
 		gui.popId();
+
+		drawPaneCorner(gui, leaf, slot, busy);
 	}
 
 	// ---- the frame -----------------------------------------------------------------
@@ -423,20 +650,33 @@ namespace RDA {
 
 		if (s.radius > 0.0f) gui.drawRectRounded(shown, s.pane, s.radius);
 		else                 gui.drawRect(shown, s.pane);
-		gui.drawRect({ shown.x, shown.y, shown.w, s.tabHeight },
-		             motion.colour(gui.motionKey(c->id().c_str(), kMotionFill),
-		                           active ? s.titleBarActive : s.titleBar,
-		                           seconds, s.motion.curve));
-		gui.drawText(c->title.c_str(), { shown.x + s.tabPadding - 2.0f, shown.y + 3.0f }, s.tabText);
-		if (c->closable) {
-			const Rect xr{ shown.x + shown.w - 20.0f, shown.y, 18.0f, s.tabHeight };
-			const bool hot = xr.contains(in.pointer);
-			gui.drawText("x", { xr.x + 6.0f, xr.y + 3.0f },
-			             motion.colour(gui.motionKey(c->id().c_str(), kMotionMark),
-			                           hot ? s.closeHover : s.close, seconds, s.motion.curve));
+
+		// A tile is always the only panel where it is, so a header of its own always
+		// wins here -- the same rule a floating panel follows, for the same reason.
+		const float barH = c->headerHeight(s.tabHeight);
+		if (c->header()) {
+			const Rect band{ shown.x, shown.y, shown.w, barH };
+			if (drawHeaderBand(gui, c, band, mTileDrag || mTileResize)) {
+				mTileDrag = c;
+				mTileGrab = in.pointer - glm::vec2(shown.x, shown.y);
+				mTileGhost = shown;
+			}
+		} else {
+			gui.drawRect({ shown.x, shown.y, shown.w, s.tabHeight },
+			             motion.colour(gui.motionKey(c->id().c_str(), kMotionFill),
+			                           active ? s.titleBarActive : s.titleBar,
+			                           seconds, s.motion.curve));
+			gui.drawText(c->title.c_str(), { shown.x + s.tabPadding - 2.0f, shown.y + 3.0f }, s.tabText);
+			if (c->closable) {
+				const Rect xr{ shown.x + shown.w - 20.0f, shown.y, 18.0f, s.tabHeight };
+				const bool hot = xr.contains(in.pointer);
+				gui.drawText("x", { xr.x + 6.0f, xr.y + 3.0f },
+				             motion.colour(gui.motionKey(c->id().c_str(), kMotionMark),
+				                           hot ? s.closeHover : s.close, seconds, s.motion.curve));
+			}
 		}
 
-		const Rect body{ shown.x, shown.y + s.tabHeight, shown.w, shown.h - s.tabHeight };
+		const Rect body{ shown.x, shown.y + barH, shown.w, shown.h - barH };
 		gui.pushId(c->id().c_str());
 		gui.pushClipRect(body);
 		c->drawContents(gui, body);
@@ -496,7 +736,7 @@ namespace RDA {
 				mGrid.cellAt(area, { mTileGhost.x, mTileGhost.y }, col, row);
 				mGrid.moveTo(mTileDrag->id(), col, row, tile->cols, tile->rows,
 				             mTileDrag->id());
-				if (in.released) {
+				if (in.lReleased) {
 					// Let go: the tile stops being the one thing that may not move, so
 					// it settles up into the grid with everything else.
 					Tile* dropped = mGrid.find(mTileDrag->id());
@@ -521,7 +761,7 @@ namespace RDA {
 				mGrid.cellAt(area, in.pointer, col, row);
 				mGrid.moveTo(mTileResize->id(), tile->col, tile->row,
 				             col - tile->col, row - tile->row, mTileResize->id());
-				if (in.released) {
+				if (in.lReleased) {
 					Tile* sized = mGrid.find(mTileResize->id());
 					if (sized) {
 						mGrid.moveTo(mTileResize->id(), sized->col, sized->row,
@@ -536,7 +776,7 @@ namespace RDA {
 		bool busy = mTileDrag || mTileResize;
 
 		// --- input: the topmost tile under the pointer gets it ----------------------
-		if (!busy && in.pressed) {
+		if (!busy && in.lPressed) {
 			for (auto it = mContainers.rbegin(); it != mContainers.rend(); ++it) {
 				DockContainer* c = it->get();
 				if (!c->visible) continue;
@@ -548,10 +788,14 @@ namespace RDA {
 
 				const Rect grip{ r.x + r.w - 16.0f, r.y + r.h - 16.0f, 16.0f, 16.0f };
 				if (grip.contains(in.pointer)) { mTileResize = c; busy = true; break; }
-				if (c->closable) {
+				if (c->closable && !c->header()) {
 					const Rect xr{ r.x + r.w - 20.0f, r.y, 18.0f, chrome.tabHeight };
 					if (xr.contains(in.pointer)) { mPendingRemove = c; busy = true; break; }
 				}
+				// A panel wearing its own header takes that press while the header draws,
+				// because only then is it known whether a button on the bar took it
+				// first. This is the engine's own bar.
+				if (c->header()) break;
 				const Rect bar{ r.x, r.y, r.w, chrome.tabHeight };
 				if (bar.contains(in.pointer)) {
 					mTileDrag = c;
@@ -660,16 +904,24 @@ namespace RDA {
 		// it is: seeding a pane's share, and nothing else.
 		const glm::vec2 viewport{ area.w, area.h };
 
+		// What the tree needs to know about widgets, which is only this: a pane holding
+		// nothing that is showing takes no room, so hiding the last panel in one closes
+		// the space up instead of leaving a panel-shaped hole.
+		const DockLayout::Showing showing = [this](const std::string& id) {
+			const DockContainer* c = containerFor(id);
+			return c && c->visible;
+		};
+
 		// Laid out once so seeding can compare pane sizes, then again with what it added.
-		mTree.layout(area, kSplit);
+		mTree.layout(area, kSplit, showing);
 		seedTree(viewport);
-		mTree.layout(area, kSplit);
+		mTree.layout(area, kSplit, showing);
 
 		// --- advance a splitter drag ---
 		if (mResizeSplit) {
 			mTree.setRatioFromPointer(mResizeSplit, in.pointer, kSplit, kMinDock);
-			mTree.layout(area, kSplit);
-			if (in.released) mResizeSplit = nullptr;
+			mTree.layout(area, kSplit, showing);
+			if (in.lReleased) mResizeSplit = nullptr;
 		}
 
 		// --- advance a floating-container resize (bottom-right grip) ---
@@ -677,12 +929,12 @@ namespace RDA {
 			Rect& fr = mResizingFloat->floatingRect;
 			fr.w = std::max(140.0f, in.pointer.x - fr.x);
 			fr.h = std::max(90.0f, in.pointer.y - fr.y);
-			if (in.released) mResizingFloat = nullptr;
+			if (in.lReleased) mResizingFloat = nullptr;
 		}
 
 		// --- a pressed tab may become a detach-drag ---
 		if (mPressTab) {
-			if (in.released) mPressTab = nullptr;
+			if (in.lReleased) mPressTab = nullptr;
 			else if (glm::length(in.pointer - mPressPos) > 6.0f) {
 				DockContainer* c = mPressTab;
 				mPressTab = nullptr;
@@ -692,9 +944,47 @@ namespace RDA {
 				mTree.remove(c->id());
 				for (std::string& anchor : mSeedAnchor) if (anchor == c->id()) anchor.clear();
 				structuralChange();
-				mTree.layout(area, kSplit);
+				mTree.layout(area, kSplit, showing);
 				mDragging = c;
 				mDragOffset = { 40.0f, chrome.tabHeight * 0.5f };
+			}
+		}
+
+		// --- advance a corner drag: split this pane, or join it with a neighbour ---
+		CornerIntent corner;
+		if (!mCornerId.empty()) {
+			corner = cornerIntentAt(in.pointer);
+			if (in.lReleased) {
+				if (corner.valid) {
+					if (corner.into) {
+						// Everything here moves into there. Copied first: removing a tab
+						// may collapse this leaf, and both node pointers with it.
+						const std::vector<std::string> moving = corner.from->tabs;
+						const std::string target = corner.into->tabs.front();
+						for (const std::string& id : moving) {
+							mTree.remove(id);
+							// Re-found every time, because the removal above may have
+							// collapsed a split and moved the target's node.
+							if (DockNode* into = mTree.leafFor(target)) mTree.addTab(into, id);
+						}
+					} else if (const std::string* activeTab = corner.from->activeTab()) {
+						const std::string moving = *activeTab;
+						// Whichever tab is left behind, so the pane can be found again
+						// after the removal -- which may restructure the tree.
+						std::string staying;
+						for (const std::string& id : corner.from->tabs) {
+							if (id != moving) { staying = id; break; }
+						}
+						mTree.remove(moving);
+						if (DockNode* pane = mTree.leafFor(staying)) {
+							mTree.split(pane, corner.side, moving, corner.ratio);
+						}
+					}
+					structuralChange();
+				}
+				mCornerId.clear();
+				mTree.layout(area, kSplit, showing);
+				corner = CornerIntent{};
 			}
 		}
 
@@ -717,7 +1007,7 @@ namespace RDA {
 				if (previewPane) previewZone = mTree.dropZoneAt(previewPane, in.pointer, &previewRect);
 			}
 
-			if (in.released) {
+			if (in.lReleased) {
 				DockContainer* dropped = mDragging;
 				mDragging = nullptr;
 				if (wholeEdge) {
@@ -729,14 +1019,15 @@ namespace RDA {
 				}
 				previewPane = nullptr;
 				previewZone = DockDrop::None;
-				mTree.layout(area, kSplit);
+				mTree.layout(area, kSplit, showing);
 			}
 		}
 
-		bool busy = mDragging || mResizingFloat || mPressTab || mResizeSplit;
+		bool busy = mDragging || mResizingFloat || mPressTab || mResizeSplit ||
+		            !mCornerId.empty();
 
 		// --- input: floating containers get first crack (topmost = last created) ---
-		if (!busy && in.pressed) {
+		if (!busy && in.lPressed) {
 			for (auto it = mContainers.rbegin(); it != mContainers.rend(); ++it) {
 				DockContainer* c = it->get();
 				if (!c->visible || mTree.contains(c->id())) continue;
@@ -775,10 +1066,26 @@ namespace RDA {
 			        centrePane->rect.w, centrePane->rect.h - chrome.tabHeight }
 			: area;
 
+		// --- what the corner drag would do -----------------------------------------
+		//
+		// The half that would be cut off, or the pane that would be swallowed. Drawn
+		// before the splitters so a handle still reads on top of it.
+		if (corner.valid) {
+			gui.drawRect(corner.preview, corner.into ? chrome.dropPane : chrome.dropPreview);
+			if (corner.into) gui.drawRect(corner.from->rect, chrome.dropPreview);
+		}
+
 		// --- splitters between panes ---
 		std::vector<DockNode*> splits;
 		mTree.collectSplits(splits);
 		for (DockNode* split : splits) {
+			// A split with nothing showing on one side has no boundary: its showing child
+			// was given the whole area, so there is no line between them to drag and
+			// drawing one would put a handle across the middle of a pane.
+			if (!DockLayout::anyShowing(split->first.get(), showing) ||
+			    !DockLayout::anyShowing(split->second.get(), showing)) {
+				continue;
+			}
 			const Rect handle = split->handleRect(kSplit);
 			const bool hot = (split == mResizeSplit) || (!busy && handle.contains(in.pointer));
 			// A splitter has no id of its own, so its handle's position is its identity --
@@ -789,7 +1096,7 @@ namespace RDA {
 			gui.drawRect(handle, gui.motion().colour(splitKey ^ kMotionFill,
 			                                         hot ? chrome.splitterHover : chrome.splitter,
 			                                         chrome.motion.seconds, chrome.motion.curve));
-			if (!busy && in.pressed && handle.contains(in.pointer)) {
+			if (!busy && in.lPressed && handle.contains(in.pointer)) {
 				mResizeSplit = split;
 				busy = true;
 			}
@@ -853,22 +1160,35 @@ namespace RDA {
 
 			if (s.radius > 0.0f) gui.drawRectRounded(r, s.pane, s.radius);
 			else                 gui.drawRect(r, s.pane);
-			// The same value its tab uses once it is docked, so a panel dropped into a
-			// pane does not also change colour in the moment it changes shape.
-			gui.drawRect({ r.x, r.y, r.w, s.tabHeight },
-			             motion.colour(gui.motionKey(c->id().c_str(), kMotionFill),
-			                           active ? s.titleBarActive : s.titleBar,
-			                           seconds, s.motion.curve));
-			gui.drawText(c->title.c_str(), { r.x + s.tabPadding - 2.0f, r.y + 3.0f }, s.tabText);
-			if (c->closable) {
-				const Rect xr{ r.x + r.w - 20.0f, r.y, 18.0f, chrome.tabHeight };
-				const bool hot = xr.contains(in.pointer);
-				gui.drawText("x", { xr.x + 6.0f, xr.y + 3.0f },
-				             motion.colour(gui.motionKey(c->id().c_str(), kMotionMark),
-				                           hot ? s.closeHover : s.close,
+
+			// A floating panel is always the only one where it is, so its header always
+			// wins here.
+			const float barH = c->headerHeight(s.tabHeight);
+			if (c->header()) {
+				const Rect band{ r.x, r.y, r.w, barH };
+				if (drawHeaderBand(gui, c, band, busy)) {
+					mDragging = c;
+					mDragOffset = in.pointer - glm::vec2(r.x, r.y);
+					busy = true;
+				}
+			} else {
+				// The same value its tab uses once it is docked, so a panel dropped into a
+				// pane does not also change colour in the moment it changes shape.
+				gui.drawRect({ r.x, r.y, r.w, s.tabHeight },
+				             motion.colour(gui.motionKey(c->id().c_str(), kMotionFill),
+				                           active ? s.titleBarActive : s.titleBar,
 				                           seconds, s.motion.curve));
+				gui.drawText(c->title.c_str(), { r.x + s.tabPadding - 2.0f, r.y + 3.0f }, s.tabText);
+				if (c->closable) {
+					const Rect xr{ r.x + r.w - 20.0f, r.y, 18.0f, chrome.tabHeight };
+					const bool hot = xr.contains(in.pointer);
+					gui.drawText("x", { xr.x + 6.0f, xr.y + 3.0f },
+					             motion.colour(gui.motionKey(c->id().c_str(), kMotionMark),
+					                           hot ? s.closeHover : s.close,
+					                           seconds, s.motion.curve));
+				}
 			}
-			const Rect body{ r.x, r.y + chrome.tabHeight, r.w, r.h - chrome.tabHeight };
+			const Rect body{ r.x, r.y + barH, r.w, r.h - barH };
 			gui.pushId(c->id().c_str()); // isolate this instance's widget state
 			gui.pushClipRect(body);
 			c->drawContents(gui, body);
@@ -891,7 +1211,7 @@ namespace RDA {
 		// the frame a panel is picked up. Kept painting for the length of the fade, which
 		// is why this is asked every frame and not only while dragging: the guidance has
 		// to outlive the drag that asked for it.
-		const uint32_t guideKey = gui.motionKey("#dropguide", kMotionOpen);
+		const uint32_t guideKey = gui.motionKey("#dropguide", kMotionOpen) ^ mKeySalt;
 		const float guide = gui.motion().value(guideKey, mDragging ? 1.0f : 0.0f,
 		                                       chrome.motion.seconds, chrome.motion.curve);
 		if (guide > 0.004f) {
@@ -908,12 +1228,26 @@ namespace RDA {
 				const bool hot = wholeEdge && (bandSide[i] == previewZone);
 				gui.drawRect(bands[i], hot ? chrome.dropBandHot : chrome.dropBand);
 			}
-			// The pane under the pointer, and the share of it the drop would take. Only
-			// while there is still a drag to guide -- after the drop these have nothing
-			// to point at, and the edges fade out on their own.
+			// The pane under the pointer, and the panel drawn where the drop would put
+			// it. Only while there is still a drag to guide -- after the drop these have
+			// nothing to point at, and the edges fade out on their own.
 			if (mDragging) {
 				if (previewPane) gui.drawRect(previewPane->rect, chrome.dropPane);
-				if (previewZone != DockDrop::None) gui.drawRect(previewRect, chrome.dropPreview);
+				if (previewZone == DockDrop::Center && previewPane) {
+					// Joining a tab group. The rectangle here is the whole pane, and a
+					// whole pane lit up says nothing that the pane tint above has not
+					// already said -- what actually happens is that one more tab appears
+					// at the end of the strip, so that is what is drawn.
+					const DockStyle& joined = gui.theme().dock(mDragging->variant);
+					const Rect tab{
+						tabStripEnd(gui, previewPane), previewPane->rect.y,
+						gui.measureText(mDragging->title.c_str()) + joined.tabPadding * 2.0f,
+						chrome.tabHeight,
+					};
+					drawDropGhost(gui, tab, chrome, mDragging->title.c_str(), true);
+				} else if (previewZone != DockDrop::None) {
+					drawDropGhost(gui, previewRect, chrome, mDragging->title.c_str(), false);
+				}
 			}
 			gui.popOpacity();
 		}

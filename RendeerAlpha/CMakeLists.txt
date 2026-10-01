@@ -12,6 +12,7 @@ set(RDA_SOURCES
 	src/Core/Tables.cpp
 	src/Core/Utf8.cpp
 	src/Core/Colour.cpp
+	src/GraphicalObjects/MeshAsset.cpp
 	src/Core/Location.cpp
 	src/Core/FileDialog.cpp
 	src/Core/Svg.cpp
@@ -106,9 +107,13 @@ list(APPEND RDA_SOURCES
 	src/Layout/LayoutCompiler.cpp
 	src/Layout/ModuleTransform.cpp
 	src/Layout/ThemeCompiler.cpp
+	src/Layout/MeshCompiler.cpp
 	src/Layout/TypeEmitter.cpp
 	src/Layout/StateSchema.cpp
 	src/Layout/ExpressionParser.cpp
+	# Placeholder state for a declaration with no backend behind it yet. Here rather than
+	# with the loader, because it reads JSON with the same engine the compiler uses.
+	src/Layout/Prototype.cpp
 )
 
 set(RDA_SOURCES_QUICKJS

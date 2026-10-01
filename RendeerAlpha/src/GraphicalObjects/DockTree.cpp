@@ -83,23 +83,49 @@ namespace RDA {
 		mRoot = std::make_unique<DockNode>();
 	}
 
-	void DockLayout::layout(Rect area, float thickness) {
-		layoutNode(mRoot.get(), area, thickness);
+	bool DockLayout::anyShowing(const DockNode* node, const Showing& showing) {
+		if (!node) return false;
+		if (!showing) return true;   // nobody asked, so everything counts
+		if (node->isLeaf()) {
+			for (const std::string& id : node->tabs) {
+				if (showing(id)) return true;
+			}
+			return false;
+		}
+		return anyShowing(node->first.get(), showing) ||
+		       anyShowing(node->second.get(), showing);
 	}
 
-	void DockLayout::layoutNode(DockNode* node, Rect area, float t) {
+	void DockLayout::layout(Rect area, float thickness, const Showing& showing) {
+		layoutNode(mRoot.get(), area, thickness, showing);
+	}
+
+	void DockLayout::layoutNode(DockNode* node, Rect area, float t, const Showing& showing) {
 		node->rect = area;
 		if (node->isLeaf()) return;
+
+		// A side with nothing showing takes no room, and no splitter is kept between
+		// them: there is nothing on the other side of it to drag against.
+		const bool firstShows = anyShowing(node->first.get(), showing);
+		const bool secondShows = anyShowing(node->second.get(), showing);
+		if (!firstShows || !secondShows) {
+			// Both empty is the same answer as either: the whole area goes to each, and
+			// neither draws anything, so nothing overlaps.
+			layoutNode(node->first.get(), firstShows ? area : Rect{ area.x, area.y, 0.0f, 0.0f }, t, showing);
+			layoutNode(node->second.get(), secondShows ? area : Rect{ area.x, area.y, 0.0f, 0.0f }, t, showing);
+			return;
+		}
+
 		if (node->vertical) {
 			const float avail = std::max(0.0f, area.h - t);
 			const float h1 = avail * node->ratio;
-			layoutNode(node->first.get(), { area.x, area.y, area.w, h1 }, t);
-			layoutNode(node->second.get(), { area.x, area.y + h1 + t, area.w, avail - h1 }, t);
+			layoutNode(node->first.get(), { area.x, area.y, area.w, h1 }, t, showing);
+			layoutNode(node->second.get(), { area.x, area.y + h1 + t, area.w, avail - h1 }, t, showing);
 		} else {
 			const float avail = std::max(0.0f, area.w - t);
 			const float w1 = avail * node->ratio;
-			layoutNode(node->first.get(), { area.x, area.y, w1, area.h }, t);
-			layoutNode(node->second.get(), { area.x + w1 + t, area.y, avail - w1, area.h }, t);
+			layoutNode(node->first.get(), { area.x, area.y, w1, area.h }, t, showing);
+			layoutNode(node->second.get(), { area.x + w1 + t, area.y, avail - w1, area.h }, t, showing);
 		}
 	}
 

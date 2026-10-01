@@ -35,6 +35,7 @@ namespace RDA::Layout {
 		};
 
 		constexpr ThemeFieldDesc kButton[] = {
+			TEXT(mesh, "a compiled .rdam to draw instead of the built-in rounded rect"),
 			COLOUR(normal,  "the fill when nothing is happening to it"),
 			COLOUR(hovered, "the fill under the pointer"),
 			COLOUR(pressed, "the fill while held"),
@@ -71,8 +72,11 @@ namespace RDA::Layout {
 
 		constexpr ThemeFieldDesc kFocus[] = {
 			COLOUR(color,  "the ring around whatever has the keyboard"),
-			NUMBER(width,  "how thick it is"),
+			NUMBER(width,  "how thick it is; 0 for no ring at all"),
 			NUMBER(inset,  "negative to sit outside the widget's own edge"),
+			ENUM(show, "keyboard|always",
+			     "when it is drawn: only where Tab put the focus (the default), or "
+			     "wherever the focus is, including a click"),
 		};
 
 		constexpr ThemeFieldDesc kBackground[] = {
@@ -235,7 +239,53 @@ namespace RDA::Layout {
 		return nullptr;
 	}
 
+	namespace {
+		// The parameters, and a parallel table of descs pointing into them. Built once
+		// when they are registered, so the pointers are stable for as long as they are
+		// used -- which is why registration replaces the list rather than appending to it.
+		std::vector<MeshThemeParam>& meshParamStore() {
+			static std::vector<MeshThemeParam>* store = new std::vector<MeshThemeParam>();
+			return *store;
+		}
+		std::vector<ThemeFieldDesc>& meshFieldStore() {
+			static std::vector<ThemeFieldDesc>* store = new std::vector<ThemeFieldDesc>();
+			return *store;
+		}
+	}
+
+	void registerMeshThemeParams(const std::vector<MeshThemeParam>& params) {
+		meshParamStore() = params;
+		std::vector<ThemeFieldDesc>& fields = meshFieldStore();
+		fields.clear();
+		fields.reserve(meshParamStore().size());
+		for (const MeshThemeParam& one : meshParamStore()) {
+			fields.push_back(ThemeFieldDesc{ one.name.c_str(), one.type, nullptr, one.doc.c_str() });
+		}
+	}
+
+	void clearMeshThemeParams() {
+		meshParamStore().clear();
+		meshFieldStore().clear();
+	}
+
+	const std::vector<MeshThemeParam>& meshThemeParams() { return meshParamStore(); }
+
+	bool elementTakesMeshes(const ThemeElementDesc& element) {
+		for (size_t i = 0; i < element.fieldCount; ++i) {
+			if (std::string_view(element.fields[i].name) == "mesh") return true;
+		}
+		return false;
+	}
+
 	const ThemeFieldDesc* findThemeField(const ThemeElementDesc& element, std::string_view field) {
+		// A mesh's parameters, for an element a mesh can draw. Checked first because they
+		// are the only names with a dot in them and so can shadow nothing.
+		if (elementTakesMeshes(element)) {
+			const std::vector<ThemeFieldDesc>& extra = meshFieldStore();
+			for (const ThemeFieldDesc& one : extra) {
+				if (field == one.name) return &one;
+			}
+		}
 		for (size_t i = 0; i < element.fieldCount; ++i) {
 			if (field == element.fields[i].name) return &element.fields[i];
 		}

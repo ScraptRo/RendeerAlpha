@@ -56,10 +56,18 @@ function(rda_add_types target output theme declaration)
 	get_filename_component(theme_abs "${theme}" ABSOLUTE)
 	get_filename_component(state_abs "${declaration}" ABSOLUTE)
 
+	# Whatever rda_add_meshes recorded. A mesh's parameters are theme fields, so they
+	# belong in the .d.ts an editor checks a theme against -- and an edit to a mesh
+	# rewrites it, because adding a parameter adds a field.
+	set(mesh_args "")
+	foreach(mesh IN LISTS RDA_MESH_FILES_${target})
+		list(APPEND mesh_args --mesh "${mesh}")
+	endforeach()
+
 	add_custom_command(
 		OUTPUT  "${out_abs}"
-		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> types "${out_abs}" "${theme_abs}" "${state_abs}"
-		DEPENDS "${theme_abs}" "${state_abs}" rda
+		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> types "${out_abs}" "${theme_abs}" "${state_abs}" ${mesh_args}
+		DEPENDS "${theme_abs}" "${state_abs}" ${RDA_MESH_FILES_${target}} rda
 		COMMENT "Generating layout types for ${target}"
 		VERBATIM
 	)
@@ -87,10 +95,18 @@ function(rda_add_theme target source)
 	get_filename_component(stem "${absolute}" NAME_WE)
 	set(compiled "${directory}/${stem}.rdth")
 
+	# The schema this is checked against is the engine's table merged with what the
+	# project's meshes ask for, so the theme is recompiled when any of them changes --
+	# the same rule `rda build` follows for the same reason.
+	set(mesh_args "")
+	foreach(mesh IN LISTS RDA_MESH_FILES_${target})
+		list(APPEND mesh_args --mesh "${mesh}")
+	endforeach()
+
 	add_custom_command(
 		OUTPUT  "${compiled}"
-		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> theme "${absolute}" "${compiled}"
-		DEPENDS "${absolute}" rda
+		COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> theme "${absolute}" "${compiled}" ${mesh_args}
+		DEPENDS "${absolute}" ${RDA_MESH_FILES_${target}} rda
 		COMMENT "Compiling theme ${stem}.ts"
 		VERBATIM
 	)

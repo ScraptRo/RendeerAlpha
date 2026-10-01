@@ -31,6 +31,11 @@ namespace RDA {
 		return column < mColumns.size() ? mColumns[column].type : ColumnType::Number;
 	}
 
+	std::string_view Table::columnName(uint32_t column) const {
+		return column < mColumns.size() ? std::string_view(mColumns[column].name)
+		                                : std::string_view();
+	}
+
 
 	void Table::resize(size_t rows) {
 		if (rows == mRows) return;

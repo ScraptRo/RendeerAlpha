@@ -37,9 +37,17 @@ namespace RDA::Layout {
 		// The suggestion is worth the trouble because the mistake is nearly always a
 		// letter, and a field name is not something you can work out from first principles.
 		bool checkField(const ThemeFieldDesc* fields, size_t fieldCount, bool allowCommon,
+		                bool allowMeshParams,
 		                const std::string& field, const std::string& what, std::string& error) {
 			for (size_t i = 0; i < fieldCount; ++i) {
 				if (field == fields[i].name) return true;
+			}
+			// What the project's meshes asked for. Only for an element a mesh can draw,
+			// and only ever additional: these all carry a dot, which no engine field does.
+			if (allowMeshParams) {
+				for (const MeshThemeParam& one : meshThemeParams()) {
+					if (field == one.name) return true;
+				}
 			}
 			if (allowCommon) {
 				size_t commonCount = 0;
@@ -70,6 +78,7 @@ namespace RDA::Layout {
 		                uint32_t node, const std::string& nodeId,
 		                std::vector<uint32_t>& childFirst, std::vector<uint32_t>& childCount,
 		                const ThemeFieldDesc* fields, size_t fieldCount, bool allowCommon,
+		                bool allowMeshParams,
 		                const std::string& what, std::string& error) {
 			JSPropertyEnum* names = nullptr;
 			uint32_t count = 0;
@@ -92,8 +101,8 @@ namespace RDA::Layout {
 					const bool nested = JS_IsObject(value) && !JS_IsFunction(ctx, value);
 
 					// Once, on the first pass, so a name is not reported twice.
-					if (pass == 0 && !checkField(fields, fieldCount, allowCommon, key,
-					                             what, error)) {
+					if (pass == 0 && !checkField(fields, fieldCount, allowCommon,
+					                             allowMeshParams, key, what, error)) {
 						JS_FreeValue(ctx, value);
 						ok = false;
 						break;
@@ -129,7 +138,7 @@ namespace RDA::Layout {
 						size_t kindCount = 0;
 						const ThemeFieldDesc* kinds = syntaxFields(kindCount);
 						ok = readFields(ctx, value, builder, child, childId, childFirst,
-						                childCount, kinds, kindCount, false,
+						                childCount, kinds, kindCount, false, false,
 						                what + " `" + key + "`", error);
 					}
 					JS_FreeValue(ctx, value);
@@ -224,6 +233,7 @@ namespace RDA::Layout {
 								ok = readFields(ctx, style, builder, node, variant,
 								                childFirst, childCount,
 								                described->fields, described->fieldCount, true,
+								                elementTakesMeshes(*described),
 								                "`" + element + "." + variant + "`", error);
 								if (!ok) {
 									JS_FreeValue(ctx, style);

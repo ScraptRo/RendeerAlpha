@@ -12,6 +12,63 @@
 #
 #   rda_add_layouts(sandbox res/layouts/hello.tsx)
 
+# Compiling widget meshes.
+#
+# Same shape as a layout: the source is TypeScript, the output sits beside it, and the
+# build runs the compiler. What is different is the ordering. A mesh declares parameters
+# that the theme may then set, so the theme schema is the engine's table *merged with
+# every mesh this project has* -- which means the meshes have to be read before a theme
+# or a .d.ts is checked against it.
+#
+# `rda build` gets that for free by having the whole project in one process. CMake gives
+# each part its own, so the list is recorded here and handed to the theme and type rules
+# as `--mesh` arguments. **Call this before rda_add_theme and rda_add_types**, or those
+# two will be checked against the engine's table alone and a theme that sets a mesh's
+# parameter will be refused as if it had misspelt a field.
+#
+#   rda_add_meshes(sandbox res/mesh/tab.ts)
+
+function(rda_add_meshes target)
+	if(NOT ARGN)
+		return()
+	endif()
+
+	set(sources "")
+	foreach(source IN LISTS ARGN)
+		get_filename_component(absolute "${source}" ABSOLUTE)
+		list(APPEND sources "${absolute}")
+	endforeach()
+
+	# Recorded whether or not anything can be compiled here, because the theme rule needs
+	# the *declarations* either way -- and reading those needs only the source.
+	set(RDA_MESH_FILES_${target} "${sources}" CACHE INTERNAL "")
+
+	if(NOT RDA_COMPILE_LAYOUTS OR NOT TARGET rda OR NOT RDA_ESBUILD_EXECUTABLE)
+		message(STATUS
+			"Meshes for ${target}: not recompiled; using the .rdam files in the source tree")
+		return()
+	endif()
+
+	set(outputs "")
+	foreach(absolute IN LISTS sources)
+		get_filename_component(directory "${absolute}" DIRECTORY)
+		get_filename_component(stem "${absolute}" NAME_WE)
+		set(compiled "${directory}/${stem}.rdam")
+
+		add_custom_command(
+			OUTPUT  "${compiled}"
+			COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> mesh "${absolute}" "${compiled}"
+			DEPENDS "${absolute}" rda
+			COMMENT "Compiling mesh ${stem}.ts"
+			VERBATIM
+		)
+		list(APPEND outputs "${compiled}")
+	endforeach()
+
+	add_custom_target(${target}_meshes DEPENDS ${outputs})
+	add_dependencies(${target} ${target}_meshes)
+endfunction()
+
 function(rda_add_layouts target)
 	if(NOT ARGN)
 		return()

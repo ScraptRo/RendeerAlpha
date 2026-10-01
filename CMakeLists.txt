@@ -36,7 +36,11 @@ cmake_minimum_required(VERSION 3.21)
 # undecoded, so every one of them reached the screen too light. They are decoded now, which
 # means a palette picked by eye against the old behaviour renders differently -- correctly,
 # for the first time. See docs/frontend/themes.md.
-project(RendeerAlpha VERSION 1.0.0 LANGUAGES C CXX)
+#
+# Every version since is in CHANGELOG.md, which is where a running account of what changed
+# belongs rather than here. The number below and the C ABI in RendeerC.h move
+# independently: this is 1.1.0 and that is still 1.6.
+project(RendeerAlpha VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -58,6 +58,36 @@ A tile follows the pointer in pixels while the grid follows it in whole cells be
 which is the whole feel of the arrangement: what you carry is smooth, what it does to the
 others snaps, and a translucent rectangle shows where it will land.
 
+## A panel can wear its own bar
+
+Every colour of a panel's bar is themeable and none of its *shape* was: a filled strip,
+the title as text, an `x` at a fixed offset, all literal in `Docking.cpp`. A `<header>`
+inside a `<dock>` replaces it with a widget tree, and the engine keeps only the part that
+cannot be handed over — the hit test that picks the panel up and carries it somewhere
+else.
+
+Which press that is, is the whole of the design. A button on the bar has to win over the
+bar, and the GUI already answers that: hot is last-writer-wins, and the header's contents
+run after the band declares itself. So the band asks *afterwards* — it reads which widget
+the pointer went down on before painting its contents and again after, and if that has
+not changed, nothing inside claimed it. Asking first would hand every press to the bar
+and a close button would drag the panel instead of closing it.
+
+It is drawn wherever the panel is the only one in its pane, which includes floating and
+includes every tile. Sharing a pane, the strip wins and the header is not drawn: a strip
+belongs to the pane and a header belongs to a panel, and two panels in one group cannot
+both dress it. That is the one rule the feature needed, and everything else follows from
+it — including that a dressed panel dragged into a tab group becomes an ordinary tab, and
+gets its bar back when it is pulled out again.
+
+The close button that came with it is `visible`, which now means on a dock panel what it
+means everywhere else: the room goes with it. `DockLayout::layout` takes an optional
+predicate saying which ids are showing, and a pane holding nothing that shows is given no
+room at all — its sibling takes the whole split and no splitter is kept between them.
+That is reversible in a way the engine's `x` is not: the pane is still in the tree at zero
+size, so showing the panel again puts it back exactly where it was rather than wherever a
+new one would land.
+
 ## The chrome follows the theme
 
 A dock panel's tab, its title bar when it floats, the splitters between panes and the

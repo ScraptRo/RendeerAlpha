@@ -21,7 +21,14 @@ namespace RDA {
 		// Any input at all could move a hover highlight, a caret or a dock, so the tree
 		// has to be walked to find out.
 		if (mInput.pointer != mLastPointer) return false;
-		if (mInput.down || mInput.pressed || mInput.released) return false;
+		if (mInput.lDown || mInput.lPressed || mInput.lReleased) return false;
+		// The other two buttons, for the same reason the first one is here: a walk is
+		// the only thing that asks a widget whether the pointer is on it, so a right
+		// press that does not walk is a context menu that never opens. Left out when
+		// they were added, and the symptom was a menu that worked only when something
+		// else had already forced a walk that frame.
+		if (mInput.rDown || mInput.rPressed || mInput.rReleased) return false;
+		if (mInput.mDown || mInput.mPressed || mInput.mReleased) return false;
 		if (mInput.scroll != 0.0f) return false;
 		if (!mInput.typed.empty() || !mInput.editKeys.empty()) return false;
 		if (mInput.copy || mInput.cut || mInput.paste || mInput.selectAll || mInput.submit) return false;
@@ -158,7 +165,7 @@ namespace RDA {
 			// Far enough outside that no rect contains it, rather than a flag every
 			// widget would have to remember to ask about.
 			mInput.pointer = glm::vec2(-1.0e6f, -1.0e6f);
-			mInput.down = mInput.pressed = mInput.released = false;
+			mInput.lDown = mInput.lPressed = mInput.lReleased = false;
 			mInput.scroll = 0.0f;
 		}
 		mOpacity = 1.0f;
@@ -264,6 +271,10 @@ namespace RDA {
 			if (f.id != mFocused) continue;
 			const FocusStyle& ring = mTheme.focus(f.ring);
 			if (ring.width <= 0.0f) break;
+			// Only where the keyboard is what put it there, unless the theme says
+			// otherwise. A ring around the thing you just clicked is a second answer to
+			// a question you had already answered.
+			if (ring.show == FocusShow::Keyboard && !mFocusByKeyboard) break;
 			const Rect r{ f.rect.x + ring.inset, f.rect.y + ring.inset,
 			              f.rect.w - ring.inset * 2.0f, f.rect.h - ring.inset * 2.0f };
 			// Four edges rather than addFrame: that draws the border as a full rect and
@@ -279,10 +290,22 @@ namespace RDA {
 		}
 
 		flushCmd();
+
+		// The right button's one handler, called here rather than where it was claimed:
+		// the walk was in the middle of iterating the tree, and a menu handler that adds
+		// or removes a widget would have pulled the container out from under it.
+		if (Widget* asked = mContext) {
+			mContext = nullptr;
+			if (asked->onContext) asked->onContext();
+			// Whatever it did, the frame is worth looking at again -- a menu opening is
+			// a binding, and a binding is not input.
+			mAwake = true;
+		}
+
 		// A release anywhere ends the interaction if no widget consumed it.
-		if (mInput.released) mActive = 0;
+		if (mInput.lReleased) mActive = 0;
 		// A press that landed on nothing focusable drops the keyboard.
-		if (mInput.pressed && !mFocusClaimed) mFocused = 0;
+		if (mInput.lPressed && !mFocusClaimed) mFocused = 0;
 
 		// And Tab, once everything has had its turn to register.
 		if (mFocusMove != 0 && !mFocusMoveConsumed && !mFocusables.empty()) {
@@ -299,6 +322,9 @@ namespace RDA {
 				next = (mFocusMove > 0) ? (at + 1) % count : (at + count - 1) % count;
 			}
 			mFocused = mFocusables[next].id;
+			// And this is the one move that earns a ring: nothing else on screen says
+			// where Tab has just taken the keyboard.
+			mFocusByKeyboard = true;
 		}
 
 		// Fingerprint the frame's geometry. FNV-1a over the raw vertex/index bytes plus
@@ -576,6 +602,38 @@ namespace RDA {
 		addQuadPoints(from - across, from + across, to + across, to - across, color);
 	}
 
+	bool Gui::drawMesh(const WidgetMesh& mesh, const Rect& rect, int from, int into, float t,
+	                   const uint32_t* colours, size_t colourCount, uint32_t base) {
+		if (!mesh.valid() || rect.w <= 0.0f || rect.h <= 0.0f) return false;
+
+		// Kept between calls rather than allocated per widget: this runs once per
+		// mesh-drawn widget per frame, and a vector that grows to the largest mesh and
+		// stays there costs one allocation for the life of the program.
+		static std::vector<GuiVertex> resolved;
+		mesh.resolve(from, into, t, rect, colours, colourCount, base, resolved);
+		if (resolved.empty()) return false;
+
+		// The same texture solid geometry always uses -- the atlas' white texel -- so a
+		// mesh batches with every rect and glyph around it and costs no extra draw.
+		setTexture(nullptr);
+		const glm::vec2 white = mFont ? mFont->whiteUV() : glm::vec2(0.0f);
+
+		const size_t first = mDraw.vertices.size();
+		if (first + resolved.size() > 0xFFFFu) return false;  // one buffer, 16-bit indices
+		for (GuiVertex one : resolved) {
+			one.uv = white;
+			// The fade every other piece of geometry gets in addQuad. A mesh does not go
+			// through it, so a collapsing panel would have faded everything inside
+			// itself except the meshes.
+			if (mOpacity < 1.0f) one.color = fadeTo(one.color, mOpacity);
+			mDraw.vertices.push_back(one);
+		}
+		for (uint16_t index : mesh.indices()) {
+			mDraw.indices.push_back(static_cast<uint16_t>(first + index));
+		}
+		return true;
+	}
+
 	void Gui::addRect(const Rect& r, uint32_t color) {
 		setTexture(nullptr); // solid quads sample the atlas' white texel
 		glm::vec2 w = mFont ? mFont->whiteUV() : glm::vec2(0.0f);
@@ -804,8 +862,8 @@ namespace RDA {
 	bool Gui::windowGrip(const char* id, const Rect& rect) {
 		const uint32_t wid = scopedId(id);
 		if (rect.contains(mInput.pointer)) mHot = wid;
-		if (mHot == wid && mInput.pressed) mActive = wid;
-		if (mActive == wid && mInput.released) mActive = 0;
+		if (mHot == wid && mInput.lPressed) mActive = wid;
+		if (mActive == wid && mInput.lReleased) mActive = 0;
 
 		// Held is enough: there is no click to report and nothing to draw. A drag that
 		// began here goes on even once the pointer has left the bar, which is what makes
@@ -822,29 +880,33 @@ namespace RDA {
 	}
 
 	bool Gui::button(const char* id, const char* text, const Rect& rect, Variant variant,
-	                 TextAlign align, float alignNudge) {
+	                 TextAlign align, float alignNudge, bool selected) {
 		const ButtonStyle& s = mTheme.button(variant);
 		uint32_t wid = scopedId(id);
 		bool inside = rect.contains(mInput.pointer);
 		if (inside) mHot = wid;
-		if (mHot == wid && mInput.pressed) mActive = wid;
+		if (mHot == wid && mInput.lPressed) mActive = wid;
 
 		bool clicked = false;
-		if (mActive == wid && mInput.released) {
+		if (mActive == wid && mInput.lReleased) {
 			if (mHot == wid) clicked = true;
 			mActive = 0;
 		}
 		// Clicking one points the keyboard at it, the way clicking a field does.
-		if (mHot == wid && mInput.pressed) setFocus(wid);
+		if (mHot == wid && mInput.lPressed) setFocus(wid);
 		const bool hasFocus = focusable(wid, rect);
 		if (hasFocus && focusActivated(wid)) clicked = true;
 
 		uint32_t color = s.normal;
+		// Chosen, and staying chosen. Ahead of hover on purpose: a tab that went back to
+		// looking unchosen because the pointer arrived on it would be saying the wrong
+		// thing about the one place it matters most.
+		if (selected)            color = s.pressed;
+		else if (mActive == wid) color = s.pressed; // pressed
+		else if (mHot == wid)    color = s.hovered; // hovered
 		// Pressed-looking while the key that presses it is what activated it. There is
 		// no held state to read for a key, so this is the frame it happens on.
 		if (hasFocus && focusActivated(wid)) color = s.pressed;
-		if (mActive == wid)      color = s.pressed; // pressed
-		else if (mHot == wid)    color = s.hovered; // hovered
 		// On its way there rather than already there, when the theme asks for it. The
 		// three states above are unchanged: what a button *should* look like is still
 		// decided by what is happening to it, and only how it gets there is new.
@@ -854,7 +916,60 @@ namespace RDA {
 		// one of the two used to travel.
 		const float radius = mMotion.value(wid ^ kMotionRadius, s.radius,
 		                                   s.motion.seconds, s.motion.curve);
-		addFrame(rect, color, s.border, s.borderWidth, radius);
+
+		// A mesh, if the variant names one. It is the whole of the button's surface --
+		// the frame, the corners and the fill -- so the built-in drawing below is what
+		// happens when there is no mesh, or when the file behind it would not load.
+		bool drawn = false;
+		if (!s.mesh.empty()) {
+			if (const WidgetMesh* mesh = widgetMeshes().find(s.mesh)) {
+				// Names to indices, once. After this the per-frame path is an array
+				// lookup, which is the whole point of declaring parameters rather than
+				// reading them out of a map every time something is drawn.
+				//
+				// Keyed on the mesh so a theme swap that points a variant at a different
+				// one resolves again rather than keeping the old answer.
+				if (s.meshResolvedFor != mesh) {
+					s.meshColours.assign(mesh->params().size(), 0u);
+					for (size_t i = 0; i < mesh->params().size(); ++i) {
+						s.meshColours[i] = mesh->params()[i].colour;   // what it declared
+					}
+					for (const auto& given : s.meshParams) {
+						// "tab.seam" -- the mesh knows itself as "seam".
+						const size_t dot = given.first.find('.');
+						const std::string bare = dot == std::string::npos
+							? given.first : given.first.substr(dot + 1);
+						const int at = mesh->paramIndex(bare);
+						if (at >= 0) s.meshColours[static_cast<size_t>(at)] = given.second;
+					}
+					s.meshResolvedFor = mesh;
+				}
+				// Which state it is in, as a number, so that moving between them is the
+				// same eased value every other property here already uses.
+				//
+				// The states are a ladder, ordered from least engaged to most: at rest,
+				// under the pointer, held. Easing through the middle one on the way to
+				// the last is not a compromise -- it is what a press looks like.
+				//
+				// `selected` is the top of that ladder. A mesh with three states
+				// therefore draws a chosen widget the way it draws a held one, which is
+				// usually right and is what a tab wants; a mesh that wants them to differ
+				// writes a fourth state and a press travels through `held` to reach it.
+				const int last = static_cast<int>(mesh->stateNames().size()) - 1;
+				float target = 0.0f;
+				if (selected)         target = static_cast<float>(last);
+				else if (mActive == wid)   target = 2.0f;
+				else if (mHot == wid) target = 1.0f;
+				const float where = std::clamp(
+					mMotion.value(wid ^ kMotionShape, target, s.motion.seconds, s.motion.curve),
+					0.0f, static_cast<float>(last));
+				const int from = static_cast<int>(where);
+				const int into = (std::min)(from + 1, last);
+				drawn = drawMesh(*mesh, rect, from, into, where - static_cast<float>(from),
+				                 s.meshColours.data(), s.meshColours.size(), color);
+			}
+		}
+		if (!drawn) addFrame(rect, color, s.border, s.borderWidth, radius);
 
 		if (mFont) {
 			// Inset by the same padding a button measures itself with, so aligned text

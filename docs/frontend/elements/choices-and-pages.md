@@ -45,11 +45,31 @@ A row of titles, and the one page whose title is selected.
 | --- | --- |
 | `value` | which page, counting from zero |
 | `barHeight` | height of the title row |
+| `variant` | the button style every title is drawn with |
 | `onChange(number)` | with the index clicked |
 
 `<tab>` takes a `title`; its children are the page. The pages that are not showing **still
 exist and still hold their state** — a widget is a thing that persists, so leaving a tab
 and coming back does not reset what is in it.
+
+### The bar
+
+Each title is an ordinary [`<button>`](text-and-input.md#button), so hover, press and
+motion come from the theme like everything else. **All of them wear `variant`, and the one
+whose page is showing is the one the widget marks
+[`selected`](text-and-input.md#selected--one-of-a-row).** So one variant describes the
+whole bar: its `normal` is a closed title, its `pressed` is the open one.
+
+That is what lets a tab bar be drawn by a [mesh](../meshes.md) — the titles have to be one
+shape to differ by one state — and it is why a bar with no `variant` at all still shows
+which page is open.
+
+**The bar is drawn after the pages**, so a title may reach a pixel or two past its own
+rectangle and land on the page below it. That is how a mesh-drawn title merges into its
+page and the seam between them disappears; give the mesh's `seam` colour and the page's
+background the same value and there is nothing left to see. One consequence: a click
+lands after the pages have been painted, so the page it chose begins arriving on the next
+frame rather than that one.
 
 ## `<image>`
 

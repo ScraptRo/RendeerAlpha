@@ -112,9 +112,15 @@ namespace RDA {
 	struct GuiInput {
 		glm::vec2 pointer{ 0.0f };
 		glm::vec2 viewport{ 0.0f }; // target size in GUI pixels (for edge docking, etc.)
-		bool  down = false;
-		bool  pressed = false;
-		bool  released = false;
+		bool rDown = false;
+		bool rPressed = false;
+		bool rReleased = false;
+		bool mDown = false;
+		bool mPressed = false;
+		bool mReleased = false;
+		bool lDown = false;
+		bool lPressed = false;
+		bool lReleased = false;
 		// How many presses in quick succession this one is: 1 a plain click, 2 a double
 		// click, 3 a triple. Only meaningful on the frame `pressed` is set.
 		int   clickCount = 1;
@@ -434,6 +440,23 @@ namespace RDA {
 	};
 
 	struct ButtonStyle {
+		// A mesh to draw instead of the built-in rounded rect. Empty is the built-in one,
+		// which is what every variant that says nothing gets. See MeshAsset.h.
+		//
+		// This is a path to a compiled .rdam, and it is on the *style* rather than on the
+		// element because the shape of a widget is what a theme is for -- a layout that
+		// says <button variant="tab"> should not also have to know what a tab is made of.
+		std::string mesh;
+		// What the theme said about that mesh's parameters, by name -- "tab.seam" and the
+		// colour beside it. Kept as written, because the theme is read before the mesh is
+		// and the order a mesh declared its parameters in is the mesh's business.
+		std::vector<std::pair<std::string, uint32_t>> meshParams;
+		// The same values, in the order the mesh wants them, worked out the first time
+		// this style draws that mesh and kept afterwards. Mutable because resolving is
+		// not a change to the style -- it is the style finally meeting the mesh it names.
+		mutable std::vector<uint32_t> meshColours;
+		mutable const void* meshResolvedFor = nullptr;
+
 		uint32_t normal  = rgba(58, 62, 72);
 		uint32_t hovered = rgba(80, 86, 100);
 		uint32_t pressed = rgba(42, 106, 208);
@@ -471,10 +494,24 @@ namespace RDA {
 	// The ring around whatever has the keyboard. One style for every widget, because it
 	// answers a question about the keyboard rather than about the widget: a reader
 	// looking for "where does typing go" should find the same mark each time.
+	// When the ring around whatever holds the keyboard is drawn.
+	//
+	// `Keyboard` is the default and means what it says: only when the keyboard is what
+	// put the focus there. A press does not draw one, because a press is its own
+	// feedback -- you are looking at the thing you just clicked, and a ring around it
+	// says nothing you did not already know. It also reads as a *second* kind of
+	// chosen-ness on a widget that is already chosen, which is exactly wrong on a tab.
+	//
+	// Somebody navigating by Tab has no such feedback and needs the ring, which is why
+	// this is not simply off. A theme that wants it on a click says `always`; one that
+	// wants none at all sets `width` to 0, which already meant that.
+	enum class FocusShow : uint8_t { Keyboard, Always };
+
 	struct FocusStyle {
-		uint32_t color = rgba(110, 156, 240);
-		float    width = 2.0f;  // how thick the ring is
-		float    inset = -2.0f; // negative sits outside the widget's own edge
+		uint32_t  color = rgba(110, 156, 240);
+		float     width = 2.0f;  // how thick the ring is
+		float     inset = -2.0f; // negative sits outside the widget's own edge
+		FocusShow show  = FocusShow::Keyboard;
 	};
 
 	struct PanelStyle {

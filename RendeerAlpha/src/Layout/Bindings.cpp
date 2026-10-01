@@ -104,9 +104,10 @@ namespace RDA::Layout {
 			if (property == "spans")   { w->spans = value.asText(); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Button*>(&widget)) {
-			if (property == "text")    { w->text = value.asText(); return true; }
-			if (property == "padding") { w->padding = static_cast<float>(value.asNumber()); return true; }
-			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+			if (property == "text")     { w->text = value.asText(); return true; }
+			if (property == "padding")  { w->padding = static_cast<float>(value.asNumber()); return true; }
+			if (property == "selected") { w->selected = value.truthy(); return true; }
+			if (property == "variant")  { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<Stream*>(&widget)) {
 			if (property == "name")    { w->name = value.asText(); return true; }
 			if (property == "fit")     {
@@ -145,6 +146,14 @@ namespace RDA::Layout {
 			if (property == "min")     { w->minValue = static_cast<float>(value.asNumber()); return true; }
 			if (property == "max")     { w->maxValue = static_cast<float>(value.asNumber()); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+		} else if (auto* w = dynamic_cast<NumberField*>(&widget)) {
+			if (property == "label")    { w->label = value.asText(); return true; }
+			if (property == "value")    { w->value = value.asNumber(); return true; }
+			if (property == "step")     { w->step = value.asNumber(); return true; }
+			if (property == "min")      { w->minValue = value.asNumber(); return true; }
+			if (property == "max")      { w->maxValue = value.asNumber(); return true; }
+			if (property == "decimals") { w->decimals = static_cast<int>(value.asNumber()); return true; }
+			if (property == "variant")  { w->variant = Variant(std::string_view(value.text)); return true; }
 		} else if (auto* w = dynamic_cast<TextField*>(&widget)) {
 			if (property == "text")        { w->setText(value.asText()); return true; }
 			if (property == "placeholder") { w->setPlaceholder(value.asText()); return true; }

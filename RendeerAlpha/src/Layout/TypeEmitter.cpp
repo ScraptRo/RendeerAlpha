@@ -494,7 +494,15 @@ namespace RDA::Layout {
 
 		auto writeThemeField = [&out](const ThemeFieldDesc& field) {
 			if (field.doc && *field.doc) out << "\t/** " << field.doc << " */\n";
-			out << "\t" << field.name << "?: ";
+			// A mesh's parameters carry a dot, which is not an identifier -- so a name
+			// that needs quoting gets it. Every engine field is a plain name and is left
+			// alone, because `normal?: string` reads better than `"normal"?: string` and
+			// this file is meant to be read as well as compiled.
+			if (std::string_view(field.name).find('.') != std::string_view::npos) {
+				out << "\t\"" << field.name << "\"?: ";
+			} else {
+				out << "\t" << field.name << "?: ";
+			}
 			switch (field.type) {
 			case ThemeFieldType::Colour: out << "string"; break;
 			case ThemeFieldType::Number: out << "number"; break;
@@ -533,6 +541,16 @@ namespace RDA::Layout {
 			if (element.doc && *element.doc) out << "/** " << element.doc << " */\n";
 			out << "interface Rda" << capitalised << "Style {\n";
 			for (size_t i = 0; i < element.fieldCount; ++i) writeThemeField(element.fields[i]);
+			// What the project's meshes asked for, on anything a mesh can draw. These
+			// exist because a mesh declared them, not because the engine did -- so the
+			// generated types are the engine's schema merged with the project's, and a
+			// misspelt `tab.seem` is underlined in the editor like any other field.
+			if (elementTakesMeshes(element)) {
+				for (const MeshThemeParam& one : meshThemeParams()) {
+					const ThemeFieldDesc desc{ one.name.c_str(), one.type, nullptr, one.doc.c_str() };
+					writeThemeField(desc);
+				}
+			}
 			for (size_t i = 0; i < themeCommonCount; ++i) writeThemeField(themeCommon[i]);
 			out << "}\n"
 			       "/** Variants of " << element.name << ", by name. */\n"
@@ -558,7 +576,31 @@ namespace RDA::Layout {
 		for (size_t w = 0; w < widgetCount; ++w) {
 			const WidgetDesc& widget = widgets[w];
 			if (widget.doc && *widget.doc) out << "\t\t/** " << widget.doc << " */\n";
-			out << "\t\t" << widget.name << ": RdaCommonProps";
+
+			// An element whose own property has the same name as a common one has to
+			// *replace* it, and an intersection does not replace anything -- it demands
+			// both. A <popup>'s `anchor` is a widget path or "pointer"; the common one is
+			// which parent edges a node follows, and `RdaCommonProps & { anchor: ... }`
+			// makes the two an impossible type that nothing can satisfy. The compiler
+			// took `anchor="pointer"` quite happily and only the editor complained, which
+			// is the wrong way round for a file whose whole job is to be checked.
+			std::string omit;
+			for (size_t p = 0; p < widget.propCount; ++p) {
+				for (size_t c = 0; c < commonCount; ++c) {
+					if (std::string_view(widget.props[p].name) != std::string_view(common[c].name)) {
+						continue;
+					}
+					if (!omit.empty()) omit += " | ";
+					omit += "\"";
+					omit += widget.props[p].name;
+					omit += "\"";
+					break;
+				}
+			}
+
+			out << "\t\t" << widget.name << ": ";
+			if (omit.empty()) out << "RdaCommonProps";
+			else              out << "Omit<RdaCommonProps, " << omit << ">";
 			if (widget.propCount == 0) {
 				out << ";\n";
 				continue;

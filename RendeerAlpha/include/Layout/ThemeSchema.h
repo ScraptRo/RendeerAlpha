@@ -1,7 +1,9 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 // What a theme accepts, declared once.
 //
@@ -36,6 +38,13 @@ namespace RDA::Layout {
 		const char*    doc;
 	};
 
+	// One value a mesh asked the theme for.
+	struct MeshThemeParam {
+		std::string    name;   // already namespaced: "tab.seam"
+		std::string    doc;
+		ThemeFieldType type = ThemeFieldType::Colour;
+	};
+
 	struct ThemeElementDesc {
 		const char*           name;   // the export a theme file writes: `export const button`
 		const ThemeFieldDesc* fields;
@@ -45,6 +54,31 @@ namespace RDA::Layout {
 
 	// Accepted by every element: which variant a partial entry starts from.
 	const ThemeFieldDesc* commonThemeFields(size_t& count);
+
+	// ---- what the project's meshes add ------------------------------------------------
+	//
+	// The table above is the engine's half of the schema, not the whole of it. A widget
+	// drawn by a mesh needs values the engine has never heard of -- a seam colour, a
+	// flare width -- and could not have, because the mesh is the thing that decided to
+	// have them. `DockStyle` carries `tabHeight` and `closeWidth` only because C++ draws
+	// a tab strip and an "x"; a mesh-drawn one wants neither and wants five other things.
+	//
+	// So a mesh declares its parameters, `rda` collects them while it compiles the meshes,
+	// and they are registered here before any theme is checked. That is the whole reason
+	// meshes are built before themes.
+	//
+	// Namespaced by the mesh's own name -- "tab.seam" -- so two meshes may both want a
+	// `glow` without arguing, and so a dotted name can never collide with an engine field.
+	// A mesh may only *add*: nothing here can remove or redefine a built-in, because a
+	// theme whose schema depended on which meshes a project happened to contain would be
+	// a sharp edge for no gain.
+	void registerMeshThemeParams(const std::vector<MeshThemeParam>& params);
+	void clearMeshThemeParams();
+	const std::vector<MeshThemeParam>& meshThemeParams();
+
+	// Whether an element can be drawn by a mesh, and so may carry their parameters. True
+	// of anything whose own fields include `mesh`.
+	bool elementTakesMeshes(const ThemeElementDesc& element);
 
 	// Every element a theme may declare, in the order they are declared here.
 	const ThemeElementDesc* themeSchema(size_t& count);

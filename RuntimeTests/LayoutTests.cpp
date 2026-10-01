@@ -396,6 +396,75 @@ TEST(an_interrupted_colour_leaves_from_the_one_it_was_showing) {
 	CHECK(motion.colour(kKey, normal, 0.14f) == normal);
 }
 
+// ---- a point travelling, and the two ways it used to arrive without moving -------------
+
+TEST(a_point_that_moves_on_one_axis_still_travels) {
+	// The bug this is here for: x and y are two entries and one journey, and the clock
+	// the journey is read from was x's. A widget that moves only downward -- every child
+	// of a vertical stack, which is most widgets that move at all -- had an x that had
+	// never been anywhere, so its clock said nothing had happened. The point stayed
+	// exactly where it was for the whole duration and then appeared at the far end in one
+	// frame. It looked like animation being skipped, and the report was "they snap".
+	Motion motion;
+	const Pace pace{ Easing::Linear, false, 0, 0, 1, 1 };
+
+	motion.along(kKey, { 40.0f, 0.0f }, 0.2f, pace, nullptr);  // where it starts
+	motion.step(0.016f);
+
+	bool moved = false;
+	for (int i = 0; i < 6; ++i) {
+		const glm::vec2 at = motion.along(kKey, { 40.0f, 100.0f }, 0.2f, pace, nullptr);
+		CHECK(at.x == 40.0f);              // the axis with nowhere to go stays put
+		if (at.y > 0.5f && at.y < 99.5f) moved = true;
+		motion.step(0.016f);
+	}
+	CHECK(moved); // it was somewhere in between at least once, rather than only at the ends
+}
+
+TEST(a_point_arrives_exactly_and_then_stops_asking_for_frames) {
+	Motion motion;
+	const Pace pace{ Easing::Linear, false, 0, 0, 1, 1 };
+	motion.along(kKey, { 0.0f, 0.0f }, 0.1f, pace, nullptr);
+	motion.step(0.016f);
+	for (int i = 0; i < 12; ++i) {
+		motion.along(kKey, { 0.0f, 100.0f }, 0.1f, pace, nullptr);
+		motion.step(0.016f);
+	}
+	const glm::vec2 at = motion.along(kKey, { 0.0f, 100.0f }, 0.1f, pace, nullptr);
+	CHECK(at.y == 100.0f);
+	CHECK(!motion.moving());
+}
+
+TEST(the_frame_a_value_arrives_on_is_one_the_window_still_draws) {
+	// An on-demand window runs step(), asks whether anything is moving, and skips the
+	// frame entirely when nothing is -- no walk, no submit, no present, so the screen
+	// keeps whatever it was showing. The step that lands a value on its target is
+	// therefore the step whose frame has to show it there.
+	//
+	// It used to report that step as nothing moving, so that frame was skipped and the
+	// end of every journey never reached the screen. What was left sat a frame short
+	// until something unrelated forced a walk, and then covered the rest in one go.
+	// Linear here because the size of it is the point: with an easing that decelerates
+	// the leftover is a fraction of a pixel and the same bug is invisible.
+	Motion motion;
+	motion.value(kKey, 0.0f, 0.1f, Easing::Linear);
+	motion.step(0.016f);
+	motion.value(kKey, 100.0f, 0.1f, Easing::Linear);
+
+	// The loop, honestly: step, ask, and paint only on the frames it says to have.
+	float onScreen = 0.0f;
+	int drawn = 0;
+	for (int i = 0; i < 60; ++i) {
+		motion.step(0.016f);
+		if (!motion.moving()) break;              // this frame never happens
+		onScreen = motion.value(kKey, 100.0f, 0.1f, Easing::Linear);
+		++drawn;
+	}
+	CHECK(drawn > 0);
+	CHECK(drawn < 60);
+	CHECK(onScreen == 100.0f);  // and not 96, which is where the last drawn frame was
+}
+
 // ---- syntax highlighting --------------------------------------------------------------
 //
 // One data-driven lexer serves every language, and every language but "python" is data

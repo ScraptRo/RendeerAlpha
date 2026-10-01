@@ -33,6 +33,7 @@ run time, and if it is not, it does not.
 | [Motion](motion.md) | `animate`, inherited; `visible`, and what collapses |
 | [The keyboard](keyboard.md) | Tab, Space, the arrows, Escape — and the ring that shows where they go |
 | [The window](window.md) | how it opens, its icon, a window with no frame, and `state.rda` |
+| [Meshes](meshes.md) | a widget's shape as an asset: anchors, states, regions |
 
 ## The elements
 

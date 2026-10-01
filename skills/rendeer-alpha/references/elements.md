@@ -141,8 +141,16 @@ and overlaps go to whichever starts first.
 | `text` | string | the label on it, when it holds nothing else |
 | `hAlign` | `start` `center` `end` | where that text sits; centred unless said otherwise |
 | `padding` | number | inset around its children, when it has any |
+| `selected` | boolean | chosen, and staying chosen |
 | `variant` | string | theme variant (`button`) |
 | `onClick` | handler | runs on each completed click |
+
+`selected` is what a tab strip, a segmented control or a toolbar's current tool is made
+of. Hover and press are things happening *to* a button and the GUI works them out itself;
+being the chosen one is something only the application knows, so it is a binding the
+button never writes. It draws in the variant's `pressed` colour and keeps it while the
+pointer is elsewhere -- ahead of hover on purpose. Drawn with a mesh it is the top rung of
+that mesh's ladder of states.
 
 A button may hold children instead of text, laid out inside it like a `<panel>`'s. Put a
 `<stack>` inside one to arrange them:
@@ -158,6 +166,28 @@ A button may hold children instead of text, laid out inside it like a `<panel>`'
 
 The children draw and the button takes the input, so a clickable widget inside one does
 not receive its own clicks.
+
+### `<number>` — a number you drag
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `label` | string | drawn on the left; omitted, only the value is drawn |
+| `value` | number | what it holds |
+| `step` | number | how much one pixel of drag is worth (default 0.01) |
+| `min` `max` | number | bounds; equal means unbounded |
+| `decimals` | number | places the value is drawn to (default 3) |
+| `variant` | string | theme variant (`textfield`) |
+| `onChange` | handler(number) | while dragged, and when a typed value is committed |
+
+```tsx
+<number id="scale" label="Scale" value={() => state.scale} step={0.01}
+        width={220} height={26} onChange={(v) => state.scale = v} />
+```
+
+Drag across it to adjust, click it to type -- clicking turns it into a real text field,
+with selection, the caret and undo. **Shift** is the fine adjustment. Neither a `<slider>`
+(which needs a range and spends its width on a track) nor a `<textfield>` (which makes you
+select, type and commit to nudge a value by one).
 
 ### `<textfield>` — editable text
 
@@ -293,8 +323,14 @@ See `references/recipes.md`.
 | --- | --- | --- |
 | `value` | number | which page is showing, from zero |
 | `barHeight` | number | height of the row of titles |
-| `variant` | string | theme variant (`button`) |
+| `variant` | string | theme variant (`button`) for **every** title |
 | `onChange` | handler(number) | runs when a title is clicked, with its index |
+
+Each title is an ordinary `<button>`: all of them wear `variant`, and the widget marks the
+open one `selected`, so one variant describes the whole bar (`normal` is a closed title,
+`pressed` the open one). That is what lets the bar be drawn by a mesh. The bar is drawn
+*after* the pages, so a title may reach past its own rect onto the page below it -- which
+is how a mesh-drawn title merges into its page.
 
 | `<tab>` | Type | Meaning |
 | --- | --- | --- |
@@ -412,12 +448,50 @@ and as it looks on screen. See `docs/backend/effects.md`.
 | `col` `row` | number | tiles: which cell it starts in; unset means wherever it fits |
 | `cols` `rows` | number | tiles: how many cells wide and tall (default 3 x 3) |
 
-`<dock>` goes only inside `<dockspace>`.
+`<dock>` goes only inside `<dockspace>`. A `<header>` goes inside a `<dock>`, and
+replaces the bar the engine would have drawn:
+
+```tsx
+<dock id="explorer" title="Explorer" side="left" size={230}
+      visible={() => state.explorerOpen}>
+  <header id="bar" height={30}>
+    <stack id="row" arrange="horizontal" padding={6} spacing={8} vAlign="center">
+      <image id="ic" src="res/icons/folder.svg" width={16} height={16} />
+      <label id="t" width="fill" height="content" text="Explorer" />
+      <button id="x" text="x" width={22} height={18}
+              onClick={() => state.explorerOpen = false} />
+    </stack>
+  </header>
+  <list id="files" ... />
+</dock>
+```
+
+It is an ordinary widget tree, and `height` is the only property of its own (unset, it is
+as tall as the bar it replaced). Dragging the band still picks the panel up; a button on
+it takes its own press first. It is drawn wherever the panel is the only one in its pane
+-- floating, a tile, or a pane it has to itself -- and not when it is one tab among
+several, because a strip belongs to the pane and a header belongs to a panel. `closable`
+is ignored on a panel that has one.
+
+`visible` on a `<dock>` hides it *and* closes the space up: the pane's sibling takes the
+whole split and showing it again puts it back where it was. That is what a close button
+you drew yourself should write. The engine's `x` is different -- it removes the panel
+from the tree for good.
 
 **`panes`** is the editor: the area is cut into nested splits, panels sharing a pane
 become tabs, splitters move the boundaries, and a drop has four meanings depending on
 which part of a pane it lands on. Floating panels are drawn and take input in the order
 they were created: clicking one does not bring it to the front.
+
+While a panel is carried the space draws the four window edges banded, tints the pane
+under the pointer, and draws the panel itself where it would land -- outlined, with its
+name on a bar. Over a pane's edge that figure is the half it would take; in a pane's
+middle, where the drop joins the tab group, it is the tab it would become at the end of
+that pane's strip.
+
+Every pane has a grip in its bottom-right corner. Dragging it inward splits the pane and
+moves the panel showing into the new half; dragging it over a neighbour joins the two.
+A split moves rather than copies, so a pane with one panel has nothing to split off.
 
 **`tiles`** is the dashboard: each panel is a rectangle of whole cells in a column grid,
 with room between them. Dragging one pushes what it lands on downward; letting go,
@@ -459,6 +533,7 @@ in the order they were drawn.
 | Tab / Shift+Tab | the next / previous one |
 | Space or Enter | presses a `<button>`, toggles a `<checkbox>` |
 | Enter / Ctrl+Enter | sends from a `<textfield>` -- see `submitKey` |
+| right button | `onContext` on any element; open a `<popup anchor="pointer">` in it |
 | arrows | move a `<slider>`; move the highlight in an open `<select>` |
 | Enter | opens a `<select>`, and takes the highlighted row |
 | Escape | closes a `<select>`; leaves a `<textfield>` |

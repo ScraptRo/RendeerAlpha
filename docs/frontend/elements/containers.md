@@ -69,7 +69,7 @@ transparent full-area `<button>` and arithmetic against the window's width.
 | | |
 | --- | --- |
 | `open` | showing or not. The **layout** owns it; the popup never writes it |
-| `anchor` | the full id path of the widget to hang off — `"root/toolbar/model"`, not `"model"` |
+| `anchor` | the full id path of the widget to hang off — `"root/toolbar/model"`, not `"model"`; or `"pointer"` |
 | `placement` | `"below"` (default), `"above"`, `"right"`, `"left"`, `"over"` |
 | `gap` | pixels between the anchor and the popup |
 | `padding` | inset around its children |
@@ -93,6 +93,38 @@ transparent full-area `<button>` and arithmetic against the window's width.
 It is a container, so what is inside is an ordinary layout: a `<stack>` of buttons is a
 menu, a `<list>` is a picker, a `<label>` is a tooltip. The element is only the surface,
 where it goes, and when it goes away.
+
+### Right-click menus
+
+`onContext` is on every element and fires when the right button goes down on it. One
+widget hears it — the deepest one under the pointer that asked — so a panel and a button
+on it may both want a menu, and a right-click on the button means the button's.
+
+It carries nothing, because the thing that wants the position is the menu, and
+`anchor="pointer"` already knows it:
+
+```tsx
+<panel id="canvas" onContext={() => state.menu = true}> … </panel>
+
+<popup id="menu" open={() => state.menu} anchor="pointer" placement="over"
+       padding={4} onClose={() => state.menu = false}>
+  <stack id="items" arrange="vertical" spacing={2} width={140}>
+    <button id="cut"  text="Cut"  height={24}
+            onClick={() => { commands.cut(); state.menu = false }} />
+    <button id="copy" text="Copy" height={24}
+            onClick={() => { commands.copy(); state.menu = false }} />
+  </stack>
+</popup>
+```
+
+`"pointer"` is where the pointer was **when the popup opened**, not where it is now — a
+menu that followed the mouse could never be reached. `placement="over"` puts its corner
+on that point, which is the ordinary context menu; the other placements put it above,
+below or beside.
+
+The middle button is read too (`GuiInput::mDown` and friends) but has no event of its
+own: nothing in a layout has a use for it yet, and a backend that wants one reads it
+through `InputCallbacks`.
 
 **It never writes `open`.** `open` is a binding, and a widget that wrote its own bound
 property would be overwritten by the signal on the next frame and flicker. `onClose` is

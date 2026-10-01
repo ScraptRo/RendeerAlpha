@@ -39,6 +39,40 @@ namespace RDA {
 	// are none of those and a drop has one. A single mode would have to answer both.
 	enum class DockArrange : uint8_t { Panes, Tiles };
 
+	// The chrome a <dock> wears instead of the engine's.
+	//
+	// A dock panel's bar is drawn in C++: a filled strip, the title as text, an "x" at
+	// the far right. Every colour of that is themeable and none of its *shape* is, so a
+	// panel that wanted an icon beside its name, or two buttons, or no bar at all, could
+	// not have one. This is the answer: the bar is a widget tree like any other, and the
+	// engine keeps only the part that cannot be handed over -- the hit test that picks
+	// the panel up and carries it to another pane.
+	//
+	// It is drawn wherever the panel is the only one in its pane, which includes floating
+	// and includes every tile. Sharing a pane with others, the tab strip is what the pane
+	// wears and this is not drawn at all: a strip belongs to the pane and a header
+	// belongs to a panel, and two panels in one group cannot both dress it.
+	//
+	// Its height is its own `height` when it names one, and the theme's `tabHeight`
+	// otherwise -- so a header that says nothing is exactly as tall as the bar it
+	// replaced.
+	class DockHeader : public Widget {
+	public:
+		explicit DockHeader(std::string id) : Widget(std::move(id)) {}
+
+		// Driven by the DockSpace, like the panel that holds it, rather than by the
+		// retained walk -- it is chrome, and where the chrome goes is the pane's answer.
+		void paint(Gui&, glm::vec2) override {}
+		void drawHeader(Gui& gui, const Rect& band) {
+			paintChildren(gui, glm::vec2(band.x, band.y));
+		}
+
+		float bandHeight(float fallback) const {
+			return (height.mode == SizeSpec::Mode::Fixed && height.value > 0.0f)
+				? height.value : fallback;
+		}
+	};
+
 	// A movable, dockable container — defined in code, holding child widgets like any
 	// container. The user drags its title/tab to move it and drops it onto a target;
 	// the widgets inside never move on their own. This is the unit of docking.
@@ -76,8 +110,16 @@ namespace RDA {
 		// arriving; it was on the screen a frame ago, and detaching clears this.
 		bool fresh = true;
 
+		// The header this panel wears, or nullptr for the engine's own bar. The first one
+		// wins: a panel with two headers has a bug in it, and picking one quietly is a
+		// kinder answer than drawing both on top of each other.
+		DockHeader* header() const;
+		// How tall its bar is, given what the theme would have used.
+		float headerHeight(float fallback) const;
+
 		void paint(Gui&, glm::vec2) override {} // driven by the DockSpace, not the retained walk
-		void drawContents(Gui& gui, const Rect& body) { paintChildren(gui, glm::vec2(body.x, body.y)); }
+		// Everything except the header, which is drawn in the bar rather than in the body.
+		void drawContents(Gui& gui, const Rect& body);
 	};
 
 	// Owns a set of DockContainers and, each frame, lays them out over the window: a tree
@@ -166,6 +208,37 @@ namespace RDA {
 		// Puts containers that are not in the tree yet where their `dock` hint asks.
 		void seedTree(glm::vec2 viewport);
 		void drawPane(Gui& gui, DockNode* leaf, bool& busy);
+		// A panel's own header. Returns whether the band itself was taken hold of, which
+		// is the press that picks the panel up -- see the definition for why that is
+		// asked after its contents have drawn rather than before.
+		bool drawHeaderBand(Gui& gui, DockContainer* container, const Rect& band, bool busy);
+		// What the corner drag currently means. `into` is the pane it would join with, or
+		// null for a split; `side` and `ratio` say where the split would fall.
+		struct CornerIntent {
+			DockNode* from = nullptr;
+			DockNode* into = nullptr;    // join target, or null
+			DockDrop  side = DockDrop::None;
+			float     ratio = 0.5f;
+			Rect      preview{};
+			bool      valid = false;
+		};
+		CornerIntent cornerIntentAt(glm::vec2 pointer) const;
+		// The grip in a pane's bottom-right corner, and the press that takes it.
+		void drawPaneCorner(Gui& gui, DockNode* leaf, const Rect& slot, bool& busy);
+		// A figure of the panel being carried, drawn where letting go would put it: the
+		// room it would take, outlined, wearing a bar with its name on it.
+		//
+		// A translucent fill on its own was what this used to be, and a fill laid over a
+		// pane that is itself tinted reads as the window having gone blue rather than as
+		// a shape with edges. The outline is what makes it a figure and the name is what
+		// says which panel the figure is -- which matters most in the one case where the
+		// rectangle alone says nothing, a drop into a tab group.
+		void drawDropGhost(Gui& gui, const Rect& where, const DockStyle& chrome,
+		                   const char* title, bool asTab);
+		// Where a tab joining this pane would be drawn: after the ones already in its
+		// strip. Answered even for a pane wearing a <header> and therefore showing no
+		// strip at all, because joining it is exactly what brings the strip back.
+		float tabStripEnd(Gui& gui, const DockNode* leaf) const;
 		DockContainer* containerFor(const std::string& id) const;
 		DockNode* largestPane() const;
 		// A drop within a band of the window border docks across that whole edge, rather
@@ -173,6 +246,20 @@ namespace RDA {
 		DockDrop windowEdgeAt(glm::vec2 pointer, const Rect& area, Rect* previewOut) const;
 		// Bumps the revision and drops any node pointer that a collapse could dangle.
 		void structuralChange();
+
+		// This space's own corner of the animation table.
+		//
+		// There is always more than one dock space in a running application: the Gui keeps
+		// one of its own, for panels a backend adds through the C ABI, and a <dockspace>
+		// in a layout brings another -- and a layout may declare two. Everything else in
+		// here is keyed by a panel's id, which is unique across all of them. The drop
+		// guidance is keyed by a literal, so every space asked for the same entry: one of
+		// them said 1 while it was dragging and the others said 0 in the same frame, each
+		// restarting the other's journey, and its clock never left zero. The guidance was
+		// permanently a fade that had not started, which is why dropping a panel showed
+		// nothing at all about where it would land.
+		static uint32_t nextKeySalt();
+		const uint32_t mKeySalt = nextKeySalt();
 
 		struct ContainerType { std::string title; ContainerBuilder builder; };
 		std::unordered_map<std::string, ContainerType> mTypes;
@@ -223,6 +310,14 @@ namespace RDA {
 			bool        started = false;
 		};
 		std::vector<ClosingPane> mClosing;
+
+		// A pane's corner is being dragged: split it, or join it with a neighbour.
+		//
+		// Held as a container id rather than a DockNode*, because committing either one
+		// restructures the tree and every node pointer with it. The id survives that and
+		// finds its pane again.
+		std::string mCornerId;
+		glm::vec2   mCornerStart{ 0.0f };
 
 		DockContainer* mDragging = nullptr;      // a floating container being moved
 		DockContainer* mResizingFloat = nullptr; // a floating container being resized

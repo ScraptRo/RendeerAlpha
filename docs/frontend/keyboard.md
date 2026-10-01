@@ -17,15 +17,31 @@ The order is not a property you set. It is the order the widgets were drawn, whi
 order they are on screen, so a tab index cannot disagree with what the reader sees. A
 widget scrolled out of view is not drawn, so Tab does not visit it.
 
-What holds the keyboard wears a ring, themed once for the whole interface:
+What holds the keyboard wears a ring — **but only when the keyboard is what put it
+there.** Tab draws one; a click does not, and neither does a backend calling
+`rda_set_focus`.
+
+A press is its own feedback: you are looking at the thing you just clicked, and a box
+around it answers a question you had already answered. On a widget that is *also* the
+chosen one — a tab, a segmented control — it reads as a second kind of chosen-ness, which
+is worse than nothing. Somebody navigating by Tab has none of that feedback, which is why
+this is a rule about how the focus arrived rather than a switch that turns rings off.
+
+It is themed once for the whole interface:
 
 ```ts
 export const focus: RdaFocusTheme = {
-  default: { color: "#6E9CF0", width: 2, inset: -3 },
+  default: { color: "#6E9CF0", width: 2, inset: -3, show: "keyboard" },
 }
 ```
 
-`inset` is negative to sit outside the widget's own edge. `width: 0` turns the ring off.
+| | |
+| --- | --- |
+| `show: "keyboard"` | only where Tab put the focus. The default |
+| `show: "always"` | wherever the focus is, including after a click |
+| `width: 0` | no ring at all |
+
+`inset` is negative to sit outside the widget's own edge.
 
 ## Doing
 

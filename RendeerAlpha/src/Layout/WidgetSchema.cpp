@@ -51,7 +51,9 @@ namespace RDA::Layout {
 			PROP(marginBottom, Number, "distance kept from the parent's bottom edge when anchored to it"),
 			PROP_ENUM(anchor, "fill|stretchX|stretchY|bottomLeft|bottomRight",
 			          "which parent edges this node follows"),
-				PROP_EVENT_OF(onHover, "boolean", "runs when the pointer arrives or leaves, with which"),
+				PROP_EVENT(onContext, "runs when the right button goes down on this; open a "
+			                      "<popup anchor=\"pointer\"> in it for a context menu"),
+			PROP_EVENT_OF(onHover, "boolean", "runs when the pointer arrives or leaves, with which"),
 	};
 
 		constexpr PropDesc kContainer[] = {
@@ -109,6 +111,10 @@ namespace RDA::Layout {
 			PROP(padding, Number, "inset around its children, when it has any"),
 			PROP_ALIGN(hAlign, "start|center|end",
 			          "where the text sits across it; centred unless said otherwise"),
+			PROP(selected, Bool,
+			     "chosen, and staying chosen: one of a row of tabs, a segmented control. "
+			     "Draws in the variant's pressed colour, or as the last state of the "
+			     "variant's mesh"),
 			PROP_VARIANT("button"),
 			PROP_EVENT(onClick, "runs on each completed click"),
 		};
@@ -189,6 +195,13 @@ namespace RDA::Layout {
 			PROP(gap,       Number, "tiles: pixels between tiles, and around them"),
 		};
 
+		// A header has nothing of its own: it is a band the dock draws, and everything
+		// about what is in it belongs to the widgets that are in it. `height` is the one
+		// thing worth naming, and that is on every element already.
+		constexpr PropDesc kDockHeader[] = {
+			PROP(height, Number, "how tall the bar is; unset means the theme's tabHeight"),
+		};
+
 		constexpr PropDesc kDock[] = {
 			PROP(title, String, "what its tab and title bar say"),
 			PROP(col,  Number, "tiles: which column it starts in; unset means wherever it fits"),
@@ -200,6 +213,18 @@ namespace RDA::Layout {
 			PROP(size, Number, "how wide or tall its pane starts, in pixels"),
 			PROP(closable, Bool, "give it a close button"),
 			PROP_VARIANT("dock"),
+		};
+
+		constexpr PropDesc kNumber[] = {
+			PROP(label,    String, "drawn on the left; omitted, only the value is drawn"),
+			PROP(value,    Number, "what it holds"),
+			PROP(step,     Number, "how much one pixel of drag is worth (default 0.01)"),
+			PROP(min,      Number, "lower bound; equal to max means unbounded"),
+			PROP(max,      Number, "upper bound"),
+			PROP(decimals, Number, "how many places the value is drawn to (default 3)"),
+			PROP_VARIANT("textfield"),
+			PROP_EVENT_OF(onChange, "number", "runs while it is dragged and when a typed "
+			                                  "value is committed, with the new number"),
 		};
 
 		constexpr PropDesc kTextField[] = {
@@ -225,7 +250,9 @@ namespace RDA::Layout {
 		constexpr PropDesc kPopup[] = {
 			PROP(open,   Bool,   "showing or not; the layout owns it"),
 			PROP(anchor, String, "the full id path of the widget to hang off -- "
-			                     "\"root/toolbar/model\", not \"model\""),
+			                     "\"root/toolbar/model\", not \"model\". \"pointer\" puts it "
+			                     "where the pointer was when it opened, which is what a "
+			                     "context menu wants"),
 			PROP_ENUM(placement, "below|above|right|left|over",
 			          "which side of the anchor to sit on; flipped when it would fall off "
 			          "the edge it is growing towards"),
@@ -252,6 +279,8 @@ namespace RDA::Layout {
 			WIDGET(button,     kButton,     "a clickable button; may hold children instead of text"),
 			WIDGET(checkbox,   kCheckbox,   "a labelled boolean toggle"),
 			WIDGET(slider,     kSlider,     "a draggable value between two bounds"),
+			WIDGET(number,     kNumber,
+			       "a number you drag sideways to change, and click to type into"),
 			WIDGET(textfield,  kTextField,  "an editable text field"),
 			WIDGET(list,       kList,
 			       "rows from a table, showing only as many widgets as fit"),
@@ -265,6 +294,10 @@ namespace RDA::Layout {
 			WIDGET(option,     kOption,     "one choice in a <select>"),
 			WIDGET(dockspace,  kDockSpace,
 			       "an area whose children are movable, dockable panels"),
+			WIDGET(header,     kDockHeader,
+			       "a <dock>'s own title bar, drawn instead of the engine's -- goes "
+			       "inside a <dock>, and is drawn wherever that panel is the only one "
+			       "in its pane"),
 			WIDGET(dock,       kDock,
 			       "one dockable panel; its children are what the panel holds"),
 		};

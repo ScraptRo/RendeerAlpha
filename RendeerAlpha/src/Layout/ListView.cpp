@@ -168,7 +168,7 @@ namespace RDA {
 		if (maxOffset > 0.0f) {
 			thumbHeight = (std::max)(28.0f, view.h * (view.h / (std::max)(content, 1.0f)));
 			range = (std::max)(0.0f, track.h - thumbHeight);
-			if (!mDraggingThumb && in.pressed && track.contains(in.pointer)) {
+			if (!mDraggingThumb && in.lPressed && track.contains(in.pointer)) {
 				const float at = track.y + (offset / maxOffset) * range;
 				mThumbGrab = (in.pointer.y < at || in.pointer.y > at + thumbHeight)
 					? thumbHeight * 0.5f : in.pointer.y - at;
@@ -178,7 +178,7 @@ namespace RDA {
 				offset = ((in.pointer.y - mThumbGrab - track.y) / range) * maxOffset;
 			}
 		}
-		if (in.released) mDraggingThumb = false;
+		if (in.lReleased) mDraggingThumb = false;
 
 		// Asked to show a particular row. Nudged rather than centred: a row already on
 		// screen should not move, and one just off the edge should come just on --

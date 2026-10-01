@@ -133,9 +133,19 @@ namespace RDA {
 			if (value.elapsed >= value.duration) {
 				value.elapsed = value.duration;
 				value.settled = true;
-			} else {
-				++mMoving;
 			}
+			// Counted whether or not it settled on this step.
+			//
+			// A value that arrives here has not been *drawn* where it arrived: the frame
+			// that would paint it is this one, and an on-demand window decides whether to
+			// have this frame at all by asking whether anything is moving. Saying no
+			// leaves the last thing an animation does unshown -- the geometry on screen
+			// stays a frame short, and the rest of the journey appears later, whenever
+			// something unrelated forces a walk, as a jump.
+			//
+			// One extra frame per animation, and then the next step finds it settled,
+			// skips it, and the window goes quiet.
+			++mMoving;
 		}
 		return mMoving;
 	}
@@ -160,8 +170,15 @@ namespace RDA {
 		return value.from + (value.to - value.from) * t;
 	}
 
+	bool Motion::retargets(uint32_t key, double target) const {
+		const auto found = mValues.find(key);
+		// Nothing stored is not a journey: track() creates it settled where it was asked
+		// to be, because a widget appearing should be where it is rather than fly in.
+		return found != mValues.end() && found->second.to != target;
+	}
+
 	Motion::Value& Motion::track(uint32_t key, double target, float seconds, Easing curve,
-	                             bool packedColour) {
+	                             bool packedColour, bool restart) {
 		auto found = mValues.find(key);
 		if (found == mValues.end()) {
 			// First sight of this value: it starts where it was asked to be. Animating from
@@ -179,7 +196,7 @@ namespace RDA {
 		Value& value = found->second;
 		value.idle = 0;
 
-		if (target != value.to) {
+		if (target != value.to || restart) {
 			// Somewhere else to go. It leaves from where it is now rather than from where
 			// the last trip started, which is what makes an interrupted animation continue
 			// instead of jumping back.
@@ -238,16 +255,31 @@ namespace RDA {
 	glm::vec2 Motion::along(uint32_t key, glm::vec2 target, float seconds, const Pace& pace,
 	                        const Route::Shape* route) {
 		if (seconds <= 0.0f) return target;
+
+		// Both halves leave when either of them has somewhere new to go.
+		//
+		// They are stored as two values and read as one journey, and the clock read below
+		// is x's. An axis that never moved still has the clock it was created with --
+		// elapsed nothing, of a full duration -- so a widget travelling only downward,
+		// which is every child of a vertical stack, took its progress from an x that said
+		// zero. It sat exactly where it was for the whole duration and then arrived in a
+		// single frame, at the end.
+		//
+		// Starting both is enough to fix it and is also what the rest of this function
+		// already assumes: a restarted axis with nowhere to go covers no ground, but it
+		// runs on the same clock as the one that does.
+		const bool together = retargets(key + 0u, static_cast<double>(target.x)) ||
+		                      retargets(key + 1u, static_cast<double>(target.y));
 		const Value& x = track(key + 0u, static_cast<double>(target.x), seconds,
-		                       Easing::Linear, false);
+		                       Easing::Linear, false, together);
 		const Value& y = track(key + 1u, static_cast<double>(target.y), seconds,
-		                       Easing::Linear, false);
+		                       Easing::Linear, false, together);
 		if (x.settled && y.settled) return target;
 
 		const glm::vec2 from{ static_cast<float>(x.from), static_cast<float>(y.from) };
 		const glm::vec2 to{ static_cast<float>(x.to), static_cast<float>(y.to) };
-		// One clock for both halves: they were started together and given the same
-		// duration, so either answers for the journey.
+		// One clock for both halves, and now genuinely so: they are started together
+		// above and given the same duration, so either answers for the journey.
 		const float t = shape(pace, x.elapsed / x.duration);
 
 		const glm::vec2 straight = from + (to - from) * t;

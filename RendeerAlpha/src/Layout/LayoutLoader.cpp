@@ -120,6 +120,7 @@ namespace RDA::Layout {
 			if (type == "button")    return std::make_unique<Button>(id, std::string(bp.text(node, "text")));
 			if (type == "checkbox")  return std::make_unique<Checkbox>(id, std::string(bp.text(node, "label")));
 			if (type == "slider")    return std::make_unique<Slider>(id);
+			if (type == "number")    return std::make_unique<NumberField>(id, std::string(bp.text(node, "label")));
 			if (type == "dockspace") return std::make_unique<DockHost>(id);
 			if (type == "list")      return std::make_unique<ListView>(id);
 			if (type == "image")     return std::make_unique<Image>(id, std::string(bp.text(node, "src")));
@@ -130,6 +131,7 @@ namespace RDA::Layout {
 				                       std::string(bp.text(node, "text")),
 				                       std::string(bp.text(node, "value")));
 			if (type == "dock")      return std::make_unique<DockContainer>(id, std::string(bp.text(node, "title")));
+			if (type == "header")    return std::make_unique<DockHeader>(id);
 			if (type == "textfield") {
 				const std::string_view mode = bp.text(node, "mode", "line");
 				TextFieldMode m = TextFieldMode::Line;
@@ -212,6 +214,7 @@ namespace RDA::Layout {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->hAlign = textAlignFrom(bp.text(node, "hAlign"), w->hAlign, w->hAlignOffset);
 				w->padding = bp.number(node, "padding", w->padding);
+				w->selected = bp.boolean(node, "selected", false);
 			} else if (auto* w = dynamic_cast<Checkbox*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->value = bp.boolean(node, "value", false);
@@ -261,6 +264,14 @@ namespace RDA::Layout {
 				w->hAlign     = alignFrom(bp.text(node, "hAlign"), w->hAlign);
 				w->barWidth   = bp.number(node, "barWidth", w->barWidth);
 				w->wheelStep  = bp.number(node, "wheelStep", w->wheelStep);
+			} else if (auto* w = dynamic_cast<NumberField*>(&widget)) {
+				if (!variant.empty()) w->variant = Variant(variant);
+				w->value    = bp.number(node, "value", static_cast<float>(w->value));
+				w->step     = bp.number(node, "step", static_cast<float>(w->step));
+				w->minValue = bp.number(node, "min", static_cast<float>(w->minValue));
+				w->maxValue = bp.number(node, "max", static_cast<float>(w->maxValue));
+				w->decimals = static_cast<int>(bp.number(node, "decimals",
+				                                         static_cast<float>(w->decimals)));
 			} else if (auto* w = dynamic_cast<DockHost*>(&widget)) {
 				w->persist = std::string(bp.text(node, "persist"));
 				if (bp.text(node, "arrange") == "tiles") {
@@ -445,6 +456,13 @@ namespace RDA::Layout {
 					return true;
 				}
 			} else if (event == "onChange") {
+				if (auto* number = dynamic_cast<NumberField*>(&widget)) {
+					number->onChange = [runner](double now) {
+						const Value passed = Value::fromNumber(now);
+						runner(&passed);
+					};
+					return true;
+				}
 				if (auto* box = dynamic_cast<Checkbox*>(&widget)) {
 					box->onChange = [runner](bool state) {
 						const Value passed = Value::fromBool(state);
@@ -508,6 +526,11 @@ namespace RDA::Layout {
 					popup->onClose = [runner] { runner(nullptr); };
 					return true;
 				}
+			} else if (event == "onContext") {
+				// On the base class too, and claimed during the walk rather than called
+				// there -- see Gui::noteContext.
+				widget.onContext = [runner] { runner(nullptr); };
+				return true;
 			} else if (event == "onHover") {
 				// Every widget has this one -- it is on the base class, reported from
 				// placement() -- so there is no dynamic_cast to do.

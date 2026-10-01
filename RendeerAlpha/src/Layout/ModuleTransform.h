@@ -37,6 +37,11 @@ namespace RDA::Layout {
 	// layout owns. Themes do not get it -- a theme has no state to declare.
 	const char* layoutPrelude();
 
+	// What a mesh is written with: boxes, shapes, and the three operations that combine
+	// them. Also ambient, for the same reason -- and separate from the layout's prelude
+	// because a mesh declares no state and a layout builds no geometry.
+	const char* meshPrelude();
+
 	// Every file `entry` imports, transitively, with `entry` first. What hot reload
 	// watches: since a module may be split across files, watching only the one that
 	// was named would miss an edit to any of the others.

@@ -50,6 +50,12 @@ target_compile_definitions(myapp PRIVATE
     $<$<CONFIG:Debug>:MYAPP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}">)
 
 rda_add_state(myapp res/state.ts)
+
+# Only if you have meshes, and **before** the two rules below: what a mesh declares is
+# part of what a theme may carry, so the theme and the types have to be told which
+# meshes exist before they are checked. See docs/frontend/meshes.md.
+rda_add_meshes(myapp res/mesh/tab.ts)
+
 rda_add_theme(myapp res/themes/app.ts)
 rda_add_types(myapp res/layouts/rda.d.ts res/themes/app.ts res/state.ts)
 rda_add_layouts(myapp res/layouts/home.tsx)

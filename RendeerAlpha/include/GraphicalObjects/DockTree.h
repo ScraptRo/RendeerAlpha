@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <GraphicalObjects/GuiTypes.h>
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -91,9 +92,28 @@ namespace RDA {
 		bool empty() const;
 		size_t count() const;
 
+		// Whether a container is showing. The tree holds ids and knows nothing about
+		// widgets, so this is how it is told -- see layout().
+		using Showing = std::function<bool(const std::string&)>;
+
 		// Assigns every node its rect. `thickness` is the splitter gap reserved between
 		// a split's children, and must match what collectHandles() is later given.
-		void layout(Rect area, float thickness = 6.0f);
+		//
+		// `showing` is optional, and answers whether a panel is visible. A pane holding
+		// nothing that is showing takes no room at all: its sibling gets the whole split
+		// and no splitter is reserved between them, so hiding the last panel in a pane
+		// closes the space up rather than leaving a hole where it was.
+		//
+		// This is `visible` meaning on a dock panel what it means everywhere else in the
+		// engine -- the room it takes goes with it -- and it is reversible in a way the
+		// close button is not: the pane is still in the tree at zero size, so showing the
+		// panel again puts it back exactly where it was rather than wherever a fresh one
+		// would land.
+		void layout(Rect area, float thickness = 6.0f, const Showing& showing = {});
+
+		// Whether anything under `node` is showing. Public because a dock space has to
+		// ask the same question about a pane it is about to draw.
+		static bool anyShowing(const DockNode* node, const Showing& showing);
 
 		// ---- queries (rect-based ones need a layout() first) ----
 		DockNode* leafFor(const std::string& id) const;
@@ -154,7 +174,7 @@ namespace RDA {
 		static constexpr float kMigrationRefH = 720.0f;
 
 	private:
-		void layoutNode(DockNode* node, Rect area, float thickness);
+		void layoutNode(DockNode* node, Rect area, float thickness, const Showing& showing);
 		// Lifts `keep` into the place occupied by its parent split, discarding the split
 		// and the other child.
 		void collapseInto(DockNode* split, std::unique_ptr<DockNode> keep);

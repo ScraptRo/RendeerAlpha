@@ -52,14 +52,14 @@ namespace RDA {
 		uint32_t wid = scopedId(id);
 		bool inside = rect.contains(mInput.pointer);
 		if (inside) mHot = wid;
-		if (mHot == wid && mInput.pressed) mActive = wid;
+		if (mHot == wid && mInput.lPressed) mActive = wid;
 
 		bool clicked = false;
-		if (mActive == wid && mInput.released) {
+		if (mActive == wid && mInput.lReleased) {
 			if (mHot == wid) clicked = true;
 			mActive = 0;
 		}
-		if (mHot == wid && mInput.pressed) setFocus(wid);
+		if (mHot == wid && mInput.lPressed) setFocus(wid);
 		focusable(wid, rect);
 		if (focusActivated(wid)) clicked = true;
 		if (clicked) value = !value;
@@ -97,7 +97,7 @@ namespace RDA {
 		uint32_t wid = scopedId(id);
 		bool inside = rect.contains(mInput.pointer);
 		if (inside) mHot = wid;
-		if (mHot == wid && mInput.pressed) mActive = wid;
+		if (mHot == wid && mInput.lPressed) mActive = wid;
 
 		bool changed = false;
 		if (mActive == wid) {
@@ -105,10 +105,10 @@ namespace RDA {
 			t = std::clamp(t, 0.0f, 1.0f);
 			float next = minValue + t * (maxValue - minValue);
 			if (next != value) { value = next; changed = true; }
-			if (mInput.released) mActive = 0;
+			if (mInput.lReleased) mActive = 0;
 		}
 
-		if (mHot == wid && mInput.pressed) setFocus(wid);
+		if (mHot == wid && mInput.lPressed) setFocus(wid);
 		focusable(wid, rect);
 		// A twentieth of the range per press, which is a usable number of presses to
 		// cross it and small enough to land on a particular value.
@@ -136,7 +136,7 @@ namespace RDA {
 		uint32_t wid = scopedId(id);
 		const bool inside = rect.contains(mInput.pointer);
 		if (inside) mHot = wid;
-		if (mHot == wid && mInput.pressed) {
+		if (mHot == wid && mInput.lPressed) {
 			mActive = wid;
 			// The grab offset is stored as the size the pane had when the drag began,
 			// biased by the pointer, so the bar does not jump to the cursor on grab.
@@ -149,7 +149,7 @@ namespace RDA {
 			const float pointer = vertical ? mInput.pointer.x : mInput.pointer.y;
 			float next = std::clamp(pointer - mTextStates[wid].scrollGrab, minSize, maxSize);
 			if (next != size) { size = next; changed = true; }
-			if (mInput.released) mActive = 0;
+			if (mInput.lReleased) mActive = 0;
 		}
 
 		const bool active = (mActive == wid) || (mHot == wid);
@@ -341,7 +341,7 @@ namespace RDA {
 
 		// --- focus + mouse selection ---
 		bool inTextArea = mInput.pointer.x < rect.x + rect.w - scrollBarW;
-		if (mInput.pressed && inside && inTextArea) {
+		if (mInput.lPressed && inside && inTextArea) {
 			mFocused = wid; mFocusClaimed = true; mActive = wid; // begin a drag
 			if (mFont) {
 				int line, col; lineColAt(mInput.pointer, line, col);
@@ -395,7 +395,7 @@ namespace RDA {
 			// Putting the caret somewhere by hand ends the run of edits: typing a word,
 			// clicking elsewhere and typing another should be two undos, not one.
 			st.undoKind = TextState::EditKind::None;
-		} else if (mInput.pressed && inside) {
+		} else if (mInput.lPressed && inside) {
 			mFocused = wid; mFocusClaimed = true; // press on the scroll-bar strip: keep focus
 		}
 		// Drag to extend the selection (linear or box, per how it began).
@@ -403,12 +403,12 @@ namespace RDA {
 			mFocusClaimed = true;
 			// Only a plain click drags the caret; a word or line selection stays as the
 			// click made it until the button is released.
-			if (st.dragGranularity == 1 && mInput.down && !mInput.pressed && mFont) {
+			if (st.dragGranularity == 1 && mInput.lDown && !mInput.lPressed && mFont) {
 				int line, col; lineColAt(mInput.pointer, line, col);
 				st.caret = starts[line] + col;
 				st.blink = 0.0f;
 			}
-			if (mInput.released) mActive = 0;
+			if (mInput.lReleased) mActive = 0;
 		}
 		// In the Tab order like everything else that takes the keyboard. It draws its own
 		// caret, so the ring is the only thing this adds -- and a field reached by Tab
@@ -717,7 +717,7 @@ namespace RDA {
 
 		// Keep the caret visible, but only while it is actually being moved, so the wheel
 		// and scroll bar aren't fought when the user is just reading.
-		bool caretActive = focused && (!mInput.typed.empty() || !mInput.editKeys.empty() || (mInput.pressed && inside) || mActive == wid);
+		bool caretActive = focused && (!mInput.typed.empty() || !mInput.editKeys.empty() || (mInput.lPressed && inside) || mActive == wid);
 		if (caretActive) {
 			if (caretX - st.scrollX > viewW) st.scrollX = caretX - viewW;
 			if (caretX - st.scrollX < 0.0f)  st.scrollX = caretX;
@@ -747,7 +747,7 @@ namespace RDA {
 		if (style.multiline && maxScrollY > 0.0f) {
 			thumbH = (std::max)(24.0f, viewH * (viewH / contentH));
 			trackRange = scrollTrack.h - thumbH;
-			if (scrollTrack.contains(mInput.pointer) && mInput.pressed) {
+			if (scrollTrack.contains(mInput.pointer) && mInput.lPressed) {
 				float thumbY = scrollTrack.y + (st.scrollY / maxScrollY) * trackRange;
 				st.scrollGrab = (mInput.pointer.y < thumbY || mInput.pointer.y > thumbY + thumbH)
 					? thumbH * 0.5f : mInput.pointer.y - thumbY;
@@ -757,7 +757,7 @@ namespace RDA {
 			if (mActive == scrollId) {
 				float ny = std::clamp(mInput.pointer.y - st.scrollGrab, scrollTrack.y, scrollTrack.y + trackRange);
 				st.scrollY = (trackRange > 0.0f) ? ((ny - scrollTrack.y) / trackRange) * maxScrollY : 0.0f;
-				if (mInput.released) mActive = 0;
+				if (mInput.lReleased) mActive = 0;
 			}
 		}
 

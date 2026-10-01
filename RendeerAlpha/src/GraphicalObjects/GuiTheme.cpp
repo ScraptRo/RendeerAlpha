@@ -137,9 +137,36 @@ namespace RDA {
 			t.defineDock(asVariant(name), s);
 		}
 
+		// Anything with a dot in its name is a mesh's parameter -- no engine field has
+		// one, which is the whole reason they are namespaced that way. Collected rather
+		// than matched, because which ones matter is the mesh's business and the mesh is
+		// not loaded yet.
+		void readMeshParams(const Blueprint& bp, const BlueprintNode& node,
+		                    std::vector<std::pair<std::string, uint32_t>>& out) {
+			for (uint32_t i = 0; i < node.propCount; ++i) {
+				const BlueprintProp& prop = bp.prop(node.firstProp + i);
+				const std::string_view key = bp.string(prop.key);
+				if (key.find('.') == std::string_view::npos) continue;
+				if (prop.kind != static_cast<uint32_t>(PropKind::String)) continue;
+				uint32_t colour = 0;
+				if (!parseColor(std::string(bp.string(prop.text)).c_str(), colour)) continue;
+				// A variant that inherits keeps what it was given and overrides by name.
+				bool replaced = false;
+				for (auto& one : out) {
+					if (one.first == key) { one.second = colour; replaced = true; break; }
+				}
+				if (!replaced) out.emplace_back(std::string(key), colour);
+			}
+		}
+
 		void applyButton(Theme& t, const Blueprint& bp, const BlueprintNode& node) {
 			const std::string name = variantName(bp, node);
 			ButtonStyle s = t.button(asVariant(inheritFrom(bp, node, name)));
+			readString(bp, node, "mesh", s.mesh);
+			readMeshParams(bp, node, s.meshParams);
+			// Whatever it inherited was resolved against some other mesh, or none.
+			s.meshColours.clear();
+			s.meshResolvedFor = nullptr;
 			readColor(bp, node, "normal", s.normal);
 			readColor(bp, node, "hovered", s.hovered);
 			readColor(bp, node, "pressed", s.pressed);
@@ -196,6 +223,9 @@ namespace RDA {
 			readColor(bp, node, "color", s.color);
 			readFloat(bp, node, "width", s.width);
 			readFloat(bp, node, "inset", s.inset);
+			const std::string_view when = bp.text(node, "show");
+			if (when == "always")        s.show = FocusShow::Always;
+			else if (when == "keyboard") s.show = FocusShow::Keyboard;
 			t.defineFocus(asVariant(name), s);
 		}
 		void applyBackground(Theme& t, const Blueprint& bp, const BlueprintNode& node) {

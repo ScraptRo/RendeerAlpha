@@ -66,9 +66,35 @@ about in the log.
 does not have. The row is the parameter of the `row={(item) => …}` function; see
 [`<list>`](../frontend/elements/list.md).
 
-**Where the log is** — `RDA_DEBUG.txt`, written in the working directory of a Debug
-build. Anything worse than `INFO` in it is worth reading; an application that exited
-cleanly can still have warned that a binding found no signal.
+## The log
+
+**The console is quiet on purpose.** The engine prints warnings and errors and nothing
+else, because the terminal belongs to your program: fifty lines of somebody else's
+start-up is not a diagnostic, it is a thing to scroll past.
+
+**The file has everything.** A Debug build writes every line it has into `RDA_DEBUG.txt`
+in the working directory, whatever the console is set to. Anything worse than `INFO` in
+it is worth reading; an application that exited cleanly can still have warned that a
+binding found no signal.
+
+To turn the console up — while chasing something, or on a machine you cannot rebuild for:
+
+```bash
+RDA_LOG=info    ./myapp        # everything, the way it used to be
+RDA_LOG=off     ./myapp        # not even errors
+```
+
+`off`, `error`, `warning` (the default) and `info`. An application can ask for a level of
+its own with `config.logLevel = RDA::LogLevel::Info`, and `RDA_LOG` overrides it when
+set — an environment variable is somebody standing at the machine, and they outrank a
+value compiled in months ago.
+
+A **Release** build has no log file, and its console follows the same rule. It used to
+have neither: every log macro compiled away, which did not make a release build quiet so
+much as deaf — it could not report a theme that would not load or a swapchain that would
+not be created, and `RDA_RUNTIME_ERROR` expanded to nothing, so a fatal failure carried
+straight on into the next line. Both are fixed: errors are reported, and fatal ones still
+throw.
 
 ---
 

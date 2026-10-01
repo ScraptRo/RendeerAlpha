@@ -5,6 +5,7 @@
 #include <GraphicalObjects/GuiTypes.h>
 #include <GraphicalObjects/GuiTheme.h>
 #include <GraphicalObjects/Motion.h>
+#include <GraphicalObjects/MeshAsset.h>
 #include <GraphicalObjects/Syntax.h>
 #include <GraphicalObjects/Widget.h>
 #include <GraphicalObjects/Docking.h>
@@ -117,6 +118,23 @@ namespace RDA {
 		// the walk is over.
 		bool windowGrip(const char* id, const Rect& rect);
 		bool windowGrabbed() const { return mWindowGrabbed; }
+
+		// The widget the pointer went down on, as an opaque id.
+		//
+		// For chrome that is drawn *around* other widgets and has to know whether one of
+		// them took the press: read it before that chrome's contents are painted and
+		// again after, and if it has not changed, nothing inside claimed it. A dock
+		// panel's own header is the case this exists for -- the whole bar picks the panel
+		// up, except where somebody put a button on it.
+		uint32_t activeWidget() const { return mActive; }
+
+		// A widget the right button went down on.
+		//
+		// Recorded rather than called, because the walk is in the middle of iterating the
+		// tree and a handler may add or remove a widget. Overwritten as the walk goes
+		// deeper, so the last one to claim it is the deepest under the pointer -- the
+		// same rule hover follows, and for the same reason.
+		void noteContext(Widget* widget) { mContext = widget; }
 		bool pointerClaimed() const { return mPointerClaimed; }
 
 		// Structural edits, applied at the top of the next frame rather than immediately.
@@ -156,6 +174,11 @@ namespace RDA {
 		// Whether anything is still on its way. The frame loop asks: an on-demand window
 		// earns frames while something is moving, and stops the moment it has arrived.
 		bool animating() const { return mMotion.moving(); }
+		// Which state a mesh-drawn widget is in, eased. Its own property because a
+		// widget's shape and its colour settle at the same time but are not the same
+		// number -- and a key that collided would make one of them follow the other.
+		static constexpr uint32_t kMotionShape = 0x5A17u;
+
 		uint32_t motionKey(const char* id, uint32_t property) const {
 			return scopedId(id) ^ (property * 2654435761u); // Knuth's multiplicative hash
 		}
@@ -198,6 +221,15 @@ namespace RDA {
 		RDL::frame_arena& frameArena() { return mFrameArena; }
 
 		// ---- low-level drawing (for custom widgets and the dock chrome) ----
+		// A mesh, resolved against `rect` and blended between two of its states.
+		//
+		// `from` and `into` are state indices and `t` how far between them; `base` is the
+		// colour a vertex with no parameter takes, which is what a mesh with no
+		// parameters at all is drawn in. Returns false when there is no such mesh, so a
+		// caller can fall back to drawing what it would have drawn anyway.
+		bool drawMesh(const WidgetMesh& mesh, const Rect& rect, int from, int into, float t,
+		              const uint32_t* colours, size_t colourCount, uint32_t base);
+
 		void drawRect(const Rect& rect, uint32_t color);
 		// Rounded fill. A radius that rounds away to nothing draws a plain rect, so a
 		// caller can pass whatever the theme says without checking it first.
@@ -307,9 +339,16 @@ namespace RDA {
 		// `align` is where the label sits across the button. Centred by default, which is
 		// what a button looks like; Start is what a row of them used as a menu wants,
 		// where centred text makes every entry begin somewhere different.
+		// `selected` is a button that has been chosen and stays chosen -- one of a row of
+		// tabs, a segmented control, a tool that is currently the tool. It is not a state
+		// the GUI can work out for itself: hover and press are things happening *to* a
+		// widget, and being the chosen one is something the application knows.
+		//
+		// Without a mesh it draws in the variant's `pressed` colour. With one it is the
+		// top rung of the mesh's ladder of states -- see below.
 		bool button(const char* id, const char* text, const Rect& rect,
 		            Variant variant = kDefaultVariant, TextAlign align = TextAlign::Center,
-		            float alignNudge = 0.0f);
+		            float alignNudge = 0.0f, bool selected = false);
 		// Toggles `value` on click; returns true the frame it changed.
 		bool checkbox(const char* id, const char* label, bool& value, const Rect& rect, Variant variant = kDefaultVariant);
 		// Drags `value` within [minValue, maxValue]; returns true while it changes.
@@ -395,7 +434,16 @@ namespace RDA {
 		void consumeFocusMove() { mFocusMoveConsumed = true; }
 
 		// Puts the keyboard somewhere, or nowhere with 0.
-		void setFocus(uint32_t wid) { mFocused = wid; mFocusClaimed = true; }
+		//
+		// This is every way of moving the focus except the Tab walk, which is to say
+		// every way that is not the keyboard: a press, or a backend asking. None of them
+		// draws a focus ring under the default `focus.show`, because none of them leaves
+		// the reader wondering where the keyboard went.
+		void setFocus(uint32_t wid) {
+			mFocused = wid;
+			mFocusClaimed = true;
+			mFocusByKeyboard = false;
+		}
 		uint32_t focused() const { return mFocused; }
 
 		const GuiDrawData& drawData() const { return mDraw; }
@@ -563,6 +611,12 @@ namespace RDA {
 		// claim that meant "I still have it" was always true by the time the press was
 		// resolved, and the drop below it could never run.
 		bool     mFocusClaimed = false;
+		// Whether the keyboard is what put the focus where it is -- Tab, and nothing
+		// else. It is the whole of the default rule for drawing a focus ring: somebody
+		// navigating by Tab has nothing else telling them where they are, and somebody
+		// who just clicked is looking straight at the answer. Survives across frames,
+		// because focus does.
+		bool     mFocusByKeyboard = false;
 		// Everything that offered to take the keyboard this frame, in draw order, and
 		// where each of them was. Cleared every frame: what is focusable is whatever is
 		// on screen, so a widget that scrolled out of view leaves the order with it.
@@ -598,6 +652,7 @@ namespace RDA {
 		// one. The real input, kept so the overlay pass can have it back.
 		bool     mAwake = false;          // something is playing; walk again next frame
 		bool     mWindowGrabbed = false;  // a dragWindow region is being held
+		Widget*  mContext = nullptr;      // right-pressed this frame; fired after the walk
 		bool     mPointerClaimed = false;
 		bool     mPointerClaimedNext = false;
 		GuiInput mRealInput;

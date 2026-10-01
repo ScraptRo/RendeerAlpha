@@ -164,6 +164,46 @@ not write a helper that pre-compensates**; one applied now makes the same mistak
 Alpha is unaffected, but semi-transparent panels do change, because blending now happens in
 linear light.
 
+## The focus ring
+
+`focus` themes the ring around whatever holds the keyboard, once for the whole
+interface. It is drawn **only where the keyboard put the focus** -- Tab draws one, a
+click does not -- because a press is its own feedback and a ring on a widget that is
+already the chosen one reads as a second kind of chosen-ness.
+
+```ts
+export const focus: RdaFocusTheme = {
+  default: { color: "#6E9CF0", width: 2, inset: -2, show: "keyboard" },
+}
+```
+
+`show: "always"` puts it back on clicks; `width: 0` removes it entirely; `inset` is
+negative to sit outside the widget's own edge.
+
+## A variant drawn by a mesh
+
+`mesh: "res/mesh/tab.rdam"` on a variant replaces the shape the engine would have drawn
+with a compiled vertex table. The layout does not change: `<button variant="tab">` is
+still a button.
+
+A mesh **declares** parameters, and they become real fields on that element's theme,
+namespaced by the mesh's file name:
+
+```ts
+tab: { mesh: "res/mesh/tab.rdam", text: "#E8EAF0", transitionMs: 160,
+       "tab.seam": "#C8503C" },   // res/mesh/tab.ts declared `seam`
+```
+
+They are checked like every other field -- `"tab.seem"` is refused by name, and so is a
+mesh parameter on an element no mesh can draw, such as a `<label>`. They reach the
+generated `rda.d.ts`, so an editor catches it first.
+
+A mesh's states are a ladder, from least engaged to most: resting, under the pointer,
+held. `selected` on the button is the top rung, which is how one variant covers a whole
+tab strip -- the chosen tab opens into the panel and stays open when the pointer leaves.
+See `docs/frontend/meshes.md` for writing one, and for the ordering a C++ project needs
+(`rda_add_meshes` before `rda_add_theme`).
+
 ## Changing it at run time
 
 `rda.set_theme(path)` (Node `setTheme`, C# `SetTheme`, C++

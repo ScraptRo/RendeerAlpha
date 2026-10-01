@@ -6,6 +6,9 @@
 #include <GraphicalObjects/Scene.h>
 #include <GraphicalObjects/Texture.h>
 #include <GraphicalObjects/Material.h>
+// For LogLevel on the config below. It also puts RDA_LOG_INFO and friends in reach of an
+// application that wants to write into the same log the engine does.
+#include <Logger/Logger.h>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -93,6 +96,16 @@ namespace RDA {
 		// WindowStyle. The size stays above because it was there first, and because it
 		// is the one thing every application sets.
 		WindowStyle  window;
+		// How much of the engine's own logging reaches the console. `Warning` by default:
+		// the terminal belongs to the application, and an engine that fills it with its
+		// own start-up is an engine you have to scroll past to read your own output.
+		//
+		// A Debug build still writes every line into RDA_DEBUG.txt whatever this says --
+		// the whole trace is what you want the moment something goes wrong, and a file is
+		// nobody's terminal. `RDA_LOG=off|error|warning|info` overrides this, which is the
+		// escape hatch on a binary nobody is going to rebuild.
+		LogLevel     logLevel = LogLevel::Warning;
+
 		ThreadMode   threadMode = ThreadMode::Caller;
 		ViewportMode viewportMode = ViewportMode::Fullscreen; // scene to surface, or to a Viewport widget
 		RedrawMode   redrawMode = RedrawMode::OnDemand;     // every frame, or only on change

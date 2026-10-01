@@ -38,6 +38,10 @@ namespace RDA {
 		uint32_t   defineColumn(std::string_view name, ColumnType type);
 		uint32_t   column(std::string_view name) const;
 		ColumnType columnType(uint32_t column) const;
+		// What it is called. The other way round from column(name), for a caller walking
+		// the columns rather than looking one up -- filling a table from a file of rows
+		// keyed by name, which is what mock data is.
+		std::string_view columnName(uint32_t column) const;
 		size_t     columns() const { return mColumns.size(); }
 
 		// ---- contents ----

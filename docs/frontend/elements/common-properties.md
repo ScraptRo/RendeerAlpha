@@ -15,6 +15,7 @@ Accepted by every element above.
 | `x`, `y`, `w`, `h` | see [Absolute placement](../placement.md) |
 | `anchor`, `marginRight`, `marginBottom` | which parent edges it follows |
 | `onHover(boolean)` | true when the pointer arrives, false when it leaves |
+| `onContext()` | the right button went down on this — see [containers](containers.md#right-click-menus) |
 | `dragWindow` | dragging this moves the window — see [The window](../window.md) |
 
 `onHover` fires on the edges only, not every frame the pointer is inside, so a handler that

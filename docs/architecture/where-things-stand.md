@@ -65,8 +65,8 @@ That was designed before this release and is now a commitment rather than an int
 **Known loose ends.** None of them needs something to change shape to be fixed, which is
 what makes them loose ends rather than reasons to wait.
 
-- Only a `<stack>` collapses a child that becomes invisible. Elsewhere — inside a scroll
-  view, a list, a dock panel — it still disappears at once.
+- A `<stack>` and a dock pane collapse a child that becomes invisible; a scroll view and
+  a list still make it disappear at once, leaving the space it had.
 - An animated `.svg` re-draws its whole loop whenever its box changes size. Safe, but
   not cheap: one 260px collapse of a panel beside it re-drew a thirty-frame loop ninety
   times, for about half the frame rate while it lasted. Deferring the re-draw until the
@@ -84,6 +84,10 @@ what makes them loose ends rather than reasons to wait.
 - A tile cannot be pulled out of the grid to float, and two tiles cannot be tabbed
   together. Both are `panes` ideas: a tile is a rectangle rather than a share of its
   neighbour, so neither has anything to mean in a grid.
+- A focus ring is a rectangle, even around a widget a mesh drew as something else. It no
+  longer appears on a click, so the case that showed it worst is gone; a keyboard walk
+  onto a mesh-drawn tab still puts a box around a shape that is not one. Making it
+  follow would mean a second pass over the mesh's outline.
 - A widget can be clicked while it is collapsing. Brief, and not wrong enough to be worth
   wrapping every collapsing child in `pushInert()` — which is what a route's outgoing
   screen does now.

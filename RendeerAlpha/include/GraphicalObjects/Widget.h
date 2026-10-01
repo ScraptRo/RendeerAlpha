@@ -334,6 +334,17 @@ namespace RDA {
 		std::string route;
 		Pace        pace;
 
+		// The right button went down on this.
+		//
+		// One widget hears it -- the deepest one under the pointer that asked, which is
+		// the one drawn last. A panel and a button on it may both want a menu, and a
+		// right-click on the button means the button's.
+		//
+		// It carries nothing, because the thing that wants the position is the menu, and
+		// a <popup anchor="pointer"> already knows it. So a handler is what a handler
+		// should be: `onContext={() => state.menu = true}`.
+		std::function<void()> onContext;
+
 		// Dragging this moves the whole window.
 		//
 		// For a window opened with no OS frame, where the layout draws its own title bar
@@ -682,12 +693,16 @@ namespace RDA {
 		// other two-way property here has.
 		bool open = false;
 
+		// The engine has to remember where that widget was drawn to do this, which nothing
+		// else needs; see Gui::wantAnchor for what it costs.
 		// The full id path of the widget to hang off -- "root/toolbar/model", the path the
 		// log, the probe and rda_focus all spell, not the bare id. Empty means the popup
 		// is placed by its own x/y/w/h, like anything else in a container.
 		//
-		// The engine has to remember where that widget was drawn to do this, which nothing
-		// else needs; see Gui::wantAnchor for what it costs.
+		// "pointer" is the exception, and is what a context menu wants: the popup appears
+		// where the pointer was *when it opened*, and stays there while it is open. Not
+		// where the pointer is now -- a menu that followed the mouse could never be
+		// reached.
 		std::string anchor;
 		Placement   placement = Placement::Below;
 		float       gap = 4.0f;       // pixels between the anchor and this
@@ -712,6 +727,56 @@ namespace RDA {
 		// Where it was drawn last, so the dismissal can ask whether the press was inside
 		// it -- which happens in the same call that would otherwise have to guess.
 		Rect mShown{};
+		// Where the pointer was on the frame this opened, for anchor="pointer", and
+		// whether it was open last frame -- which is how that moment is noticed.
+		glm::vec2 mOpenedAt{ 0.0f };
+		bool      mWasOpen = false;
+	};
+
+	// A number you drag.
+	//
+	// The widget a parametric tool is mostly made of, and the one this engine did not
+	// have: a slider needs a range and spends its width on a track, and a text field
+	// makes you select, type and commit to nudge a value by one. This is neither. It
+	// reads as a field, it says what it is and what it holds, and dragging across it
+	// changes the number -- which is how a value is *adjusted*, as opposed to entered.
+	//
+	// Click it without dragging and it becomes a real text field, because sometimes the
+	// number you want is 1.6180339 and no amount of dragging will find it.
+	class NumberField : public Widget {
+	public:
+		explicit NumberField(std::string id, std::string label = {})
+			: Widget(std::move(id)), label(std::move(label)) {}
+
+		std::string label;          // drawn on the left; empty draws only the value
+		double value = 0.0;
+		// How much one pixel of drag is worth. The default moves a plain 0..1 value
+		// across its range in a couple of hundred pixels, which is the feel to match.
+		double step = 0.01;
+		// Bounds. Equal means unbounded, which is the ordinary case for a number that is
+		// a position or an offset rather than a fraction.
+		double minValue = 0.0;
+		double maxValue = 0.0;
+		int    decimals = 3;        // how many places the value is drawn to
+
+		Variant variant = kDefaultVariant;   // a textfield variant, for the box
+		std::function<void(double)> onChange;
+
+		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
+		void paint(Gui& gui, glm::vec2 origin) override;
+
+	private:
+		// Dragging, and where from -- so the value moves by the whole distance travelled
+		// rather than accumulating rounding a pixel at a time.
+		bool      mDragging = false;
+		double    mDragFrom = 0.0;
+		glm::vec2 mDragStart{ 0.0f };
+		// Typing instead. The buffer is the text being edited; it becomes the value when
+		// the field is finished with, and is thrown away if Escape drops it.
+		bool        mTyping = false;
+		bool        mFocused = false;
+		std::string mBuffer;
+		uint64_t    mBufferVersion = 1;
 	};
 
 	// A line of text.
@@ -793,6 +858,11 @@ namespace RDA {
 		// Inset around the children, when it has any. The room its own text would have
 		// had, so a button around an icon is the size a button around a word is.
 		float                 padding = 6.0f;
+		// Chosen, and staying chosen: one of a row of tabs, a segmented control, the
+		// tool that is currently the tool. Bindable, and the layout owns it -- this is
+		// never written by the button, the same rule every other two-way property here
+		// follows.
+		bool                  selected = false;
 		std::function<void()> onClick;
 		// Its text plus room to breathe around it.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;

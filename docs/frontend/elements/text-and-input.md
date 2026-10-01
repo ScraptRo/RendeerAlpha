@@ -56,8 +56,33 @@ resolved in favour of whichever starts first.
 | `text` | the label on it |
 | `hAlign` | `start` / `center` (default) / `end` |
 | `padding` | inset around its children, when it has any. 6 by default |
+| `selected` | chosen, and staying chosen — see below |
 | `variant` | which button style |
 | `onClick` | runs on each completed click |
+
+### `selected` — one of a row
+
+Hover and press are things happening *to* a button, and the GUI works them out for
+itself. Being the chosen one — a tab, a segmented control, the tool that is currently the
+tool — is something only the application knows, so it is a property and a binding:
+
+```tsx
+<button id="bold" text="B" variant="tool"
+        selected={() => state.bold} onClick={() => state.bold = !state.bold} />
+```
+
+A selected button draws in its variant's `pressed` colour, and keeps it while the pointer
+is elsewhere — which is the whole difference between *the pointer is here* and *this is
+the one*. It is ahead of hover on purpose: a chosen tab that went back to looking
+unchosen because the pointer arrived on it would be saying the wrong thing in the one
+place it matters most.
+
+Drawn with a [mesh](../meshes.md), it is the top rung of that mesh's ladder of states,
+which is how a tab strip opens the chosen tab into the panel below it and leaves it open.
+
+The button never writes it. `selected` is a binding, and a widget that wrote its own
+bound property would be overwritten by the signal on the next frame — the same rule
+`<checkbox value>` and `<popup open>` follow.
 
 ### A button around something other than a string
 
@@ -97,6 +122,39 @@ answer HTML gives, and the only one that makes "the whole thing is one control" 
 | --- | --- |
 | `value`, `min`, `max` | where the knob is, and its range |
 | `onChange(number)` | runs while it is dragged |
+
+## `<number>`
+
+A number you drag sideways to change, and click to type into.
+
+| | |
+| --- | --- |
+| `label` | drawn on the left; omitted, only the value is drawn |
+| `value` | what it holds |
+| `step` | how much one pixel of drag is worth (default 0.01) |
+| `min`, `max` | bounds; equal means unbounded, which is the ordinary case |
+| `decimals` | how many places it is drawn to (default 3) |
+| `variant` | a textfield style, for the box |
+| `onChange(number)` | while it is dragged, and when a typed value is committed |
+
+```tsx
+<number id="scale" label="Scale" value={() => state.scale} step={0.01}
+        width={220} height={26} onChange={(v) => state.scale = v} />
+```
+
+This is the widget a parametric tool is mostly made of, and it is neither of the two that
+were already here: a `<slider>` needs a range and spends its width on a track, and a
+`<textfield>` makes you select, type and commit to nudge a value by one. Dragging across
+this is how a value is *adjusted*; clicking it is how a value is *entered*, and clicking
+turns it into a real text field with selection, the caret and undo, because those already
+exist and a second half of them would be worse at all of it.
+
+**Shift** is the fine adjustment — a tenth of the step. A press that goes nowhere is a
+click, so there is no need to aim: anywhere in the box drags, and anywhere in the box
+types.
+
+The value is right-aligned and drawn to a fixed number of places, so a column of them
+lines up on the point rather than on however long each label happens to be.
 
 ## `<textfield>`
 

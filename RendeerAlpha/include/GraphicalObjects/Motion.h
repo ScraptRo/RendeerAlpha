@@ -130,8 +130,16 @@ namespace RDA {
 		// and the button flashes a colour from nowhere before settling.
 		static double position(const Value& value);
 
+		// Whether asking track() for `target` would start a new journey. Asked *before*
+		// tracking anything, which is what lets the two halves of a point be started
+		// together when only one of them has somewhere new to go.
+		bool retargets(uint32_t key, double target) const;
+
+		// `restart` starts a new journey even where the target has not moved -- from
+		// where the value is, to where it already was. It covers no ground, but it runs
+		// on the same clock as whatever asked for it.
 		Value& track(uint32_t key, double target, float seconds, Easing curve,
-		             bool packedColour);
+		             bool packedColour, bool restart = false);
 
 		std::unordered_map<uint32_t, Value> mValues;
 		size_t mMoving = 0;

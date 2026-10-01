@@ -142,6 +142,7 @@ state rather than at the pixels.
 | [docs/frontend/](docs/frontend/README.md) | Every element and property, and what a binding may contain |
 | [docs/backend/](docs/backend/README.md) | The seam, and how each language reaches it |
 | [docs/architecture/](docs/architecture/README.md) | How it fits together, and why — the long version |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each version, and what to know before upgrading |
 | `RendeerAlpha/src/Layout/` | The blueprint pipeline |
 | `Cli/rda.cpp` | The toolchain's entry point |
 

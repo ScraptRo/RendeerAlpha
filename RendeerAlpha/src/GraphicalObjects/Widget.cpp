@@ -104,6 +104,13 @@ namespace RDA {
 		// wins the press over the bar itself.
 		if (dragWindow) gui.windowGrip(mId.c_str(), where);
 
+		// The right button. Claimed rather than answered: a child drawn after this one
+		// overwrites the claim, so the deepest widget that wanted it is the one that
+		// hears it.
+		if (onContext && gui.input().rPressed && where.contains(gui.input().pointer)) {
+			gui.noteContext(this);
+		}
+
 		// Hover, for whoever asked. Only the change is reported: a handler wants to know
 		// the pointer arrived, not that it is still here.
 		if (onHover) {
@@ -497,7 +504,7 @@ namespace RDA {
 		if (maxOff > 0.0f) {
 			thumbH = (std::max)(28.0f, view.h * (view.h / total));
 			range = (std::max)(0.0f, track.h - thumbH);
-			if (!mDraggingThumb && in.pressed && track.contains(in.pointer)) {
+			if (!mDraggingThumb && in.lPressed && track.contains(in.pointer)) {
 				// Grabbing the thumb keeps the offset under the cursor; clicking the bare
 				// track picks the thumb up by its middle and jumps there.
 				const float thumbY = track.y + (offset / maxOff) * range;
@@ -508,7 +515,7 @@ namespace RDA {
 			if (mDraggingThumb && range > 0.0f)
 				offset = ((in.pointer.y - mThumbGrab - track.y) / range) * maxOff;
 		}
-		if (in.released) mDraggingThumb = false;
+		if (in.lReleased) mDraggingThumb = false;
 		offset = std::clamp(offset, 0.0f, maxOff);
 
 		// See Scroll::paint: `offset` is where it is scrolled to, and this is where it is
@@ -570,7 +577,7 @@ namespace RDA {
 			const float thumbW = (std::max)(28.0f, hTrack.w * (hTrack.w / mContentWidth));
 			const float span = (std::max)(0.0f, hTrack.w - thumbW);
 			const float frac = (maxOffX > 0.0f) ? (drawnOffsetX / maxOffX) : 0.0f;
-			if (!mDraggingThumbX && in.pressed && hTrack.contains(in.pointer)) {
+			if (!mDraggingThumbX && in.lPressed && hTrack.contains(in.pointer)) {
 				const float thumbX = hTrack.x + frac * span;
 				mThumbGrabX = (in.pointer.x < thumbX || in.pointer.x > thumbX + thumbW)
 					? thumbW * 0.5f : in.pointer.x - thumbX;
@@ -584,7 +591,7 @@ namespace RDA {
 			gui.drawRect(Rect{ hTrack.x + frac * span, hTrack.y + 2.0f, thumbW, barWidth - 4.0f },
 			             mDraggingThumbX ? style.scrollThumbHover : style.scrollThumb);
 		}
-		if (in.released) mDraggingThumbX = false;
+		if (in.lReleased) mDraggingThumbX = false;
 
 		// The bar last, so it sits above the content rather than under it -- and asked
 		// for whether or not there is anything to scroll, so it has something to fade in
@@ -787,7 +794,16 @@ namespace RDA {
 		// Asked for every frame, open or shut. The note is only taken for anchors
 		// somebody wants, and "somebody wants it" has to be true before the frame the
 		// popup opens on -- otherwise it would have nowhere to appear the first time.
-		if (!anchor.empty()) gui.wantAnchor(anchor);
+		// "pointer" is not a widget, so nothing is asked to remember where it was.
+		if (!anchor.empty() && anchor != "pointer") gui.wantAnchor(anchor);
+
+		// The moment it opens, and only that moment: a menu is put where the pointer was
+		// when it was asked for, and stays there. Read here rather than in paintAbove
+		// because this runs whether or not it is open, which is what makes the change
+		// visible at all.
+		if (open && !mWasOpen) mOpenedAt = gui.input().pointer;
+		mWasOpen = open;
+
 		if (!open) return;
 
 		// Nothing is drawn here: a popup that drew in the tree would be clipped by
@@ -815,7 +831,14 @@ namespace RDA {
 		// so a popup can be a plain floating panel without inventing a second mechanism.
 		Rect anchorRect{ rect.x, rect.y, 0.0f, 0.0f };
 		bool anchored = false;
-		if (!anchor.empty()) anchored = gui.anchorRect(anchor, anchorRect);
+		if (anchor == "pointer") {
+			// A point, not a widget: the four placements then read as which corner of the
+			// menu the pointer is at, and `over` is the ordinary context menu.
+			anchorRect = Rect{ mOpenedAt.x, mOpenedAt.y, 0.0f, 0.0f };
+			anchored = true;
+		} else if (!anchor.empty()) {
+			anchored = gui.anchorRect(anchor, anchorRect);
+		}
 
 		float x = anchorRect.x;
 		float y = anchorRect.y;
@@ -872,7 +895,7 @@ namespace RDA {
 		const GuiInput& in = gui.input();
 		const bool anchorIsOutside = blocking;
 		bool dismissed = false;
-		if (in.pressed && !mShown.contains(in.pointer) &&
+		if (in.lPressed && !mShown.contains(in.pointer) &&
 		    !(anchored && !anchorIsOutside && anchorRect.contains(in.pointer))) {
 			dismissed = true;
 		}
@@ -1010,7 +1033,7 @@ namespace RDA {
 		// the same ones every other button has.
 		const bool held = !mChildren.empty();
 		const bool clicked = gui.button(mId.c_str(), held ? "" : text.c_str(), abs, variant,
-		                                hAlign, hAlignOffset);
+		                                hAlign, hAlignOffset, selected);
 		if (held) {
 			// Inside the padding, and clipped to it: a child that does not fit is cut
 			// off at the button's edge rather than drawn over whatever is beside it.
@@ -1056,6 +1079,118 @@ namespace RDA {
 		constexpr float kCheckboxGap = 8.0f;
 	}
 
+
+	// ---- NumberField ---------------------------------------------------------------
+	namespace {
+		// The value, at the places asked for, with trailing zeros kept -- a column of
+		// numbers that changed width as they were dragged would be unreadable.
+		std::string numberText(double value, int decimals) {
+			char buffer[64];
+			std::snprintf(buffer, sizeof(buffer), "%.*f",
+			              std::clamp(decimals, 0, 9), value);
+			return buffer;
+		}
+	}
+
+	glm::vec2 NumberField::measureContent(Gui& gui, glm::vec2 available) const {
+		(void)available;
+		const TextFieldStyle& s = (variant != kDefaultVariant)
+			? gui.theme().textField(variant) : TextFieldStyle::forMode(TextFieldMode::Line);
+		const float text = gui.measureText(label.c_str()) +
+		                   gui.measureText(numberText(value, decimals).c_str());
+		// Room for both, the padding either side, and a gap between them that does not
+		// close up when the number grows a digit.
+		return { text + s.padding * 4.0f + 16.0f, gui.lineHeight() + s.padding * 2.0f };
+	}
+
+	void NumberField::paint(Gui& gui, glm::vec2 origin) {
+		const Rect box = placement(gui, origin);
+		const TextFieldStyle& base = (variant != kDefaultVariant)
+			? gui.theme().textField(variant) : TextFieldStyle::forMode(TextFieldMode::Line);
+		const GuiInput& in = gui.input();
+
+		// --- typing ---------------------------------------------------------------
+		//
+		// A real text field, because it has to be: selection, the caret, undo and every
+		// editing key are already there and a second half-implementation of them would
+		// be worse at all of it.
+		if (mTyping) {
+			Gui::TextFieldExtras extras;
+			bool submitted = false;
+			extras.submitted = &submitted;
+			extras.submit = SubmitKey::Enter;
+			gui.textField(mId.c_str(), mBuffer, "", box, base, &mFocused,
+			              mBufferVersion, &extras);
+			// Finished with, either way: Enter said so, and losing the keyboard says the
+			// same thing -- clicking elsewhere commits what was typed, which is what
+			// every numeric field anywhere does.
+			if (submitted || !mFocused) {
+				mTyping = false;
+				try {
+					const double typed = std::stod(mBuffer);
+					const double was = value;
+					value = (minValue < maxValue) ? std::clamp(typed, minValue, maxValue) : typed;
+					if (value != was && onChange) onChange(value);
+				} catch (const std::exception&) {
+					// Not a number. The value it had is the value it keeps.
+				}
+			}
+			return;
+		}
+
+		// --- dragging --------------------------------------------------------------
+		const uint32_t wid = gui.motionKey(mId.c_str(), 0u);
+		const bool over = box.contains(in.pointer);
+
+		if (mDragging) {
+			const float travelled = in.pointer.x - mDragStart.x;
+			// Shift is the fine adjustment, the way it is in every tool that has this.
+			const double scale = in.shift ? 0.1 : 1.0;
+			const double was = value;
+			double next = mDragFrom + static_cast<double>(travelled) * step * scale;
+			if (minValue < maxValue) next = std::clamp(next, minValue, maxValue);
+			if (next != was) {
+				value = next;
+				if (onChange) onChange(value);
+			}
+			if (in.lReleased) {
+				mDragging = false;
+				// A press that went nowhere was a click, and a click means type.
+				if (std::abs(in.pointer.x - mDragStart.x) < 3.0f &&
+				    std::abs(in.pointer.y - mDragStart.y) < 3.0f) {
+					mTyping = true;
+					mBuffer = numberText(value, decimals);
+					++mBufferVersion;
+					gui.setFocus(gui.widgetId(mId.c_str()));
+					mFocused = true;
+				}
+			}
+		} else if (over && in.lPressed) {
+			mDragging = true;
+			mDragFrom = value;
+			mDragStart = in.pointer;
+		}
+
+		// --- drawing ---------------------------------------------------------------
+		const uint32_t fill = gui.motion().colour(
+			wid ^ kMotionFill,
+			(mDragging || over) ? base.selection : base.background,
+			base.motion.seconds, base.motion.curve);
+		if (base.radius > 0.0f) gui.drawRectRounded(box, fill, base.radius);
+		else                    gui.drawRect(box, fill);
+		// The border is four edges rather than a frame call: addFrame lays a fill over
+		// its border, and this one has a fill of its own already.
+
+		const std::string shown = numberText(value, decimals);
+		const float top = box.y + (box.h - gui.lineHeight()) * 0.5f;
+		if (!label.empty()) {
+			gui.drawText(label.c_str(), { box.x + base.padding, top }, base.placeholder);
+		}
+		// The number against the right edge, so a column of them lines up on the point
+		// rather than on however long each label happens to be.
+		const float width = gui.measureText(shown.c_str());
+		gui.drawText(shown.c_str(), { box.x + box.w - base.padding - width, top }, base.text);
+	}
 
 	// ---- Image ---------------------------------------------------------------------
 	Image::~Image() { release(); }
@@ -1332,28 +1467,19 @@ namespace RDA {
 		const Rect box = placement(gui, origin);
 		const float bar = barSize(gui);
 
-		// The bar. Each title is a button, so hovering and pressing come from the theme
-		// like everything else; the selected one is drawn with this widget's variant and
-		// the rest with the default, which is the whole of "looks selected".
-		float x = box.x;
-		int index = 0;
-		gui.pushId(mId.c_str());
-		for (const auto& child : children()) {
-			Tab* tab = dynamic_cast<Tab*>(child.get());
-			if (!tab) continue;
-			const float w = gui.measureText(tab->title.c_str()) + 22.0f;
-			const Variant look = (index == value) ? variant : kDefaultVariant;
-			if (gui.button(tab->id().c_str(), tab->title.c_str(), { x, box.y, w, bar }, look)
-			    && index != value) {
-				value = index;
-				if (onChange) onChange(index);
-			}
-			x += w + 2.0f;
-			++index;
-		}
-		gui.popId();
-
 		// ---- the page ----------------------------------------------------------------
+		//
+		// Drawn *before* the bar, which is the other way round from how this used to be.
+		//
+		// A bar belongs on top of the pages it switches between -- and once a title can
+		// be drawn by a mesh, it has to be: a tab that reaches a pixel or two past its
+		// own rect to meet the page below it is a tab whose overhang the page would
+		// otherwise paint straight over. Input is unaffected either way, because the two
+		// rectangles do not overlap; only the drawing does.
+		//
+		// The cost is that a click lands after the pages have been painted, so the page
+		// it chose begins arriving on the next frame rather than this one. One frame, of
+		// a transition that is measured in tens.
 		const float seconds = motionSeconds();
 		const uint32_t key = gui.motionKey(mId.c_str(), kMotionOpen);
 
@@ -1381,7 +1507,7 @@ namespace RDA {
 		const float direction = (mLeaving > value) ? -1.0f : 1.0f;
 		const float travel = box.w * 0.06f; // a hint of movement, not a journey
 
-		index = 0;
+		int index = 0;
 		for (const auto& child : children()) {
 			Tab* tab = dynamic_cast<Tab*>(child.get());
 			if (!tab) continue;
@@ -1392,6 +1518,36 @@ namespace RDA {
 				paintPage(gui, *tab, box, bar, -direction * travel * progress, 1.0f - progress);
 			}
 		}
+
+		// ---- the bar -------------------------------------------------------------------
+		//
+		// Each title is a button, so hover, press and motion come from the theme like
+		// everything else. Every one of them wears this widget's `variant`, and the one
+		// that is showing is `selected` -- which is what tells a colour apart (it draws
+		// in that variant's pressed colour) and what puts a mesh-drawn title on the top
+		// rung of its ladder of states.
+		//
+		// It used to be the other way about: the showing title wore `variant` and the
+		// rest wore the default. That made a bar with no variant at all show nothing
+		// about which page was open, and it made a mesh impossible, because the titles
+		// have to be one shape to differ by one state.
+		float x = box.x;
+		index = 0;
+		gui.pushId(mId.c_str());
+		for (const auto& child : children()) {
+			Tab* tab = dynamic_cast<Tab*>(child.get());
+			if (!tab) continue;
+			const float w = gui.measureText(tab->title.c_str()) + 22.0f;
+			if (gui.button(tab->id().c_str(), tab->title.c_str(), { x, box.y, w, bar },
+			               variant, TextAlign::Center, 0.0f, index == value)
+			    && index != value) {
+				value = index;
+				if (onChange) onChange(index);
+			}
+			x += w + 2.0f;
+			++index;
+		}
+		gui.popId();
 	}
 
 	// One page of a Tabs, offset sideways and faded by however far through it is.
@@ -1472,7 +1628,7 @@ namespace RDA {
 
 		const ButtonStyle& s = gui.theme().button(variant);
 		const bool inside = box.contains(gui.input().pointer);
-		if (inside && gui.input().pressed) { mOpen = !mOpen; gui.setFocus(gui.widgetId(mId.c_str())); }
+		if (inside && gui.input().lPressed) { mOpen = !mOpen; gui.setFocus(gui.widgetId(mId.c_str())); }
 
 		// ---- the keyboard ------------------------------------------------------------
 		//
@@ -1592,7 +1748,7 @@ namespace RDA {
 		// chosen on release, the value would still arrive while the ring quietly vanished.
 		// Claimed rather than re-focused: it already has focus, and this only says the
 		// press was ours.
-		if (!closing && gui.input().pressed && shown.contains(gui.input().pointer)) {
+		if (!closing && gui.input().lPressed && shown.contains(gui.input().pointer)) {
 			gui.setFocus(gui.widgetId(mId.c_str()));
 		}
 
@@ -1627,7 +1783,7 @@ namespace RDA {
 			             s.text, s.font);
 			// Chosen on release rather than press: the press is what opened the list, and
 			// acting on it would pick whatever happened to be under the pointer then.
-			if (over && gui.input().released) {
+			if (over && gui.input().lReleased) {
 				mOpen = false;
 				if (value != oneValue) {
 					value.assign(oneValue);
@@ -1644,7 +1800,7 @@ namespace RDA {
 		// A press anywhere else closes it. Checked after the rows so a press on one of
 		// them is not also a press outside, and outside the block above so it is asked
 		// with the real pointer -- a list already closing has nothing to close.
-		if (mOpen && gui.input().pressed && !list.contains(gui.input().pointer)
+		if (mOpen && gui.input().lPressed && !list.contains(gui.input().pointer)
 		    && !mClosedRect.contains(gui.input().pointer)) {
 			mOpen = false;
 		}

@@ -108,14 +108,21 @@ namespace RDA {
 		gi.pointer = window.cursorToFramebuffer(in.mousePosition());
 		VkExtent2D ext = window.cachedExtent();
 		gi.viewport = { static_cast<float>(ext.width), static_cast<float>(ext.height) };
-		gi.down = in.isMouseButtonDown(0);      // GLFW_MOUSE_BUTTON_LEFT
-		gi.pressed = in.mouseButtonPressed(0);
-		gi.released = in.mouseButtonReleased(0);
+		gi.lDown = in.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);      // GLFW_MOUSE_BUTTON_LEFT
+		gi.lPressed = in.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+		gi.lReleased = in.mouseButtonReleased(GLFW_MOUSE_BUTTON_LEFT);
 
+		gi.rDown = in.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT);      // GLFW_MOUSE_BUTTON_RIGHT
+		gi.rPressed = in.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
+		gi.rReleased = in.mouseButtonReleased(GLFW_MOUSE_BUTTON_RIGHT);
+
+		gi.mDown = in.isMouseButtonDown(GLFW_MOUSE_BUTTON_MIDDLE);      // GLFW_MOUSE_BUTTON_MIDDLE
+		gi.mPressed = in.mouseButtonPressed(GLFW_MOUSE_BUTTON_MIDDLE);
+		gi.mReleased = in.mouseButtonReleased(GLFW_MOUSE_BUTTON_MIDDLE);
 		// Click runs: presses close together in both time and space count up, so a
 		// widget can tell a double click from two separate ones. Tracked here
 		// rather than in the GUI because the timing is a platform concern.
-		if (gi.pressed) {
+		if (gi.lPressed) {
 			constexpr double kDoubleClickSeconds = 0.4;
 			constexpr float  kSlopPixels = 6.0f;
 			const double now = glfwGetTime();
@@ -319,6 +326,10 @@ namespace RDA {
 	// Full engine bring-up on whichever thread owns the loop. GLFW must be initialized
 	// here (not by the caller) so it lives on the same thread that will pump its events.
 	static void engineBringUp(const AppConfig& config) {
+		// First, so that everything below is already at the volume the application asked
+		// for. Refused where RDA_LOG has already said otherwise -- see setLogLevel.
+		setLogLevel(config.logLevel);
+
 		applicationInfo = config.app;
 		gWindowDependent = config.app.windowDependent;
 #if !defined(_WIN32)
@@ -597,12 +608,22 @@ namespace RDA {
 		return dt;
 	}
 
+	// True for exactly as long as a frame is being built, whichever of the two callers
+	// started it. Read by serviceWhileModal, which must not start a second one on top.
+	bool gInFrame = false;
+
 	// One iteration of the engine's work, with the event queue left alone.
 	//
 	// Split out of the loop because it has to run from two places: the loop calls it after
 	// pumping events, and serviceWhileModal() calls it from inside an OS modal loop where
 	// the pump cannot return. Returns whether anything was drawn.
 	static bool runFrame(const AppConfig& config, float dtSeconds) {
+		// Set here rather than at the two call sites, because a guard somebody has to
+		// remember at every call site is a guard that will be missing from the third one.
+		struct InFrame {
+			InFrame()  { gInFrame = true; }
+			~InFrame() { gInFrame = false; }
+		} marker;
 		// Before anything is walked or drawn, so nothing this frame can still be pointing
 		// at what is about to be destroyed.
 		drainRetiredTextures();
@@ -773,6 +794,24 @@ namespace RDA {
 	// or the same press would be delivered on every callback for as long as the drag lasts.
 	static void serviceWhileModal() {
 		static bool inside = false;
+		// A frame is already being built, so this is not the case this function exists
+		// for.
+		//
+		// The three callbacks that lead here fire from inside glfwPollEvents while a
+		// window is being dragged, which is when the loop genuinely cannot run a frame.
+		// They *also* fire synchronously out of SetWindowPos -- and SetWindowPos is what
+		// changing a window's decoration, position or size calls. So an application that
+		// writes `state.rda.maximized` or asks for a frameless window from inside a
+		// widget's handler arrives here in the middle of the walk that ran that handler,
+		// and a frame started there resets the frame arena and truncates the draw list
+		// underneath the walk still using them. Measured: toggling the Sandbox's title
+		// bar three times re-entered five frames, and the corruption showed up as
+		// anything from nothing at all to the process going away.
+		//
+		// Dropping the event costs nothing, because the thing it would have reported --
+		// a new size or position -- is read again at the top of the next frame. Asking
+		// for one is what makes sure there is a next frame in an on-demand window.
+		if (gInFrame) { rendeerRequestRedraw(); return; }
 		if (inside || !gLoopConfig || !gRunning.load()) return;
 		inside = true;
 
