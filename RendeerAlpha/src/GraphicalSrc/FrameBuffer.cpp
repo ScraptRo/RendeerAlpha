@@ -74,7 +74,11 @@ namespace RDA {
 		color.width = width;
 		color.height = height;
 		color.format = colorFormat;
-		color.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		// TRANSFER_SRC as well, so anything drawn into an offscreen target can be copied
+		// back out of it -- which is what a capture is. It costs a usage flag; without it
+		// the copy is a validation error and reads nothing.
+		color.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+		            | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		color.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 		color.withSampler = true; // this target is meant to be sampled afterwards
 		if (!mColor.create(color)) {

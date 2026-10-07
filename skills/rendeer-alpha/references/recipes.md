@@ -10,6 +10,19 @@ rda prototype . --data mock.json              # signals and tables from one file
 rda prototype . --layout catalogue            # which route (or which layout) to open on
 ```
 
+## Looking at one without a window
+
+```bash
+rda shot .                        # a .png of the interface, settled
+rda shot . --size 1100x700 --scale 1   # the same picture on any display
+rda shot . --hover 208,27         # X,Y in layout units, for a hover or --press
+rda shot . --frames 8 --every 35 --settle 0   # a transition, frame by frame
+```
+
+The same compile and the same placeholder state as `prototype`, with no window and a `.png`
+at the end -- for a machine with nobody at it, and for anything that has to be compared.
+See `docs/setup/seeing-it.md`.
+
 It compiles the project, defines everything `res/state.ts` declares, binds each command
 to a line on the terminal, and hot-reloads a `.tsx` while the window is open. A key or a
 name it does not recognise is refused rather than ignored. See

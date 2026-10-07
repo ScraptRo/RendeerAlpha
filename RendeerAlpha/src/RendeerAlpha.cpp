@@ -1,5 +1,6 @@
 ﻿#include <RendeerAlpha.h>
 #include <Layout/Bindings.h>
+#include <Layout/StyleWatch.h>
 #include <Core/Signals.h>
 #include <unordered_map>
 #include <Core/Core.h>
@@ -21,6 +22,11 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <cmath>
+#include <algorithm>
+// std::exception, for the one catch in engineMain. Named rather than inherited: MSVC
+// supplies it through other headers here and GCC has no reason to.
+#include <exception>
 #include <cstring>
 #include <Core/Location.h>
 #if !defined(_WIN32)
@@ -86,6 +92,8 @@ namespace RDA {
 		std::vector<float> fontSizes;
 		ViewportMode viewportMode = ViewportMode::Fullscreen;
 		bool         guiEnabled = true;
+		// Physical pixels per layout unit, settled once when the first window opens.
+		float        unitScale = 1.0f;
 	};
 	DeferredRendererSetup gRendererSetup;
 	bool gRendererReady = false;
@@ -93,6 +101,14 @@ namespace RDA {
 	// when its last window closes; a service that opens windows on behalf of other
 	// processes has none most of the time and must not take that for "finished".
 	bool gWindowDependent = true;
+
+	// A pointer put somewhere by something other than a hand. See
+	// rendeerSetSyntheticPointer: hover and press are read from where the pointer is, so
+	// capturing a hovered widget means being able to say where it is.
+	bool      gSyntheticPointer = false;
+	float     gSyntheticScroll = 0.0f;
+	glm::vec2 gSyntheticAt{ 0.0f };
+	bool      gSyntheticDown = false;
 
 	// Gathers one window's input and opens its GUI frame. Every window owns its own Gui
 	// and its own Input, so this is per window rather than per application: the runtime
@@ -105,12 +121,29 @@ namespace RDA {
 		gi.editKeys.clear();
 		gi.copy = gi.cut = gi.paste = gi.selectAll = gi.submit = false;
 		gi.undo = gi.redo = false;
-		gi.pointer = window.cursorToFramebuffer(in.mousePosition());
+		// Both in layout units, because that is what the interface is written in. The
+		// pointer arrives in screen coordinates and the framebuffer is pixels, so each is
+		// converted once, here -- and from here inward nothing knows what a pixel is.
+		const float unitScale = gRendererSetup.unitScale > 0.0f ? gRendererSetup.unitScale : 1.0f;
+		gi.pointer = window.cursorToFramebuffer(in.mousePosition()) / unitScale;
+		// Already in layout units, because whoever set it was reading a layout's numbers.
+		if (gSyntheticPointer) gi.pointer = gSyntheticAt;
 		VkExtent2D ext = window.cachedExtent();
-		gi.viewport = { static_cast<float>(ext.width), static_cast<float>(ext.height) };
+		gi.viewport = { static_cast<float>(ext.width) / unitScale,
+		                static_cast<float>(ext.height) / unitScale };
 		gi.lDown = in.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);      // GLFW_MOUSE_BUTTON_LEFT
 		gi.lPressed = in.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
 		gi.lReleased = in.mouseButtonReleased(GLFW_MOUSE_BUTTON_LEFT);
+		if (gSyntheticPointer) {
+			// Held, pressed and released are three different facts and a caller only gives
+			// one of them: down stays down, and the edges are worked out from the frame
+			// before, which is exactly what a real button does.
+			static bool wasDown = false;
+			gi.lPressed = gSyntheticDown && !wasDown;
+			gi.lReleased = !gSyntheticDown && wasDown;
+			gi.lDown = gSyntheticDown;
+			wasDown = gSyntheticDown;
+		}
 
 		gi.rDown = in.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT);      // GLFW_MOUSE_BUTTON_RIGHT
 		gi.rPressed = in.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
@@ -140,6 +173,10 @@ namespace RDA {
 		}
 		gi.clickCount = gClickHistory[&window].count;
 		gi.scroll = in.scroll().y;
+		// A wheel nobody turned. Applied every frame it is set, so a large number means
+		// "to the end of whatever this is" rather than a precise distance -- which is the
+		// thing a capture of a scrolled view actually wants.
+		if (gSyntheticScroll != 0.0f) gi.scroll = gSyntheticScroll;
 		gi.dt = dtSeconds;
 		gi.shift = in.isKeyDown(GLFW_KEY_LEFT_SHIFT) || in.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
 		gi.ctrl = in.isKeyDown(GLFW_KEY_LEFT_CONTROL) || in.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
@@ -364,13 +401,32 @@ namespace RDA {
 		gRendererSetup.fontSizes = config.gui.fontSizes;
 		gRendererSetup.viewportMode = config.viewportMode;
 		gRendererSetup.guiEnabled = config.gui.enabled;
+		// What the application asked for, if it asked. 0 means it did not, and the display
+		// is asked instead once there is a window to ask about.
+		gRendererSetup.unitScale = config.gui.uiScale;
 
 		if (config.app.windowDependent) {
 			WindowInfo createInfo;
 			// Sized for an editor rather than a demo: a docked left panel, a viewport and
 			// a notebook along the bottom do not all fit in 640x480.
-			createInfo.Width = config.windowWidth > 0 ? config.windowWidth : 1280;
-			createInfo.Height = config.windowHeight > 0 ? config.windowHeight : 800;
+			// A window's size is in layout units like everything else an application says,
+			// so it is multiplied by what a unit is worth here before GLFW sees it. The
+			// display is asked directly: this is before there is a window to ask, and the
+			// monitor a window opens on is the primary one unless it is placed elsewhere.
+			float openingScale = config.gui.uiScale;
+			if (openingScale <= 0.0f) {
+				openingScale = 1.0f;
+				if (GLFWmonitor* primary = glfwGetPrimaryMonitor()) {
+					float sx = 1.0f, sy = 1.0f;
+					glfwGetMonitorContentScale(primary, &sx, &sy);
+					if (sx > 0.0f && sy > 0.0f) openingScale = (std::min)(sx, sy);
+				}
+			}
+			const auto inPixels = [openingScale](uint32_t units) {
+				return static_cast<unsigned>(std::lround(units * openingScale));
+			};
+			createInfo.Width = inPixels(config.windowWidth > 0 ? config.windowWidth : 1280);
+			createInfo.Height = inPixels(config.windowHeight > 0 ? config.windowHeight : 800);
 			createInfo.name = config.app.name;
 			createInfo.vsync = config.vsync;
 			createInfo.style = config.window;
@@ -379,14 +435,27 @@ namespace RDA {
 			watchForModalLoop(mainWindow);
 			// Present only as a device anchor: hidden here rather than never created,
 			// because the device and the pipelines are chosen against its surface.
-			if (config.hiddenMainWindow && mainWindow->getGLFW()) {
+			if ((config.hiddenMainWindow || config.offscreen) && mainWindow->getGLFW()) {
 				glfwHideWindow(mainWindow->getGLFW());
+			}
+
+			// What one layout unit is worth here. Settled once, before the font is baked,
+			// because the atlas is baked at it: `uiScale = 0` means ask the display, which
+			// is what an application wants unless it says otherwise.
+			gRendererSetup.unitScale = config.gui.uiScale > 0.0f
+				? config.gui.uiScale
+				: mainWindow->contentScale();
+			if (gRendererSetup.unitScale != 1.0f) {
+				RDA_LOG_INFO("Interface scale " << gRendererSetup.unitScale << "x"
+				             << (config.gui.uiScale > 0.0f ? " (set by the application)"
+				                                           : " (from the display)"));
 			}
 
 			gRendererReady = true;
 			if (!gRenderer.init(*mainWindow, fontPath, config.gui.fontHeight,
 			                   config.gui.fontSizes,
-			                    config.viewportMode, config.gui.enabled)) {
+			                    config.viewportMode, config.gui.enabled,
+			                    gRendererSetup.unitScale)) {
 				RDA_RUNTIME_ERROR("Failed to init the renderer");
 			}
 			gRenderer.setGuiLayerCaching(config.cacheGuiLayer);
@@ -395,7 +464,7 @@ namespace RDA {
 			// exists: no font metrics, no theme, no languages, no clipboard hooks.
 			if (config.gui.enabled) {
 				// Share the baked font's CPU metrics with the window's GUI frontend.
-				mainWindow->gui().init(&gRenderer.fontAtlas());
+				mainWindow->gui().init(&gRenderer.fontAtlas(), gRendererSetup.unitScale);
 
 				// Load the optional XML widget theme + syntax languages. Languages first,
 				// so a theme variant can reference a language this file defines.
@@ -405,6 +474,13 @@ namespace RDA {
 				if (!config.gui.themePath.empty()) {
 					mainWindow->gui().theme().loadFromFile(config.gui.themePath);
 				}
+
+				// And watch it, with the meshes it names, for the rest of the run. Unlike a
+				// layout -- which the application names and polls itself -- a theme and its
+				// meshes are the engine's own assets and it already knows where they are,
+				// so no application has to ask for this. In a build without hot reload it
+				// does nothing at all.
+				Layout::styleWatch().open(mainWindow->gui().theme(), config.gui.themePath);
 
 				// Wire the OS clipboard for text widgets (Ctrl+C/X/V).
 				GLFWwindow* clipWindow = mainWindow->getGLFW();
@@ -511,8 +587,13 @@ namespace RDA {
 		if (width == gWindowSignalWidth && height == gWindowSignalHeight) return;
 		gWindowSignalWidth = width;
 		gWindowSignalHeight = height;
-		signals().set(gWidthSignal, static_cast<double>(width));
-		signals().set(gHeightSignal, static_cast<double>(height));
+		// In layout units, like every other number a layout reads. A binding that compares
+		// `state.rda.width` against a width it wrote itself is comparing two of the same
+		// thing; published in pixels it would be comparing against something a quarter
+		// larger on a display at 125%, and the mistake would only appear on one machine.
+		const float k = gRendererSetup.unitScale > 0.0f ? gRendererSetup.unitScale : 1.0f;
+		signals().set(gWidthSignal, static_cast<double>(width) / k);
+		signals().set(gHeightSignal, static_cast<double>(height) / k);
 	}
 
 	// A second run in the same process gets its own signal table, so the ids above do
@@ -632,6 +713,33 @@ namespace RDA {
 		// against this frame's rather than the last one's.
 		publishWindowSignals();
 
+		// A window dragged onto a monitor at a different scale. The interface keeps the one
+		// it started with, because the font atlas is baked at it -- so the window is
+		// correct and slightly the wrong size rather than correct and blurry, which is the
+		// better of the two wrongs. Said once, because somebody looking at an interface
+		// that is suddenly too small deserves to know why.
+		if (mainWindow && config.gui.enabled) {
+			static bool toldAboutScale = false;
+			const float now = mainWindow->contentScale();
+			const float baked = gRendererSetup.unitScale > 0.0f ? gRendererSetup.unitScale : 1.0f;
+			if (!toldAboutScale && config.gui.uiScale <= 0.0f && std::fabs(now - baked) > 0.01f) {
+				toldAboutScale = true;
+				RDA_LOG_INFO("This display is at " << now << "x and the interface was built for "
+				             << baked << "x, so it is drawn at the size it opened with. Set "
+				             << "GuiConfig::uiScale to pick one, or reopen the window there.");
+			}
+		}
+
+		// An edited theme or mesh, before anything is resolved against the old one. It
+		// throttles itself, and in a build without hot reload it is not even a branch.
+		//
+		// Here rather than in the application's update for the reason the layout reload is
+		// *not* here: swapping a tree tears down the walk a widget callback is in, and the
+		// application is the only one that knows it is not in one. A style swap replaces no
+		// widgets -- the look is resolved by variant as each one is drawn -- so between two
+		// frames is simply the right place for it.
+		if (Layout::styleWatch().reloadIfChanged()) rendeerRequestRedraw();
+
 		// Reused across frames: its `typed` string and `editKeys` vector keep their
 		// capacity, so a frame with keyboard activity does not allocate. Function-local
 		// rather than a loop local because the frame is now called from two places.
@@ -662,7 +770,12 @@ namespace RDA {
 			if (mainWindow && config.viewportMode == ViewportMode::Widget) {
 				Rect vr = mainWindow->gui().viewportRect();
 				if (vr.w >= 1.0f && vr.h >= 1.0f) {
-					gRenderer.ensureSceneTarget({ static_cast<uint32_t>(vr.w), static_cast<uint32_t>(vr.h) });
+					// Pixels, not units: this is a texture the scene is drawn into, and at
+					// 150% a 600-unit viewport wants 900 pixels of it or the 3D view is the
+					// one soft thing on the screen.
+					const float k = gRendererSetup.unitScale > 0.0f ? gRendererSetup.unitScale : 1.0f;
+					gRenderer.ensureSceneTarget({ static_cast<uint32_t>(vr.w * k),
+					                              static_cast<uint32_t>(vr.h * k) });
 				}
 			}
 			if (mainWindow) mainWindow->gui().setSceneTexture(gRenderer.sceneTexture());
@@ -718,6 +831,11 @@ namespace RDA {
 			}
 		}
 
+		// Every window's frame is now whole: the walk is done and so is everything
+		// Gui::end() adds after it. This is the only point where that is true and the
+		// frame has not been drawn yet, which is what a capture wants.
+		if (config.onFrameEnd) config.onFrameEnd();
+
 		// Whether this frame is worth rendering is decided per window, not once for
 		// all of them.
 		//
@@ -743,6 +861,9 @@ namespace RDA {
 			Window* window = Window::getRefFromNode(node);
 			if (!window || !window->windowIsUp()) continue;
 			if (config.hiddenMainWindow && window == mainWindow) continue; // anchor only
+			// Built, not shown. Presenting to a window nothing composites is work for
+			// nobody, and a capture renders into a target of its own anyway.
+			if (config.offscreen && window == mainWindow) continue;
 
 			// Consumed every iteration whatever else is true, so a request for this
 			// window is honoured exactly once and never lingers into a later frame.
@@ -838,7 +959,24 @@ namespace RDA {
 	}
 
 	static void engineMain(AppConfig config) {
-		engineBringUp(config);
+		try {
+			engineBringUp(config);
+		} catch (const std::exception& failed) {
+			// Bring-up is the one place a throw has nowhere to go. rendeerRun is the entry
+			// point, so there is no caller inside the engine to catch it, and letting it
+			// reach the C runtime is worse than it sounds: on Windows that puts up a modal
+			// box and waits for somebody to press a button, so a tool that could not bake
+			// a font atlas did not fail -- it hung, with no window and no message, until
+			// it was killed. Measured with `rda shot --scale 3`, which asks for a font
+			// atlas larger than the one the engine will build.
+			//
+			// So it is reported here and the loop never starts. rendeerRun returns, the
+			// application finds out the ordinary way, and nothing is torn down that was
+			// never built.
+			RDA_LOG_ERROR("Start-up failed, so there is no loop to run: " << failed.what());
+			gRunning.store(false);
+			return;
+		}
 		publishWindowSignals();
 
 		// Before onStart, not after: an application that spawns a thread there can ask for
@@ -940,6 +1078,43 @@ void rendeerStop() {
 	if (RDA::gGlfwReady.load()) glfwPostEmptyEvent();
 }
 
+bool rendeerCaptureFrame(std::vector<unsigned char>& rgba,
+                         unsigned& width, unsigned& height) {
+	rgba.clear();
+	width = height = 0;
+	if (!RDA::mainWindow) {
+		RDA_LOG_WARNING("capture: there is no window to capture");
+		return false;
+	}
+	uint32_t w = 0, h = 0;
+	if (!RDA::gRenderer.captureGui(*RDA::mainWindow, rgba, w, h)) return false;
+	width = w;
+	height = h;
+	return true;
+}
+
+void rendeerSetSyntheticPointer(float x, float y, bool down) {
+	RDA::gSyntheticPointer = true;
+	RDA::gSyntheticAt = { x, y };
+	RDA::gSyntheticDown = down;
+	// The GUI keeps last frame's geometry when nothing it can see has changed, and a
+	// pointer that moved is one of the things it looks at -- but only once it has been
+	// through an input gather. Asking for a frame is what makes that happen.
+	rendeerRequestRedraw();
+}
+
+void rendeerClearSyntheticPointer() {
+	RDA::gSyntheticPointer = false;
+	RDA::gSyntheticDown = false;
+	RDA::gSyntheticScroll = 0.0f;
+	rendeerRequestRedraw();
+}
+
+void rendeerSetSyntheticScroll(float notches) {
+	RDA::gSyntheticScroll = notches;
+	rendeerRequestRedraw();
+}
+
 void rendeerRequestRedraw() {
 	RDA::gRedrawRequested.store(true);
 	RDA::gWakeRequested.store(true);
@@ -992,9 +1167,17 @@ RDA::Window* rendeerCreateWindow(uint32_t width, uint32_t height, const char* ti
 	// and the surface format are chosen against a window, so the first one to exist is
 	// what brings the renderer up. Every window after this shares it.
 	if (!gRendererReady) {
+		// The same question the first window answered, asked of whichever window is first
+		// to exist: the atlas is baked against this scale, so it has to be known now. Only
+		// when the application said nothing -- an explicit 1.0 means physical pixels and is
+		// not an absence of an answer.
+		if (gRendererSetup.unitScale <= 0.0f) {
+			gRendererSetup.unitScale = window->contentScale();
+		}
 		if (!gRenderer.init(*window, gRendererSetup.fontPath, gRendererSetup.fontHeight,
 			                   gRendererSetup.fontSizes,
-		                    gRendererSetup.viewportMode, gRendererSetup.guiEnabled)) {
+		                    gRendererSetup.viewportMode, gRendererSetup.guiEnabled,
+		                    gRendererSetup.unitScale)) {
 			RDA_LOG_ERROR("Failed to init the renderer against the first window");
 			window->closeWindow();
 			delete window;
@@ -1006,7 +1189,7 @@ RDA::Window* rendeerCreateWindow(uint32_t width, uint32_t height, const char* ti
 
 	// Same footing as the main window: without the font metrics its GUI cannot measure
 	// anything, so nothing it is asked to draw would come out right.
-	if (gRenderer.guiEnabled()) window->gui().init(&gRenderer.fontAtlas());
+	if (gRenderer.guiEnabled()) window->gui().init(&gRenderer.fontAtlas(), gRendererSetup.unitScale);
 	return window;
 }
 

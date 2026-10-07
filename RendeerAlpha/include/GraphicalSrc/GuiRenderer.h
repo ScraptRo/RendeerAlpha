@@ -28,9 +28,13 @@ namespace RDA {
 	public:
 		// `fontSizes` are baked alongside `fontHeight` into the one atlas, so a theme can
 		// ask for a size other than the base one without a second texture or a second draw.
+		// `unitScale` is how many physical pixels one layout unit is worth: 1.0 on an
+		// ordinary display, 1.5 on one at 150%. The font is baked at it and the draw list
+		// is multiplied by it, which is the whole of how this engine handles a scaled
+		// display -- see record() and FontAtlas::setScale.
 		bool init(VkRenderPass targetRenderPass, const std::string& fontPath,
 		          float fontHeight, const std::vector<float>& fontSizes,
-		          uint32_t framesInFlight);
+		          uint32_t framesInFlight, float unitScale = 1.0f);
 		void destroy();
 
 		// Prepares `owner`'s buffers for this frame. Call once per window per frame,
@@ -74,7 +78,12 @@ namespace RDA {
 
 		const FontAtlas& fontAtlas() const { return mFont; }
 
+		// Physical pixels per layout unit, as init() was given it.
+		float unitScale() const { return mUnitScale; }
+
 	private:
+		float mUnitScale = 1.0f;
+
 		struct DynamicBuffers {
 			MemoryBuffer vertices;
 			MemoryBuffer indices;

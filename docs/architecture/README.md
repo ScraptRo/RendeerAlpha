@@ -23,6 +23,7 @@ and [backend/](../backend/README.md) are the reference.
 | [The two halves, and what the compiler does](two-halves.md) | build time and run time, and the line between them |
 | [Starting up](starting-up.md) | what happens between `main` and the first frame |
 | [One frame, and why there is no diffing](one-frame.md) | the loop, on-demand redraw, and why a retained tree needs no reconciliation |
+| [Units and pixels](units-and-pixels.md) | what `height={30}` means on a display at 150%, and why text is baked rather than scaled |
 | [Reading and writing state from C++](state-from-cpp.md) | the generated header, and what an accessor costs |
 | [Hot reload](hot-reload.md) | editing a layout while it runs, and why the state survives |
 

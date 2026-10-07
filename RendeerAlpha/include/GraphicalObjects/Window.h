@@ -40,6 +40,7 @@ namespace RDA {
 		uint32_t mCachedHeight = 0;
 		uint32_t mCachedWinWidth = 0;    // window content size, in screen coords
 		uint32_t mCachedWinHeight = 0;
+		float    mCachedContentScale = 1.0f; // physical pixels per layout unit, per the OS
 
 		// Where the pointer took hold of the window, in window coordinates, while a
 		// `dragWindow` region is held. See followGrip.
@@ -78,6 +79,11 @@ namespace RDA {
 
 		// Last framebuffer size seen by the event pump, in pixels.
 		VkExtent2D cachedExtent() const { return { mCachedWidth, mCachedHeight }; }
+
+		// What the OS says a layout unit is worth here: 1.0 at 100%, 1.5 at 150%. Read
+		// every event pump, so it follows a window moved to another monitor -- whether the
+		// interface follows it is a separate question, and the engine's.
+		float contentScale() const { return mCachedContentScale; }
 
 		// Maps a cursor position (GLFW screen coords) into framebuffer pixels, so GUI
 		// hit-testing lines up with what was rendered on a HiDPI display.

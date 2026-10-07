@@ -11,6 +11,11 @@
 #include <glm/gtc/matrix_transform.hpp> // lookAt / ortho, for the light's matrix
 #include <array>
 #include <cmath>
+// memcpy and swap, for copying a captured frame back and putting its channels the
+// way round a picture file wants them. Named rather than inherited: MSVC supplies
+// both through other headers here and GCC does not.
+#include <cstring>
+#include <utility>
 #include <thread>
 #include <chrono>
 
@@ -20,7 +25,7 @@ namespace RDA {
 
 	bool Renderer::init(Window& window, const std::string& fontPath, float fontHeight,
 	                    const std::vector<float>& fontSizes, ViewportMode mode,
-	                    bool guiEnabled) {
+	                    bool guiEnabled, float unitScale) {
 		mGuiEnabled = guiEnabled;
 		// A Viewport widget is the only thing that can display an offscreen scene, so
 		// without a GUI there is nothing to render into one.
@@ -44,11 +49,20 @@ namespace RDA {
 		if (!mShadowPass.init(mCameraSetLayout)) return false;
 		if (!mMaterials.init()) return false;
 
+		// What every offscreen target is made of: the surface's own format, so a pipeline
+		// built against one pass is compatible with the others.
+		//
+		// Settled here rather than inside the Widget branch below, which is where it used
+		// to be. Three things want it -- the scene target, the cached GUI layer and a
+		// capture -- and only the first is a Widget-mode thing, so in Fullscreen mode it
+		// stayed VK_FORMAT_UNDEFINED and the other two asked for an image of no format at
+		// all. Which is a validation error and a target that never gets made.
+		mSceneColorFormat = mTarget->colorFormat();
+
 		// Widget mode: build the offscreen scene target first, so the forward pipeline can
 		// be built against the render pass it will actually draw the scene into. It starts
 		// window-sized; the engine resizes it to the Viewport widget from the next frame.
 		if (mViewportMode == ViewportMode::Widget) {
-			mSceneColorFormat = mTarget->colorFormat();
 			ensureSceneTarget(window.cachedExtent());
 			if (!mSceneTarget.isValid()) {
 				RDA_LOG_ERROR("Failed to create the offscreen scene target");
@@ -67,7 +81,7 @@ namespace RDA {
 		// paid for, so an application without one never builds them.
 		if (mGuiEnabled) {
 			if (!mGuiRenderer.init(mTarget->renderPass(), fontPath, fontHeight, fontSizes,
-			                          MAX_FRAMES_IN_FLIGHT)) {
+			                          MAX_FRAMES_IN_FLIGHT, unitScale)) {
 				return false;
 			}
 		}
@@ -218,6 +232,7 @@ namespace RDA {
 		mGuiRenderer.destroy();
 		mSceneTarget.destroy();
 		mGuiLayer.destroy();
+		mCapture.destroy();
 		mShadowPass.destroy();
 		mForward.destroy();
 
@@ -541,6 +556,163 @@ namespace RDA {
 		// render pass survives a resize, so this only ever builds once.
 		if (!mGuiRenderer.buildLayerPipelines(mGuiLayer.renderPass())) return false;
 		mGuiLayerValid = false;
+		return true;
+	}
+
+	bool Renderer::ensureCaptureTarget(VkExtent2D extent) {
+		if (extent.width == 0 || extent.height == 0) return false;
+		if (mCapture.isValid() && mCapture.extent().width == extent.width &&
+		    mCapture.extent().height == extent.height) {
+			return true;
+		}
+		vkDeviceWaitIdle(getDevice());
+		forgetTexture(&mCapture.colorTexture());
+		mCapture.destroy();
+		// The surface's own format, so the pipelines the GUI already has are compatible
+		// with this pass -- a render pass differing in an attachment format needs its own
+		// pipelines, and a capture is not worth a second set of them. What it costs is
+		// knowing which way round the channels come back; see captureGui.
+		if (!mCapture.createOffscreen(extent.width, extent.height, mSceneColorFormat)) {
+			RDA_LOG_ERROR("Failed to create a capture target at " << extent.width << "x"
+			              << extent.height);
+			return false;
+		}
+		if (!mGuiRenderer.buildLayerPipelines(mCapture.renderPass())) return false;
+		return true;
+	}
+
+	bool Renderer::captureGui(Window& window, std::vector<unsigned char>& rgba,
+	                          uint32_t& width, uint32_t& height) {
+		rgba.clear();
+		width = height = 0;
+		if (!mGuiEnabled) {
+			RDA_LOG_WARNING("capture: this application has no GUI to capture");
+			return false;
+		}
+
+		const VkExtent2D extent = window.cachedExtent();
+		if (!ensureCaptureTarget(extent)) return false;
+
+		Gui& gui = window.gui();
+		// Frame 0 of this window's geometry buffers. Nothing is in flight -- a capture is
+		// taken between frames, and a headless run never presents -- but the wait is cheap
+		// and the alternative is reading a buffer a submitted frame is still using.
+		vkDeviceWaitIdle(getDevice());
+		mGuiRenderer.beginFrame(&window, 0);
+
+		// What the window would have started the frame at. A capture is a picture of the
+		// interface, so it begins where the interface begins: transparent is right for the
+		// cached layer, which is composited over a scene, and wrong here -- it would hand
+		// back a picture whose background is a hole.
+		const VkClearColorValue clear = unpackClear(gui.backgroundColor());
+
+		immediateSubmit([&](VkCommandBuffer cmd) {
+			beginPass(cmd, mCapture.renderPass(), mCapture.framebuffer(0),
+			          mCapture.extent(), /*transparentClear*/ false, &clear);
+			setViewportAndScissor(cmd, mCapture.extent());
+			mGuiRenderer.record(cmd, &window, gui.drawData(), mCapture.extent(), 0,
+			                    gui.drawVersion(), /*skipTexture*/ nullptr,
+			                    /*intoLayer*/ true);
+			vkCmdEndRenderPass(cmd);
+		});
+
+		const VkDeviceSize bytes =
+			static_cast<VkDeviceSize>(extent.width) * extent.height * 4u;
+		MemoryBuffer staging;
+		if (!staging.create(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryResidence::GpuToCpu)) {
+			RDA_LOG_WARNING("capture: cannot make room for " << bytes << " bytes");
+			return false;
+		}
+
+		VkImage image = mCapture.colorTexture().image();
+		VkBuffer target = staging.handle();
+		immediateSubmit([&](VkCommandBuffer cmd) {
+			VkImageMemoryBarrier toRead{};
+			toRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			toRead.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			toRead.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toRead.image = image;
+			toRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			toRead.subresourceRange.levelCount = 1;
+			toRead.subresourceRange.layerCount = 1;
+			toRead.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			toRead.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+			                     1, &toRead);
+
+			VkBufferImageCopy region{};
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.layerCount = 1;
+			region.imageExtent = { extent.width, extent.height, 1 };
+			vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			                       target, 1, &region);
+
+			VkImageMemoryBarrier back = toRead;
+			back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			back.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+			                     nullptr, 1, &back);
+		});
+
+		const void* mapped = staging.map();
+		if (!mapped) {
+			RDA_LOG_WARNING("capture: the frame would not come back");
+			return false;
+		}
+		rgba.resize(static_cast<size_t>(bytes));
+		std::memcpy(rgba.data(), mapped, static_cast<size_t>(bytes));
+		staging.unmap();
+
+		// Two things about the format the surface chose, and both have to be undone to get
+		// something a picture file can hold.
+		//
+		// Channel order: a B8G8R8A8 surface hands back blue first. Nothing on screen cares,
+		// because the swapchain and the sampler agree; a PNG does.
+		switch (mSceneColorFormat) {
+		case VK_FORMAT_B8G8R8A8_UNORM:
+		case VK_FORMAT_B8G8R8A8_SRGB:
+		case VK_FORMAT_B8G8R8A8_SNORM:
+			for (size_t i = 0; i + 3 < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
+			break;
+		default:
+			break;
+		}
+
+		// And encoding: an _SRGB target was encoded by the hardware as it was written, so
+		// those bytes are already what a display shows. A _UNORM one holds the linear
+		// values the shader produced, and handing those to a picture file would come out
+		// visibly dark -- the same conversion a stream read does, for the same reason.
+		const bool alreadyEncoded =
+			mSceneColorFormat == VK_FORMAT_B8G8R8A8_SRGB ||
+			mSceneColorFormat == VK_FORMAT_R8G8B8A8_SRGB;
+		if (!alreadyEncoded) {
+			static const std::array<unsigned char, 256> kEncoded = [] {
+				std::array<unsigned char, 256> table{};
+				for (int i = 0; i < 256; ++i) {
+					const double x = i / 255.0;
+					const double y = x <= 0.0031308 ? 12.92 * x
+					                                : 1.055 * std::pow(x, 1.0 / 2.4) - 0.055;
+					table[static_cast<size_t>(i)] =
+						static_cast<unsigned char>(y * 255.0 + 0.5);
+				}
+				return table;
+			}();
+			for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+				rgba[i + 0] = kEncoded[rgba[i + 0]];
+				rgba[i + 1] = kEncoded[rgba[i + 1]];
+				rgba[i + 2] = kEncoded[rgba[i + 2]];
+				// Alpha is coverage, not light.
+			}
+		}
+
+		width = extent.width;
+		height = extent.height;
 		return true;
 	}
 

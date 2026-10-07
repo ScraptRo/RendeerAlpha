@@ -7,6 +7,7 @@
 #include <Logger/Logger.h>
 #include <vendor/stb_image/stb_image.h>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstring>
 namespace RDA {
@@ -156,6 +157,11 @@ namespace RDA {
 		glfwWindowHint(GLFW_MAXIMIZED, mInfo.style.maximized ? GLFW_TRUE : GLFW_FALSE);
 		glfwWindowHint(GLFW_FLOATING, mInfo.style.alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
 		glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, mInfo.style.transparent ? GLFW_TRUE : GLFW_FALSE);
+		// Not GLFW_SCALE_TO_MONITOR. A size asked for here is in layout units and has
+		// already been multiplied by the scale the *engine* settled on -- which is the
+		// display's unless the application said otherwise. Letting GLFW scale it as well
+		// would multiply twice, and would ignore an application that asked for physical
+		// pixels by setting GuiConfig::uiScale to 1.
 		// Placed after it is up rather than by a hint, so it is one code path with
 		// setPosition -- and so a window that says where it goes does not flash at the
 		// platform's choice first. GLFW_VISIBLE is what makes that possible.
@@ -182,6 +188,9 @@ namespace RDA {
 			setPosition(mInfo.style.x, mInfo.style.y);
 			glfwShowWindow(mWindow);
 		}
+		// Before anything that converts between units and pixels -- the size limits on the
+		// very next line do -- and before the engine asks what scale to bake a font at.
+		syncOSState();
 		setSizeLimits(mInfo.style.minWidth, mInfo.style.minHeight, mInfo.style.maxWidth, mInfo.style.maxHeight);
 		if (mInfo.style.opacity < 1.0f) setOpacity(mInfo.style.opacity);
 		if (!mInfo.style.icon.empty()) {
@@ -262,12 +271,19 @@ namespace RDA {
 		if (!mWindow) return;
 		mInfo.style.minWidth = minW; mInfo.style.minHeight = minH;
 		mInfo.style.maxWidth = maxW; mInfo.style.maxHeight = maxH;
+
+		// A bound is in layout units, because it is a statement about the interface: "this
+		// does not work narrower than 400" is about what fits, not about pixels. GLFW wants
+		// them in the same coordinates the window's size is in, and the size the window was
+		// created with was scaled for the display -- so these are too, or a window opened at
+		// 1280 units on a 125% display could not be made narrower than 400 *pixels*, which
+		// is 320 units and well inside what the layout said it needed.
+		const float k = (mCachedContentScale > 0.0f) ? mCachedContentScale : 1.0f;
+		const auto scaled = [k](unsigned value) {
+			return value ? static_cast<int>(std::lround(value * k)) : GLFW_DONT_CARE;
+		};
 		// Zero on an axis is no bound on that axis, which is what GLFW_DONT_CARE says.
-		glfwSetWindowSizeLimits(mWindow,
-			minW ? static_cast<int>(minW) : GLFW_DONT_CARE,
-			minH ? static_cast<int>(minH) : GLFW_DONT_CARE,
-			maxW ? static_cast<int>(maxW) : GLFW_DONT_CARE,
-			maxH ? static_cast<int>(maxH) : GLFW_DONT_CARE);
+		glfwSetWindowSizeLimits(mWindow, scaled(minW), scaled(minH), scaled(maxW), scaled(maxH));
 	}
 
 	void Window::setPosition(int x, int y) {
@@ -393,6 +409,14 @@ namespace RDA {
 		glfwGetWindowSize(mWindow, &winW, &winH);
 		mCachedWinWidth = static_cast<uint32_t>(winW);
 		mCachedWinHeight = static_cast<uint32_t>(winH);
+		// What the display thinks a unit is worth. Read every sync rather than once, so
+		// moving a window between monitors is something the engine can notice -- what it
+		// does about it is the engine's business, not this class's.
+		float scaleX = 1.0f, scaleY = 1.0f;
+		glfwGetWindowContentScale(mWindow, &scaleX, &scaleY);
+		// One number: an interface scaled differently on the two axes would need two of
+		// everything, and no display anybody uses asks for that.
+		mCachedContentScale = (scaleX > 0.0f && scaleY > 0.0f) ? (std::min)(scaleX, scaleY) : 1.0f;
 		if (glfwWindowShouldClose(mWindow)) {
 			mShouldClose = true;
 		}

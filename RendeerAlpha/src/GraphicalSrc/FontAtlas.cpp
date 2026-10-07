@@ -63,11 +63,23 @@ namespace RDA {
 		};
 	}
 
-	bool FontAtlas::bake(const std::string& ttfPath, const std::vector<float>& pixelHeights) {
-		if (pixelHeights.empty()) {
+	void FontAtlas::setScale(float physicalPerUnit) {
+		mScale = (physicalPerUnit > 0.0f) ? physicalPerUnit : 1.0f;
+	}
+
+	bool FontAtlas::bake(const std::string& ttfPath, const std::vector<float>& requestedHeights) {
+		if (requestedHeights.empty()) {
 			RDA_LOG_ERROR("Font atlas asked for no sizes: " << ttfPath);
 			return false;
 		}
+
+		// Everything below this line is in physical pixels, because that is what an atlas
+		// is: a picture. The sizes that came in are layout units, so they are converted
+		// once, here, and converted back only where a measurement is handed out. See
+		// setScale.
+		std::vector<float> pixelHeights;
+		pixelHeights.reserve(requestedHeights.size());
+		for (float height : requestedHeights) pixelHeights.push_back(height * mScale);
 		// One path, or several separated by ';'. The first is the body font; the rest are
 		// only ever asked about a codepoint the ones before them do not have.
 		std::vector<std::string> paths;
@@ -252,8 +264,17 @@ namespace RDA {
 		int atlasHeight = 1;
 		while (atlasHeight < mDynamicTop + kOnDemandRows) atlasHeight *= 2;
 		if (atlasHeight > kMaxAtlasHeight) {
+			// The scale is named when there is one, because at 3x the sizes in this
+			// message are not the sizes anybody wrote and "ask for smaller ones" sends
+			// them to the wrong file.
+			std::string blame = "; ask for fewer, or smaller ones";
+			if (mScale != 1.0f) {
+				blame = " at " + std::to_string(static_cast<int>(std::lround(mScale * 100.0f)))
+				      + "% of the sizes asked for; ask for fewer sizes, smaller ones, or a"
+				        " smaller GuiConfig::uiScale";
+			}
 			RDA_LOG_ERROR("Font atlas would need " << atlasHeight << " rows for "
-			              << pixelHeights.size() << " sizes; ask for fewer, or smaller ones");
+			              << pixelHeights.size() << " sizes" << blame);
 			return false;
 		}
 
@@ -271,9 +292,11 @@ namespace RDA {
 
 			const float scale = stbtt_ScaleForPixelHeight(&font, pixelHeights[i]);
 			Size baked;
-			baked.pixelHeight = pixelHeights[i];
-			baked.ascent = asc * scale;
-			baked.lineAdvance = (asc - desc + gap) * scale;
+			// Back to layout units from here on. The box stays in texels, because that is
+			// what a UV is made of; everything that is a distance on screen is divided.
+			baked.pixelHeight = requestedHeights[i];
+			baked.ascent = asc * scale / mScale;
+			baked.lineAdvance = (asc - desc + gap) * scale / mScale;
 			baked.glyphs.resize(static_cast<size_t>(kGlyphCount));
 			for (int c = 0; c < kGlyphCount; ++c) {
 				const stbtt_packedchar& b = bands[i].chars[static_cast<size_t>(c)];
@@ -282,7 +305,7 @@ namespace RDA {
 				baked.glyphs[static_cast<size_t>(c)] = {
 					b.x0, static_cast<unsigned short>(b.y0 + atlasY),
 					b.x1, static_cast<unsigned short>(b.y1 + atlasY),
-					b.xoff, b.yoff, b.xadvance,
+					b.xoff / mScale, b.yoff / mScale, b.xadvance / mScale,
 				};
 			}
 			mSizes.push_back(std::move(baked));
@@ -334,8 +357,16 @@ namespace RDA {
 			if (i) sizeList += ", ";
 			sizeList += std::to_string(static_cast<int>(std::lround(pixelHeights[i])));
 		}
+		// The sizes named are the ones in the atlas, which on a scaled display are not the
+		// ones the application asked for -- so the scale is named too, or the line reads as
+		// though the engine ignored the theme.
+		std::string scaleNote;
+		if (mScale != 1.0f) {
+			scaleNote = " (" + std::to_string(static_cast<int>(std::lround(mScale * 100.0f)))
+			          + "% of the sizes asked for)";
+		}
 		RDA_LOG_SUCCES("Font atlas baked: " << ttfPath << " at " << sizeList
-		               << "px (" << kAtlasWidth << "x" << atlasHeight << "), "
+		               << "px" << scaleNote << " (" << kAtlasWidth << "x" << atlasHeight << "), "
 		               << (kGlyphCount - missing) << " of " << kGlyphCount << " codepoints");
 		// Which ones, by name, rather than only how many. A font not covering the whole
 		// range is a fact about that font and not a fault: it is worth stating once at
@@ -465,7 +496,9 @@ namespace RDA {
 			return true;
 		}
 
-		const float scale = stbtt_ScaleForPixelHeight(chosen, size.pixelHeight);
+		// pixelHeight is in layout units, and a glyph is rasterised in pixels -- the same
+		// conversion the preloaded sizes went through at bake time.
+		const float scale = stbtt_ScaleForPixelHeight(chosen, size.pixelHeight * mScale);
 		int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 		stbtt_GetGlyphBitmapBox(chosen, glyph, scale, scale, &x0, &y0, &x1, &y1);
 		const int w = x1 - x0;
@@ -475,9 +508,9 @@ namespace RDA {
 		stbtt_GetGlyphHMetrics(chosen, glyph, &advanceRaw, &bearing);
 
 		BakedGlyph baked{};
-		baked.xadvance = advanceRaw * scale;
-		baked.xoff = static_cast<float>(x0);
-		baked.yoff = static_cast<float>(y0);
+		baked.xadvance = advanceRaw * scale / mScale;
+		baked.xoff = static_cast<float>(x0) / mScale;
+		baked.yoff = static_cast<float>(y0) / mScale;
 
 		if (w <= 0 || h <= 0) {
 			// A codepoint the face draws as nothing -- a space of its own, a joiner. It
@@ -579,12 +612,15 @@ namespace RDA {
 			penX += b.xadvance;
 			return false;
 		}
-		float rx = std::floor(penX + b.xoff + 0.5f);
-		float ry = std::floor(baselineY + b.yoff + 0.5f);
+		// Snapped to a whole *physical* pixel and then expressed in layout units again. A
+		// glyph whose bitmap lands half a pixel off the grid is sampled between two texels
+		// and comes out soft, which at 150% would undo the point of baking it at 150%.
+		float rx = std::floor((penX + b.xoff) * mScale + 0.5f) / mScale;
+		float ry = std::floor((baselineY + b.yoff) * mScale + 0.5f) / mScale;
 		out.x0 = rx;
 		out.y0 = ry;
-		out.x1 = rx + (b.x1 - b.x0);
-		out.y1 = ry + (b.y1 - b.y0);
+		out.x1 = rx + (b.x1 - b.x0) / mScale;
+		out.y1 = ry + (b.y1 - b.y0) / mScale;
 		out.u0 = b.x0 / mAtlasW;
 		out.v0 = b.y0 / mAtlasH;
 		out.u1 = b.x1 / mAtlasW;

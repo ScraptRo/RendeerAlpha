@@ -42,9 +42,11 @@ namespace RDA {
 		// With `guiEnabled` false the GUI backend is never built (no font atlas, no GUI
 		// pipelines) and no frame records a GUI pass; `mode` is forced to Fullscreen,
 		// since without widgets there is nothing to display an offscreen scene.
+		// `unitScale` is physical pixels per layout unit -- 1.5 on a display at 150%. It
+		// reaches the font atlas and the GUI's projection, and nothing else needs it.
 		bool init(Window& window, const std::string& fontPath, float fontHeight,
 		          const std::vector<float>& fontSizes, ViewportMode mode,
-		          bool guiEnabled = true);
+		          bool guiEnabled = true, float unitScale = 1.0f);
 
 		// Whether this renderer has a GUI backend at all.
 		bool guiEnabled() const { return mGuiEnabled; }
@@ -97,6 +99,22 @@ namespace RDA {
 		// animating scene stops re-drawing an unchanged GUI every frame. Off by default —
 		// see AppConfig::cacheGuiLayer.
 		void setGuiLayerCaching(bool enabled) { mGuiLayerCaching = enabled; }
+
+		// The interface as it would look on screen, in ordinary memory.
+		//
+		// Draws this window's current frame into an offscreen target and copies it back as
+		// RGBA, top row first -- so a frame can be looked at without a window being on
+		// screen, or kept, or compared with the last one. Nothing is presented, so this
+		// works with the window hidden, which is what makes a headless capture possible at
+		// all: the device still needs a surface to have been chosen against.
+		//
+		// The GUI only. A <viewport>'s own drawing is not in it -- that needs the scene
+		// passes and their frame-in-flight state, and an interface is what this is for.
+		//
+		// Call it from the loop thread, between frames, after the walk that built the draw
+		// list. False with a reason in the log when the target cannot be made.
+		bool captureGui(Window& window, std::vector<unsigned char>& rgba,
+		                uint32_t& width, uint32_t& height);
 
 		// A material bound to this renderer's forward pipeline. Meshes added to the
 		// Scene need a material; the camera set and per-object transform are supplied
@@ -215,6 +233,11 @@ namespace RDA {
 		// composited over the live scene every frame. Without it, animating the scene
 		// re-drew every panel, glyph and border of a GUI that had not changed at all.
 		FrameBuffer  mGuiLayer;
+		// Where captureGui draws. Its own target rather than the layer's: the layer is a
+		// cache that may hold a frame somebody is still compositing, and a capture must not
+		// disturb what is on screen.
+		FrameBuffer  mCapture;
+		bool ensureCaptureTarget(VkExtent2D extent);
 		uint64_t     mGuiLayerVersion = 0;
 		bool         mGuiLayerValid = false;
 		bool         mGuiLayerCaching = false; // opt-in; see AppConfig::cacheGuiLayer

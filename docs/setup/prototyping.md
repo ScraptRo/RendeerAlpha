@@ -95,6 +95,9 @@ It is only needed when there is more than one to choose from.
 Assets resolve relative to the project, exactly as they will when the application runs —
 the tool works from the project directory rather than rewriting paths it does not own.
 
+Nobody at the machine, or two screens to compare? [`rda shot`](seeing-it.md) is this same
+command with no window and a `.png` at the end.
+
 ---
 
 Back to [setup](README.md) · [all documentation](../README.md)

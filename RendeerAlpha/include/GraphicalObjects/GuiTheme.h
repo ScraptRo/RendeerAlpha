@@ -85,6 +85,16 @@ namespace RDA {
 		// Back to the engine's built-in look, forgetting every variant anything defined.
 		void reset();
 
+		// Drop what every variant worked out about the mesh it draws with.
+		//
+		// A style resolves a mesh's parameters into indices the first time it draws one and
+		// keeps them, keyed on the address of the mesh it resolved against. After the mesh
+		// library has been cleared -- which is how an edited mesh gets a second look -- that
+		// key points at a destroyed object, and the replacement may well be allocated at the
+		// same address: the style would read as already resolved and keep the colours it
+		// worked out for the old shape. So reloading a mesh says so here.
+		void forgetResolvedMeshes();
+
 		// What "switch to this theme" means: reset, then load. Without the reset a theme
 		// that simply does not mention `button.danger` would inherit the last theme's,
 		// and a light theme would come out with a dark button in it.

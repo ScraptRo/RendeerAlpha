@@ -30,6 +30,7 @@ nothing but its own interface — one command, no build system.
 | | |
 | --- | --- |
 | [Seeing it before there is a backend](prototyping.md) | `rda prototype` — the interface in a window, with placeholder state |
+| [Seeing it without watching it](seeing-it.md) | `rda shot` — the same with no window: a `.png` of a screen, a hover, or a transition frame by frame |
 | [Editor support](editor-support.md) | red squiggles in a layout, before the build sees it |
 | [Build options](build-options.md) | the switches, and what each is for |
 | [Testing what you build](testing.md) | driving a compiled interface without opening a window |

@@ -126,6 +126,11 @@ The middle button is read too (`GuiInput::mDown` and friends) but has no event o
 own: nothing in a layout has a use for it yet, and a backend that wants one reads it
 through `InputCallbacks`.
 
+**It takes no room.** A popup is an overlay: it draws over the interface from its anchor,
+and the container holding it is only where it lives in the tree. So a stack gives it no
+share of the space, open or shut, and a scroll view does not count it in how far there is
+to scroll -- put one at the end of a column and the thing above it still fills the window.
+
 **It never writes `open`.** `open` is a binding, and a widget that wrote its own bound
 property would be overwritten by the signal on the next frame and flicker. `onClose` is
 where the layout closes itself — the same shape `onChange` has everywhere else.

@@ -41,7 +41,19 @@ namespace RDA {
 	class Gui {
 	public:
 		// Binds the CPU-side font metrics (the atlas texture is the backend's concern).
-		void init(const FontAtlas* font) { mFont = font; }
+		// `unitScale` is how many physical pixels one layout unit is worth: 1.0 ordinarily,
+		// 1.5 on a display at 150%. Everything this class measures, lays out and draws is in
+		// units, and the renderer carries the scale -- so almost nothing here needs this
+		// number. What does need it is anything that *rasterises* at a size: an `.svg` is
+		// drawn at the box it is given, and a box of 24 units on that display is 36 pixels
+		// of picture.
+		void init(const FontAtlas* font, float unitScale = 1.0f) {
+			mFont = font;
+			mUnitScale = (unitScale > 0.0f) ? unitScale : 1.0f;
+		}
+
+		// Physical pixels per layout unit. See init.
+		float unitScale() const { return mUnitScale; }
 		// Frame boundaries — driven by the engine, around the app's onUpdate. begin() also
 		// walks the retained tree, so retained widgets draw beneath this frame's immediate
 		// calls.
@@ -560,6 +572,7 @@ namespace RDA {
 		void flushCmd();
 
 		const FontAtlas* mFont = nullptr;
+		float            mUnitScale = 1.0f;  // physical pixels per layout unit; see init
 		GuiInput         mInput;
 		GuiDrawData      mDraw;
 
@@ -622,6 +635,10 @@ namespace RDA {
 		// on screen, so a widget that scrolled out of view leaves the order with it.
 		struct Focusable { uint32_t id; Rect rect; Variant ring; };
 		std::vector<Focusable> mFocusables;
+		// The widget that drew a ring in its own shape this frame, if any. A mesh-drawn
+		// widget can do that and a rectangle around it would be the wrong shape, so end()
+		// leaves this one alone -- see the ring block there.
+		uint32_t mShapedRing = 0;
 		// Set when Tab is seen and cleared when it is spent. Resolved at the end of the
 		// frame rather than where it is noticed, because the widget after this one has
 		// not drawn yet and the order is the whole answer.

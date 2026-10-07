@@ -38,8 +38,12 @@ writes. Use the size for a layout that changes shape:
 ```
 
 `width`, `height` and `focused` are the engine reporting, and writing one is a build
-error. They are in pixels, the same ones every width and height is in, and they follow a
-resize by themselves.
+error. They are in layout units, the same ones every width and height is in, and they follow
+a resize by themselves.
+
+A unit is a pixel on an ordinary display and 1.25 pixels on one at 125%: the engine scales
+the whole interface and bakes text at the display's size, so a layout never multiplies
+anything by anything. Say "units" rather than "pixels" when explaining a number to somebody.
 
 `maximized`, `minimized`, `fullscreen` and `open` read **and** write. That is how a
 window opened with `decorated = false` gets buttons that do something -- the layout draws

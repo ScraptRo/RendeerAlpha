@@ -37,7 +37,7 @@ run time, and if it is not, it does not.
 
 ## The elements
 
-[Every element](elements/README.md) — twenty-one of them, in seven groups, plus
+[Every element](elements/README.md) — twenty-three of them, in seven groups, plus
 [the properties they all share](elements/common-properties.md).
 
 ## Beyond one layout

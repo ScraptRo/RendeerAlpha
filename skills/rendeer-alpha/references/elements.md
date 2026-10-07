@@ -7,7 +7,7 @@ Every property may be a constant or a binding: `width={200}` or
 `width={() => state.wide ? 400 : 200}`. Handlers (`onClick`, `onChange`) are always a
 thunk.
 
-`Size` means a number of pixels, `"content"`, `"fill"`, or `"fill:2"` (twice the share of
+`Size` means a number of **layout units**, `"content"`, `"fill"`, or `"fill:2"` (twice the share of
 a plain `fill`). Either word may carry an offset — `"content-23"`, `"fill-40"`,
 `"content+8"` — applied after the layout resolves the word. A binding may compute one:
 `width={() => `content-${state.gap}`}`.

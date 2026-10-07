@@ -8,6 +8,206 @@ is built against: its major says whether a package built against an older engine
 runs, and a minor means functions were added while nothing already there changed meaning.
 See [the C ABI](docs/backend/c-abi.md).
 
+## 1.2.0 — 2026-10-02
+
+C ABI **1.6, unchanged**. Three things: a display scale, so an interface is the size it was
+written to be on a monitor configured for legibility; hot reload for the theme and the meshes
+it names; and the mesh compiler's first tests, which found two bugs on their way in.
+
+### Before upgrading
+
+**An interface is bigger on a scaled display than it was in 1.1** — which is the fix, and it
+is visible. A layout unit is now as many pixels as the display says it is: at 125% a
+`height={30}` button is 37 pixels tall and *looks* 30, where before it was 30 pixels and
+looked three quarters the size it was written to be. Nothing in a layout changes.
+
+Two consequences worth knowing before you upgrade:
+
+- `state.rda.width` and `state.rda.height` are in layout units now, not pixels. A binding
+  comparing them against a number the layout wrote itself was comparing against something a
+  quarter larger on a 125% display; now the two are the same thing.
+- `config.gui.uiScale = 1.0f` restores 1.1's behaviour exactly, for an application that
+  wants physical pixels. `0` -- the default -- means ask the display.
+
+### A picture of it, with no window
+
+```bash
+rda shot .                       # a .png of the interface
+rda shot . --hover 208,27        # the same, with the pointer on something
+rda shot . --frames 8 --every 35 --settle 0   # a transition, frame by frame
+```
+
+`rda prototype` opens a window and waits for somebody. This is the same command -- same
+compile, same placeholder state, same route -- which builds every frame and never puts one
+on screen. `config.offscreen` is the flag, `rendeerCaptureFrame` hands the pixels back, and
+`Core/Png.h` writes them out.
+
+That is for the two cases where watching is the wrong shape: a machine with nobody at it,
+and anything that has to be *compared* -- a hover against a rest, a theme against the one
+before it. `--size` and `--scale` together make one machine produce what another would,
+which is also the quickest way to see what a display at 150% does to a layout.
+
+- **The pointer can be put somewhere.** Hover and press are worked out from where it is, so
+  `--hover X,Y` and `--press X,Y` capture those states; `rendeerSetSyntheticPointer` is the
+  same thing from an application.
+- **A still waits for the interface to arrive.** A window nobody presents runs the loop as
+  fast as the machine can, so a naive capture catches a 160ms transition a millisecond in
+  and the picture shows a colour one step from where it started. A sequence does not wait,
+  since settling is usually the thing being looked at.
+- `Core/Png.h` is a deliberately plain encoder -- no filtering, no compression -- so that
+  writing a picture needs no dependency. Its test writes one and reads it back with the
+  decoder vendored for reading other people's.
+
+[Seeing it without watching it](docs/setup/seeing-it.md).
+
+### Five things a picture found
+
+Every one of these was found by looking at `rda shot` output, and every one is measured
+rather than eyeballed -- the numbers are from the pictures.
+
+- **A closed `<popup>` took room in its parent's flow.** It is an overlay: it draws over
+  the interface from its own anchor, and the container holding it is only where it lives in
+  the tree. A stack gave it a share of the space anyway, so a menu of three 24-unit buttons
+  made the `height="fill"` sibling above it 76 units short -- open or shut, at every window
+  size. Widgets answer `inFlow()` now, a popup answers no, and a stack and a scroll view
+  both skip what is not in their flow while still painting it. Measured: a 100-unit popup
+  took exactly 100 units from a filling panel, and now takes none.
+- **A scroll view that scrolls both ways could not reach the end of its content.** The bar
+  along the bottom takes a strip, and the vertical range was computed as though it did not
+  -- so the bar sat over the last few units and nothing could scroll past it. The
+  `horizontalBar` that `Widget.cpp` had worked out and never used is what it is for.
+  Measured: scrolled to the end, the last row is whole, where it used to be cut.
+- **A focus ring around a mesh-drawn widget was a rectangle**, which announced a shape that
+  was not there. The mesh is now drawn a second time underneath, grown by the ring's width
+  and in the ring's colour, so what shows is an outline that follows the silhouette exactly
+  -- because it is the silhouette. Everything else keeps its rectangle.
+- **A failure during start-up hung instead of stopping.** `RDA_RUNTIME_ERROR` throws, the
+  entry point is `rendeerRun`, and nothing inside the engine catches -- so the C runtime
+  did, which on Windows means a modal box nobody can see and a process that never exits.
+  Found by asking for a display scale the font atlas could not hold: no window, no message,
+  killed by hand. It reports and returns now.
+- **And that atlas error blamed the wrong thing.** At 3x it said "ask for fewer sizes, or
+  smaller ones" about sizes nobody had written; it names the scale now.
+
+### A capture is the whole frame
+
+`rda shot` captured from `onUpdate`, which runs before `Gui::end()` -- and `end()` is where
+the focus ring is added. So every shot was the frame *minus* whatever the GUI adds after the
+walk, which is a difference nobody would think to look for and which cost an hour of looking
+for a ring that was being drawn correctly all along.
+
+`AppConfig::onFrameEnd` runs once per frame, after every window has finished and before any
+is drawn. That is the only moment at which a finished frame exists and has not been shown,
+which is exactly what a capture wants.
+
+Two smaller things in the tool, both for the same reason -- a picture has to be the same
+picture twice: a shot with no `--hover` parks the pointer outside the window, instead of
+inheriting wherever the real mouse happened to be, and `--scroll` puts the pointer in the
+middle of the window when nothing else placed it, since a wheel only reaches what the
+pointer is over.
+
+### Fixed on the way there
+
+- **An offscreen target had no format unless the viewport mode was `Widget`.** The surface's
+  format is what every offscreen target is made of, and it was being settled inside the
+  branch that builds the scene target -- so in `Fullscreen` mode it stayed
+  `VK_FORMAT_UNDEFINED`, and `cacheGuiLayer` asked for an image of no format at all. Which
+  is a validation error and a target that never gets made.
+- **An offscreen target could not be read back**, since its image was created without
+  `TRANSFER_SRC` usage. A copy out of one was a validation error that read nothing.
+- **A window's size ignored the scale the application asked for.** `GLFW_SCALE_TO_MONITOR`
+  scaled it by the *display*, so `uiScale = 1` -- physical pixels, on purpose -- still opened
+  a window a quarter larger on a 125% display. The size is multiplied by the scale the engine
+  settled on, and GLFW is no longer asked to multiply it again.
+
+### A unit is a unit
+
+Everything an application says is in layout units; pixels exist only inside the renderer. A
+window's size, a padding, a font size, a mesh's corner radius, the rectangle a `<viewport>`
+takes. Measured on a 125% display: a window asked for at 1280x800 opens as 1600x1000 pixels
+and the interface inside it is handed 1280x800 units.
+
+- **Text is baked, not stretched.** The atlas bakes at the scaled size and reports its
+  metrics back in units, so 15-unit text on that display is a 19-pixel bitmap in a 15.2-unit
+  quad. A glyph is snapped to a whole *physical* pixel rather than a whole unit, since
+  rounding to the unit grid would put the bitmap on a quarter-pixel boundary and undo the
+  reason for baking it larger.
+- **An `.svg` is rasterised at the scaled size** and drawn into the unscaled box, so an icon
+  has the pixels the display can show. So is a `<viewport>`'s offscreen target, or the 3D
+  view would be the one soft thing on the screen.
+- `GLFW_SCALE_TO_MONITOR`, so a window asked for in units opens at the right physical size.
+  Window size bounds are in units too.
+- One number does all of it: the GUI's projection carries the scale, and the clip rectangles
+  are multiplied where the scissor is set. Nothing per frame costs anything it did not before.
+
+[Units and pixels](docs/architecture/units-and-pixels.md) is the whole of it, including the
+one thing it does not do: a window dragged onto a monitor at a different scale keeps the
+scale it opened with, because the atlas is baked at it. The log says so once.
+
+### The look reloads too
+
+A layout has reloaded on save since 0.1. What it *looks like* -- `res/themes/*.ts` and
+`res/mesh/*.ts` -- needed the application restarted, which is worst exactly where it matters
+most: authoring a shape means moving a corner two units and looking at it, twenty times.
+
+Both reload now. No application asks for it: a layout is something the application names and
+polls, but a theme and its meshes are the engine's own assets, so the poll is in the frame.
+
+- **Meshes first**, in the build's own order, because what a mesh declares is part of what a
+  theme may carry. The declarations are read back out of the compiled `.rdam` rather than by
+  evaluating the sources again -- which also means a mesh shipped without its source still
+  contributes its parameters. That ordering is what lets somebody add a parameter and set it
+  in the theme in the same minute.
+- **A theme reload replaces rather than merges.** Deleting a line should put that colour back
+  to the default, and this loop is mostly deleting a line and looking again. The cost: a C++
+  application's code-defined variants are forgotten until it restarts.
+- **The theme forgets what it resolved.** A style works out which colour belongs to which of
+  a mesh's parameters once and remembers the mesh by address; clearing the library destroys
+  that mesh and the replacement can land at the same address, which would read as "already
+  resolved" and keep the colours worked out for a shape that is gone.
+- Checked a few times a second rather than every frame. The question is whether somebody
+  pressed Ctrl+S.
+- A build with no compiler in it still watches the artifacts, so something else writing a
+  `.rdth` retints a running program.
+
+### The mesh compiler, tested
+
+**165 cases, up from 138.** The reader, the refusals, the anchor arithmetic, the state blend,
+the colour fallbacks, and the library cache that hot reload stands on.
+
+- **`rda mesh` parses back what it has just written**, with the reader the engine will use.
+  The format has two halves in two files, and the failure they can have together is a `.rdam`
+  that compiles cleanly and then will not load -- surfacing much later as a widget quietly
+  drawn without its mesh. Checked by making the writer disagree with the reader on purpose.
+- A `rda_mesh` test runs the whole toolchain over a fixture written to use every primitive a
+  real mesh uses: esbuild, the geometry prelude, QuickJS, the writer and the reader.
+
+### Fixed
+
+- **An esbuild *warning* corrupted every transform** — layouts, themes and meshes alike.
+  stderr was folded into stdout, so a duplicate key in an object literal put
+  `[WARNING] Duplicate key ...` into the middle of the JavaScript and the author was told
+  `SyntaxError: unexpected character`, from QuickJS, with no line number and no mention of a
+  duplicate anything. The streams are separate now: the same file reports the real warning,
+  with both line numbers, and compiles.
+- **`rrect` with every corner square fell through to `rect`** — four triangles against
+  twenty, so a square-cornered state could not share a topology with a rounded one and the
+  mesh was refused. Which is the one case that has to work: a radius of 0 in one state exists
+  *because* another state is rounded. The documentation already promised this worked.
+- `TextFieldStyle::forMode` moved from the widget drawing code to where every other style is
+  built, so a theme can be read without linking the immediate-mode widgets.
+
+### Also
+
+- The documentation said "twenty-one elements" in three places. `<number>` and `<header>`
+  arrived in 1.1 and nothing counted again; it is twenty-three.
+- A new loose end written down rather than fixed: a scroll view that scrolls both ways cannot
+  reach the last few units of its content, because the horizontal bar's strip is never
+  subtracted from the vertical range.
+- [Why state is declared where it is](docs/backend/declaration.md#so-i-write-my-state-twice),
+  for the question everybody asks once: what is and is not written twice, and why the seam is
+  at the state rather than at your types.
+
 ## 1.1.0 — 2026-10-01
 
 C ABI **1.6, unchanged**. Nothing in this version crosses it: this is the layout language,

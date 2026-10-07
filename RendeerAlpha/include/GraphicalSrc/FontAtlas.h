@@ -55,6 +55,19 @@ namespace RDA {
 		bool bake(const std::string& ttfPath, float pixelHeight) {
 			return bake(ttfPath, std::vector<float>{ pixelHeight });
 		}
+
+		// How many physical pixels one layout unit is worth. Set before baking, and never
+		// after -- the glyphs are pictures at a size, and that size is decided here.
+		//
+		// This is the whole of how the engine handles a display at 150%. Sizes going in are
+		// layout units and are baked at 1.5 times that, so a 15-unit label is a 22-pixel
+		// bitmap; everything this class reports back -- ascent, advances, the box a glyph
+		// occupies -- is in layout units again. So the GUI above it lays text out in the
+		// units a theme was written in and never learns about the display, while the glyph
+		// it draws has 1.5 times the pixels. Scaling one baked size up instead would be the
+		// blur this class exists to avoid.
+		void setScale(float physicalPerUnit);
+		float scale() const { return mScale; }
 		void destroy();
 
 		// Bumped whenever a glyph is baked on demand. The GUI keeps last frame's geometry
@@ -163,6 +176,7 @@ namespace RDA {
 		std::vector<Size>    mSizes;   // [0] is the base size
 		float                mAtlasW = 0.0f;
 		float                mAtlasH = 0.0f;
+		float                mScale = 1.0f;  // physical pixels per layout unit; see setScale
 		glm::vec2            mWhiteUV{ 0.0f };
 
 		// The faces, kept alive after the bake because on-demand needs them: a glyph that

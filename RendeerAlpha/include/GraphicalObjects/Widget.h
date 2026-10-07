@@ -375,6 +375,22 @@ namespace RDA {
 			return { rect.w, rect.h };
 		}
 
+		// Whether this widget takes room where it sits.
+		//
+		// Almost everything does, which is why this is a question rather than a property:
+		// the one answer that is not "yes" belongs to the widget that knows why.
+		//
+		// A <popup> is the one. It draws over the interface from its own anchor, and the
+		// container holding it is only where it lives in the tree -- so a stack that gave
+		// it a share of the room took that room away from its siblings. A closed menu of
+		// three buttons made the dockspace above it 76 units short of the window, open or
+		// shut, which is a hole nobody could see the cause of.
+		//
+		// Out of flow means out of *every* flow: not measured, not given a slot, and not
+		// counted in a scroll view's range. It is still painted, by its parent, in its own
+		// place -- that part was never the container's business.
+		virtual bool inFlow() const { return true; }
+
 		// The rect this widget actually occupies, given where the parent put it and how
 		// big the parent's content area is. `origin` is the parent's top-left in screen
 		// space; `parent` is that same area including its size.
@@ -687,6 +703,10 @@ namespace RDA {
 		enum class Placement : uint8_t { Below, Above, Right, Left, Over };
 
 		explicit Popup(std::string id) : Container(std::move(id)) {}
+
+		// Never, whether it is open or not. Open, it is drawn over everything from its
+		// anchor; shut, it is nothing at all. Either way the room belongs to its siblings.
+		bool inFlow() const override { return false; }
 
 		// Showing or not. Bindable, and the application owns it: this never writes the
 		// signal, it calls onClose and lets the layout decide -- the same shape every

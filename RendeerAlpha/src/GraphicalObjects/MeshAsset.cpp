@@ -237,6 +237,13 @@ namespace RDA {
 
 	void WidgetMeshLibrary::clear() { mByPath.clear(); }
 
+	std::vector<std::string> WidgetMeshLibrary::paths() const {
+		std::vector<std::string> out;
+		out.reserve(mByPath.size());
+		for (const auto& one : mByPath) out.push_back(one.first);
+		return out;
+	}
+
 	WidgetMeshLibrary& widgetMeshes() {
 		// Never destroyed, for the reason the other engine tables are not: an
 		// application's globals outlive this translation unit's statics, and one of them

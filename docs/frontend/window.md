@@ -90,7 +90,7 @@ is a layout's to write.
 
 | | |
 | --- | --- |
-| `width`, `height` | the window's size in pixels, the same ones a widget is sized in |
+| `width`, `height` | the window's size in the same units a widget is sized in -- so a window asked for at 1280 opens 1600 pixels wide on a display at 125%, holding 1280 units of interface |
 | `focused` | whether it has the keyboard |
 | `maximized` | **writable** — setting it maximises or restores |
 | `minimized` | **writable** — setting it iconifies or restores |

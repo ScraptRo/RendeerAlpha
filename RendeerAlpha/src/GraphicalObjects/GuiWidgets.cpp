@@ -9,30 +9,6 @@
 // focused on the core frame/draw machinery): checkbox, slider, and the text field.
 namespace RDA {
 
-	TextFieldStyle TextFieldStyle::forMode(TextFieldMode mode) {
-		TextFieldStyle style;
-		style.mode = mode;
-		switch (mode) {
-		case TextFieldMode::Line:
-			style.multiline = false;
-			style.padding = 6.0f;
-			break;
-		case TextFieldMode::Document:
-			style.multiline = true;
-			style.padding = 12.0f;
-			style.background = rgba(24, 24, 28);
-			break;
-		case TextFieldMode::Code:
-			style.multiline = true;
-			style.showLineNumbers = true;
-			style.highlightCurrentLine = true;
-			style.padding = 6.0f;
-			style.background = rgba(16, 18, 24);
-			break;
-		}
-		return style;
-	}
-
 	// How much a text field remembers, and how long a run of edits stays one step.
 	//
 	// 0.7s is the gap that separates "still typing" from "came back to it". Long enough

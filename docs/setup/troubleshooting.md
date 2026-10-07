@@ -57,6 +57,22 @@ interface. Declaring the state is not enough: `on_start` has to call
 reaches the engine through the C ABI now says so itself, in a warning naming the call
 for its language.
 
+**Everything is too small, or too big** — the interface is drawn in layout units, and one
+unit is as many pixels as the display says (1.25 at 125%). The log says which it chose:
+`Interface scale 1.25x (from the display)`. An application that wants to decide for itself
+sets `config.gui.uiScale` -- `1.0` draws in physical pixels, which is what the engine did
+before 1.2. A window dragged onto a monitor at a *different* scale keeps the one it opened
+with, and says so once; reopening it there gets the new one. See
+[units and pixels](../architecture/units-and-pixels.md).
+
+**An edited theme or mesh changes nothing** — three things in order. It is a Debug build
+that does the recompiling (`RDA_ENABLE_HOT_RELOAD`), so a Release build waits for something
+else to write the `.rdth` or `.rdam`. The source has to sit beside its artifact, which is
+where `rda build` puts it -- `res/themes/app.ts` next to `res/themes/app.rdth`. And a
+mesh is only watched once something has drawn with it, because until then nothing has asked
+for the file. On success the log says `theme: reloaded ...`; on failure it says what the
+compiler said and keeps the look that last compiled.
+
 **A layout loads but a binding reads zero** — `define()` ran after the layout opened, or
 not at all, in whichever language you are writing. A binding resolves the signals it reads
 when it is created; one that does not exist yet is created as a number and complained

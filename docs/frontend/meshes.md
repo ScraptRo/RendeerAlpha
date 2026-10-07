@@ -47,7 +47,8 @@ pos.x = rect.x + ax * rect.w + ox
 pos.y = rect.y + ay * rect.h + oy
 ```
 
-An anchor fraction and a pixel offset, per axis. Two multiply-adds when it is drawn.
+An anchor fraction and an offset in [layout units](sizing.md#what-a-number-means), per
+axis. Two multiply-adds when it is drawn.
 
 **The anchor is the design decision.** An edge written `[0, 8]` is eight pixels in from
 the left at any width; the same edge written `0.05` is a twentieth of the width and
@@ -109,7 +110,7 @@ is a different mesh, and the build says so.
 | | |
 | --- | --- |
 | `rect(box, opts)` | an anchored rectangle |
-| `rrect(box, radius, opts)` | rounded; radius in **pixels**, uniform or `{ tl, tr, br, bl }` |
+| `rrect(box, radius, opts)` | rounded; radius in **units**, uniform or `{ tl, tr, br, bl }` |
 | `union(a, b, …)` | one shape from several — the way to add geometry |
 | `group(shape, "name")` | tag every vertex, so something can address this part later |
 | `weld(shape, radius)` | join coincident vertices; they genuinely go away |
@@ -169,6 +170,17 @@ The same flag is there by hand, for a build that runs the tool itself:
 rda theme res/themes/app.ts --mesh res/mesh/tab.ts
 rda types res/layouts/rda.d.ts res/themes/app.ts res/state.ts --mesh res/mesh/tab.ts
 ```
+
+### While it is running
+
+Save the `.ts` and the shape changes in the window, the way saving a `.tsx` reloads the
+layout. The theme reloads on the same terms, so a parameter added to a mesh and set in the
+theme in the same minute both arrive -- meshes are recompiled first, because what one
+declares is part of what a theme may carry.
+
+`rda prototype .` is the shortest way to iterate on one: a window, the mesh, and no backend
+to start. See [hot reload](../architecture/hot-reload.md#the-look-reloads-too) for what is
+watched and what a reload does to a theme.
 
 ## Parameters
 

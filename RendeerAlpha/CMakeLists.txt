@@ -10,6 +10,7 @@ set(RDA_SOURCES
 	src/Core/Signals.cpp
 	src/Core/Commands.cpp
 	src/Core/Tables.cpp
+	src/Core/Png.cpp
 	src/Core/Utf8.cpp
 	src/Core/Colour.cpp
 	src/GraphicalObjects/MeshAsset.cpp
@@ -114,6 +115,10 @@ list(APPEND RDA_SOURCES
 	# Placeholder state for a declaration with no backend behind it yet. Here rather than
 	# with the loader, because it reads JSON with the same engine the compiler uses.
 	src/Layout/Prototype.cpp
+	# The theme and its meshes, reloaded when they change. In the authoring list because
+	# that is exactly what it references -- with hot reload off it compiles to nothing and
+	# brings neither compiler with it.
+	src/Layout/StyleWatch.cpp
 )
 
 set(RDA_SOURCES_QUICKJS

@@ -4,7 +4,7 @@ Two properties, `width` and `height`, each taking a number or one of three words
 
 | | |
 | --- | --- |
-| `200` | exactly 200 pixels |
+| `200` | exactly 200 units -- see below |
 | `"content"` | as big as the widget says it needs |
 | `"fill"` | share of what is left over |
 | `"fill:2"` | twice the share of a plain `fill` beside it |
@@ -12,6 +12,17 @@ Two properties, `width` and `height`, each taking a number or one of three words
 
 Plus `minWidth`, `maxWidth`, `minHeight`, `maxHeight` — bounds applied to whatever was
 chosen.
+
+### What a number means
+
+A **layout unit**, which is a pixel on an ordinary display and one and a half pixels on one
+configured at 150%. Everything a layout says is in them: sizes, padding, spacing, a font
+size, a mesh's corner radius, the window's own width.
+
+So `height={30}` is a button that looks the same size on every display, rather than one that
+shrinks on the good ones. Text is baked at the display's scale rather than stretched to it,
+so it stays sharp — [units and pixels](../architecture/units-and-pixels.md) is how, and
+`GuiConfig::uiScale` is how an application overrides the display's answer.
 
 ```tsx
 <stack arrange="horizontal" spacing={8}>

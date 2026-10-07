@@ -38,6 +38,7 @@
 #include <GraphicalObjects/Gui.h>
 #include <Core/Signals.h>
 #include <Layout/Prototype.h>
+#include <Core/Png.h>
 #include <Layout/Router.h>
 #include <Layout/LayoutHost.h>
 
@@ -69,7 +70,11 @@ namespace {
 			"  rda dump   <file.rdab>             print what a compiled layout contains\n"
 			"  rda prototype <project> [--layout <name>] [--set n=v] [--rows t=n]\n"
 			"                          [--data <file.json>] [--no-build]\n"
-			"                                     open the interface with placeholder state\n\n"
+			"                                     open the interface with placeholder state\n"
+			"  rda shot   <project> [--out <file.png>] [--size WxH] [--scale <n>]\n"
+			"                       [--frames <n>] [--every <ms>] [--settle <n>]\n"
+			"                       [--hover X,Y] [--press X,Y] [--scroll <n>]  + the above\n"
+			"                                     the same with no window: writes a .png\n\n"
 			"A layout is TypeScript with JSX in it. Compiling turns it into a flat file of\n"
 			"nodes and strings that an application reads without a parser of any kind.\n\n"
 			"`build` expects the layout every project has: res/state.ts, res/themes/*.ts and\n"
@@ -634,11 +639,35 @@ namespace {
 		std::fflush(stdout);
 	}
 
-	int prototype(const std::vector<std::string>& args) {
+	// `prototype` and `shot` are one command with two endings: everything up to the window
+	// is identical -- compile the project, define the placeholder state, open the route or
+	// the layout -- and then one waits for a person while the other takes a picture and
+	// stops. One function is what keeps the second from drifting out of step with the first.
+	int show(const std::vector<std::string>& args, bool shooting) {
 		fs::path project = ".";
 		std::string opening, dataFile;
 		std::vector<std::string> sets, rows;
 		bool compile = true;
+
+		// Shot only.
+		std::string out = "shot.png";
+		unsigned width = 0, height = 0;
+		float scale = 0.0f;
+		int frames = 1, settleMs = 250, everyMs = 100;
+		// A still shot waits for the interface to arrive: transitions ease over a theme's
+		// transitionMs, and a window nobody presents runs the loop as fast as it can, so
+		// without this a capture catches a hover a millisecond into a 160ms ease and the
+		// picture shows a colour one step from where it started. A sequence is about motion
+		// by definition, so it does not wait.
+		bool still = true;
+		bool stillSet = false;
+		bool hovering = false, pressing = false;
+		float pointerX = 0.0f, pointerY = 0.0f;
+		float scrolling = 0.0f;
+
+		const auto number = [](const std::string& text, float& into) {
+			try { into = std::stof(text); return true; } catch (...) { return false; }
+		};
 
 		for (size_t i = 1; i < args.size(); ++i) {
 			const std::string& arg = args[i];
@@ -647,6 +676,71 @@ namespace {
 			else if (arg == "--data"   && i + 1 < args.size()) dataFile = args[++i];
 			else if (arg == "--layout" && i + 1 < args.size()) opening = args[++i];
 			else if (arg == "--no-build") compile = false;
+			else if (shooting && arg == "--out" && i + 1 < args.size()) out = args[++i];
+			else if (shooting && arg == "--size" && i + 1 < args.size()) {
+				const std::string size = args[++i];
+				const size_t by = size.find_first_of("xX*");
+				float w = 0.0f, h = 0.0f;
+				if (by == std::string::npos || !number(size.substr(0, by), w)
+				    || !number(size.substr(by + 1), h) || w < 1.0f || h < 1.0f) {
+					std::printf("rda: --size wants WxH, like 1280x800 (got %s)\n", size.c_str());
+					return 1;
+				}
+				width = static_cast<unsigned>(w);
+				height = static_cast<unsigned>(h);
+			}
+			else if (shooting && arg == "--scale" && i + 1 < args.size()) {
+				if (!number(args[++i], scale) || scale <= 0.0f) {
+					std::printf("rda: --scale wants a number, like 1 or 1.5\n");
+					return 1;
+				}
+			}
+			else if (shooting && arg == "--frames" && i + 1 < args.size()) {
+				float count = 0.0f;
+				if (!number(args[++i], count) || count < 1.0f || count > 240.0f) {
+					std::printf("rda: --frames wants 1 to 240\n");
+					return 1;
+				}
+				frames = static_cast<int>(count);
+			}
+			else if (shooting && arg == "--every" && i + 1 < args.size()) {
+				float ms = 0.0f;
+				if (!number(args[++i], ms) || ms < 0.0f) {
+					std::printf("rda: --every wants milliseconds\n");
+					return 1;
+				}
+				everyMs = static_cast<int>(ms);
+			}
+			else if (shooting && arg == "--scroll" && i + 1 < args.size()) {
+				if (!number(args[++i], scrolling)) {
+					std::printf("rda: --scroll wants notches, negative for downward\n");
+					return 1;
+				}
+			}
+			else if (shooting && arg == "--still")   { still = true;  stillSet = true; }
+			else if (shooting && arg == "--moving")  { still = false; stillSet = true; }
+			else if (shooting && arg == "--settle" && i + 1 < args.size()) {
+				float count = 0.0f;
+				if (!number(args[++i], count) || count < 0.0f) {
+					std::printf("rda: --settle wants milliseconds\n");
+					return 1;
+				}
+				settleMs = static_cast<int>(count);
+			}
+			else if (shooting && (arg == "--hover" || arg == "--press")
+			         && i + 1 < args.size()) {
+				const std::string at = args[++i];
+				const size_t comma = at.find(',');
+				if (comma == std::string::npos
+				    || !number(at.substr(0, comma), pointerX)
+				    || !number(at.substr(comma + 1), pointerY)) {
+					std::printf("rda: %s wants X,Y in layout units, like 120,340\n",
+					            arg.c_str());
+					return 1;
+				}
+				hovering = true;
+				pressing = (arg == "--press");
+			}
 			else if (!arg.empty() && arg[0] == '-') {
 				std::printf("rda: unknown option %s\n", arg.c_str());
 				return 1;
@@ -696,9 +790,22 @@ namespace {
 		}
 
 		RDA::AppConfig config;
-		config.app.name = "rda prototype - " + project.filename().string();
+		config.app.name = (shooting ? "rda shot - " : "rda prototype - ")
+		                + project.filename().string();
 		config.app.appVersion = 1;
 		config.gui.enabled = true;
+		if (shooting) {
+			// Built every frame and never shown. The window still exists, because the
+			// device and the pipelines are chosen against a surface.
+			config.offscreen = true;
+			if (width > 0 && height > 0) {
+				config.windowWidth = width;
+				config.windowHeight = height;
+			}
+			// A shot says what it wants a unit to be worth, so two machines produce the
+			// same picture. Left alone it asks the display, like anything else.
+			if (scale > 0.0f) config.gui.uiScale = scale;
+		}
 		if (!themes.empty()) {
 			config.gui.themePath = ("res/themes/" + themes.front().filename().string());
 		}
@@ -818,11 +925,120 @@ namespace {
 			std::fflush(stdout);
 		};
 
-		config.onUpdate = [](float) {
+		// What the shot has done so far. Function-local rather than captured, because the
+		// callback below outlives this scope only in the sense that rendeerRun has not
+		// returned yet -- but a static says plainly that the loop owns it.
+		int taken = 0;
+		int tick = 0;
+		float sinceStart = 0.0f;    // milliseconds the interface has been running
+		float waited = 0.0f;        // since the last frame of a sequence
+		float stillFor = 0.0f;      // how long nothing has moved
+		// Set when it is time, acted on in onFrameEnd: a frame is not finished when
+		// onUpdate runs, and the focus ring is one of the things added after it.
+		bool captureNow = false;
+		if (!stillSet) still = (frames == 1);
+
+		config.onUpdate = [&](float dt) {
 			// Both restructure the widget tree, which is why neither happens inside a
 			// widget's own callback.
 			if (gPrototypeRouted) gPrototypeRouter.update();
 			else                  gPrototypeHost.reloadIfChanged();
+			if (!shooting || gPrototypeRefused) return;
+
+			// The first frame's dt is not a frame's worth of time: it carries everything
+			// between the clock starting and the interface existing -- compiling the
+			// project, opening a window, baking a font -- which here was several seconds.
+			// Counting it would satisfy any settle time before the first walk had happened,
+			// and a shot would be of an interface that had not been hovered, pressed or
+			// animated yet. So the opening frames are not counted, and no single frame may
+			// contribute more than a frame plausibly takes.
+			++tick;
+			if (tick <= 2) return;
+			const float ms = (std::min)(dt * 1000.0f, 100.0f);
+			sinceStart += ms;
+
+			// Held from the first frame, so a hovered widget is hovered by the time
+			// anything is captured -- the GUI works out `hot` while it walks, which is
+			// after this runs.
+			//
+			// And parked far outside the window when nothing was asked for. The window is
+			// hidden, not absent: the real mouse still has a position inside it, so a shot
+			// of a screen nobody is pointing at would hover whatever the pointer happened
+			// to be over -- which made the same command produce different pictures on two
+			// machines, and on one machine at two moments.
+			if (hovering) {
+				rendeerSetSyntheticPointer(pointerX, pointerY, pressing);
+			} else if (scrolling != 0.0f) {
+				// A wheel only reaches what the pointer is over, so asking to scroll and
+				// saying nothing about the pointer means the middle of the window -- the
+				// alternative was a parked pointer, a wheel nothing heard, and a picture
+				// that silently had not scrolled.
+				rendeerSetSyntheticPointer(static_cast<float>(width > 0 ? width : 1280) * 0.5f,
+				                           static_cast<float>(height > 0 ? height : 800) * 0.5f,
+				                           false);
+			} else {
+				rendeerSetSyntheticPointer(-10000.0f, -10000.0f, false);
+			}
+			// Held until the first picture, so a large number means "to the end". After
+			// that it stops, or a sequence would keep scrolling between its frames.
+			if (scrolling != 0.0f) rendeerSetSyntheticScroll(taken == 0 ? scrolling : 0.0f);
+
+			// The opening moments are thrown away on purpose: a layout's motion starts
+			// from nothing and its first frame is a picture of an interface mid-arrival.
+			if (sinceStart < static_cast<float>(settleMs)) return;
+
+			// And then, for a still shot, until nothing is moving any more. Measured in
+			// time rather than frames because a window nobody presents is not paced by
+			// anything -- a thousand frames here can be a single millisecond of animation.
+			if (still && taken == 0) {
+				RDA::Gui& gui = getMainWindow()->gui();
+				stillFor = gui.animating() ? 0.0f : (stillFor + ms);
+				// Two frames' worth of quiet, so a transition that has just landed is not
+				// caught one frame before its last step.
+				if (stillFor < 32.0f && sinceStart < 4000.0f) return;
+			}
+
+			// Spaced in real time rather than by frames, for the same reason.
+			waited += ms;
+			if (taken > 0 && waited < static_cast<float>(everyMs)) return;
+			waited = 0.0f;
+
+			captureNow = true;
+		};
+
+		// The frame, whole. Everything above decided *whether* to take a picture;
+		// this is the only moment at which there is a finished one to take.
+		config.onFrameEnd = [&] {
+			if (!captureNow) return;
+			captureNow = false;
+			std::vector<unsigned char> pixels;
+			unsigned w = 0, h = 0;
+			if (!rendeerCaptureFrame(pixels, w, h)) {
+				std::printf("rda: the frame would not come back\n");
+				gPrototypeRefused = true;
+				rendeerStop();
+				return;
+			}
+
+			// One frame keeps the name it was given; several are numbered, because a
+			// sequence that overwrote itself would leave only its last frame.
+			fs::path target = out;
+			if (frames > 1) {
+				const fs::path stem = target.stem();
+				const fs::path ext = target.extension().empty() ? ".png" : target.extension();
+				target = target.parent_path() / (stem.string() + "-" + std::to_string(taken)
+				                                 + ext.string());
+			}
+			if (!RDA::Png::write(target.string(), pixels.data(), w, h)) {
+				std::printf("rda: cannot write %s\n", target.string().c_str());
+				gPrototypeRefused = true;
+				rendeerStop();
+				return;
+			}
+			std::printf("rda: %s  (%ux%u)\n", target.string().c_str(), w, h);
+			std::fflush(stdout);
+
+			if (++taken >= frames) rendeerStop();
 		};
 
 		config.onShutdown = [] {
@@ -831,8 +1047,16 @@ namespace {
 
 		std::fflush(stdout);
 		rendeerRun(config);
+		if (shooting && !gPrototypeRefused && taken == 0) {
+			std::printf("rda: nothing was captured -- the window closed before the first "
+			            "frame settled\n");
+			return 1;
+		}
 		return gPrototypeRefused ? 1 : 0;
 	}
+
+	int prototype(const std::vector<std::string>& args) { return show(args, false); }
+	int shot(const std::vector<std::string>& args)      { return show(args, true); }
 
 	int types(const std::string& output, const std::string& theme, const std::string& stateFile) {
 		const std::string target = output.empty() ? std::string("rda.d.ts") : output;
@@ -902,6 +1126,7 @@ int main(int argc, char** argv) {
 	if (command == "mesh"   && !first.empty()) return mesh(first, second);
 	if (command == "dump"   && !first.empty()) return dump(first);
 	if (command == "prototype") return prototype(args);
+	if (command == "shot") return shot(args);
 
 	usage();
 	return 1;

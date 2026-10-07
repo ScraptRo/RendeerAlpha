@@ -1,5 +1,6 @@
 ﻿#include "ModuleTransform.h"
 #include <Core/Location.h>
+#include <Logger/Logger.h>
 #include <vector>
 #include <cctype>
 #include <cstring>
@@ -7,6 +8,8 @@
 #include <fstream>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -23,31 +26,64 @@ namespace RDA::Layout {
 		constexpr const char* kEsbuildBinary = "esbuild";
 #endif
 
-		// Runs a command and captures everything it writes. stderr is folded in because a
-		// failed transform reports there, and that text is the error worth showing.
-		bool runCapturing(const std::string& command, std::string& output) {
+		// Runs a command, keeping what it wrote to stdout and what it wrote to stderr apart.
+		//
+		// They used to be folded together with 2>&1, because a failed transform reports on
+		// stderr and that text is the error worth showing. But esbuild writes the module to
+		// stdout and its *warnings* to stderr, and it exits 0 with both -- so a duplicate
+		// key in an object literal put "[WARNING] Duplicate key ..." into the middle of the
+		// JavaScript, and what the author was told was `SyntaxError: unexpected character`,
+		// from QuickJS, with no line number and no mention of a duplicate anything.
+		//
+		// Measured on a mesh with one key written twice: that error before, the real warning
+		// and a compiled mesh after.
+		bool runCapturing(const std::string& command, std::string& output,
+		                  std::string& diagnostics) {
+			output.clear();
+			diagnostics.clear();
+
+			// stderr goes to a file beside the temporary directory rather than down the
+			// pipe. Named per call, since two layouts may be compiled at once.
+			static std::atomic<uint32_t> counter{ 0 };
+			std::error_code ec;
+			const std::filesystem::path errors =
+				std::filesystem::temp_directory_path(ec) /
+				("rda-esbuild-" + std::to_string(counter.fetch_add(1)) + "-" +
+				 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+				 ".txt");
+
 #if defined(_WIN32)
 			// cmd.exe strips the outermost pair of quotes, so the whole line is wrapped in
 			// one more than it looks like it needs. A shell does not do that, which is why
 			// this is not shared.
-			const std::string wrapped = "\"" + command + "\" 2>&1";
+			const std::string wrapped =
+				"\"" + command + " 2>\"" + errors.string() + "\"\"";
 			FILE* pipe = _popen(wrapped.c_str(), "r");
 #else
-			const std::string wrapped = command + " 2>&1";
+			const std::string wrapped = command + " 2>\"" + errors.string() + "\"";
 			FILE* pipe = popen(wrapped.c_str(), "r");
 #endif
 			if (!pipe) return false;
 
 			std::array<char, 4096> buffer{};
-			output.clear();
 			while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
 				output += buffer.data();
 			}
 #if defined(_WIN32)
-			return _pclose(pipe) == 0;
+			const bool ok = _pclose(pipe) == 0;
 #else
-			return pclose(pipe) == 0;
+			const bool ok = pclose(pipe) == 0;
 #endif
+
+			{
+				std::ifstream file(errors, std::ios::binary);
+				if (file) {
+					diagnostics.assign(std::istreambuf_iterator<char>(file),
+					                   std::istreambuf_iterator<char>());
+				}
+			}
+			std::filesystem::remove(errors, ec);
+			return ok;
 		}
 	}
 
@@ -115,9 +151,17 @@ namespace RDA::Layout {
 		// that have nothing to do with this engine. Import your own files.
 		command += " --bundle --format=iife --global-name=__module --target=es2020";
 
-		if (!runCapturing(command, js)) {
-			error = js.empty() ? "esbuild failed" : js;
+		std::string diagnostics;
+		if (!runCapturing(command, js, diagnostics)) {
+			error = !diagnostics.empty() ? diagnostics
+			                             : (js.empty() ? "esbuild failed" : js);
 			return false;
+		}
+		if (!diagnostics.empty()) {
+			// It exited 0, so the module is good and compiling carries on. The warning is
+			// still the author's business -- a key written twice is a line that does
+			// nothing -- and this is the only place that ever sees the text.
+			RDA_LOG_WARNING(sourcePath << ":\n" << diagnostics);
 		}
 		return true;
 	}
@@ -242,7 +286,12 @@ function rrect(spec, radius, opts) {
   var r = radius || 0;
   var tl = r, tr = r, br = r, bl = r;
   if (r && typeof r === "object") { tl = r.tl || 0; tr = r.tr || 0; br = r.br || 0; bl = r.bl || 0; }
-  if (!tl && !tr && !br && !bl) return rect(spec, opts);
+  // No shortcut to rect() when every corner is square, even though the shape is the same
+  // one. A corner being square already emits its arc points coincident, so `{tl: 6, br: 0}`
+  // blends with `{tl: 0, br: 6}` -- and an author who writes a radius of 0 in one state is
+  // doing it *because* another state is rounded. Handing that state four triangles instead
+  // of twenty would refuse the one thing the rounding is varying for. Somebody who wants a
+  // plain rectangle writes rect().
 
   var steps = 4;   // five points per corner: enough at the sizes a widget is
   var ring = [];

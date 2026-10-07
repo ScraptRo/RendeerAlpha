@@ -319,6 +319,22 @@ namespace RDA::Layout {
 		result.bytes.insert(result.bytes.end(), groups.begin(), groups.end());
 		result.bytes.insert(result.bytes.end(), strings.blob.begin(), strings.blob.end());
 
+		// Read it back, with the reader the engine itself will use.
+		//
+		// This format has two halves in two files: the records written above, and the ones
+		// GraphicalObjects/MeshAsset.cpp reads them into. They are separate structs over
+		// the same bytes, so the failure they can have together is a .rdam that compiles
+		// without complaint and then will not load -- which surfaces much later as a
+		// widget quietly drawn without its mesh, one warning deep in a log. One parse of a
+		// few kilobytes here makes that impossible to ship.
+		WidgetMesh readBack;
+		std::string readError;
+		if (!readBack.parse(result.bytes.data(), result.bytes.size(), readError)) {
+			result.error = "wrote a mesh this engine cannot read back: " + readError +
+			               "\n     That is a bug in rda rather than in " + sourcePath + ".";
+			return result;
+		}
+
 		result.stateCount = got.stateNames.size();
 		result.vertexCount = got.vertsPerState;
 		result.triangleCount = got.idx.size() / 3;

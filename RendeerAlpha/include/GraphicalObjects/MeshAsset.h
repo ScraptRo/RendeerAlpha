@@ -123,6 +123,11 @@ namespace RDA {
 		const WidgetMesh* find(const std::string& path);
 		void clear();
 
+		// Every path anything has asked for, including the ones that would not load.
+		// What a mesh watcher watches: a theme may name a mesh no layout draws, and one
+		// nobody draws does not need watching until something does.
+		std::vector<std::string> paths() const;
+
 	private:
 		struct Entry { WidgetMesh mesh; bool ok = false; };
 		std::unordered_map<std::string, Entry> mByPath;

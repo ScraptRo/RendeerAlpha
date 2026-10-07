@@ -104,6 +104,7 @@ namespace RDA {
 		mCurrentTexture = nullptr;
 		mFocusClaimed = false;
 		mFocusables.clear();
+		mShapedRing = 0;
 		// Tab moves the keyboard on. Read here, spent at the end of the frame: a text
 		// field in code mode inserts spaces instead and says so by consuming it.
 		mFocusMove = 0;
@@ -269,6 +270,10 @@ namespace RDA {
 		// among the widgets, so it sits on top of whatever it surrounds.
 		for (const Focusable& f : mFocusables) {
 			if (f.id != mFocused) continue;
+			// Unless it drew one of its own, in its own shape. A mesh-drawn widget does
+			// that while it paints -- underneath itself, which is the only place an
+			// outline that follows a silhouette can go. See Gui::button.
+			if (f.id == mShapedRing) break;
 			const FocusStyle& ring = mTheme.focus(f.ring);
 			if (ring.width <= 0.0f) break;
 			// Only where the keyboard is what put it there, unless the theme says
@@ -965,7 +970,40 @@ namespace RDA {
 					0.0f, static_cast<float>(last));
 				const int from = static_cast<int>(where);
 				const int into = (std::min)(from + 1, last);
-				drawn = drawMesh(*mesh, rect, from, into, where - static_cast<float>(from),
+				const float blend = where - static_cast<float>(from);
+
+				// The ring, in the shape of the thing it is ringing.
+				//
+				// end() draws a rectangle around whatever holds the keyboard, which is the
+				// right answer for every widget whose shape is one. A mesh-drawn widget is
+				// a tab with a flare on it, or a shape with a bite out of one corner, and a
+				// box around that announces a rectangle that is not there.
+				//
+				// So the same mesh is drawn again underneath, grown by the ring's width,
+				// with every one of its colours replaced by the ring's. What shows is the
+				// part that sticks out: an outline that follows the silhouette exactly,
+				// because it *is* the silhouette. One extra resolve, for one widget, on the
+				// frames where a ring is showing at all.
+				if (mFocused == wid) {
+					const FocusStyle& ring = mTheme.focus();
+					const bool show = ring.width > 0.0f
+						&& (ring.show == FocusShow::Always || mFocusByKeyboard);
+					if (show) {
+						const float grow = ring.width - ring.inset;
+						const Rect around{ rect.x - grow, rect.y - grow,
+						                   rect.w + grow * 2.0f, rect.h + grow * 2.0f };
+						// Every parameter the mesh has, answered with the ring's colour, so
+						// nothing of the widget's own palette leaks into its outline.
+						const size_t count = mesh->params().size();
+						uint32_t* ringColours = count > 0
+							? mFrameArena.allocate<uint32_t>(count) : nullptr;
+						for (size_t i = 0; i < count; ++i) ringColours[i] = ring.color;
+						drawMesh(*mesh, around, from, into, blend, ringColours, count, ring.color);
+						mShapedRing = wid;
+					}
+				}
+
+				drawn = drawMesh(*mesh, rect, from, into, blend,
 				                 s.meshColours.data(), s.meshColours.size(), color);
 			}
 		}

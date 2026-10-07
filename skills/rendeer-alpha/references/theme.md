@@ -180,6 +180,13 @@ export const focus: RdaFocusTheme = {
 `show: "always"` puts it back on clicks; `width: 0` removes it entirely; `inset` is
 negative to sit outside the widget's own edge.
 
+## Editing one while it runs
+
+A saved theme or mesh reloads into the running window, the same way a saved `.tsx` does, in
+a Debug build. A theme reload *replaces* the theme, so a line deleted from it puts that value
+back to the engine's default -- which is what the edit-and-look loop wants. `rda prototype .`
+is the quickest way to iterate without a backend.
+
 ## A variant drawn by a mesh
 
 `mesh: "res/mesh/tab.rdam"` on a variant replaces the shape the engine would have drawn

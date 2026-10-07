@@ -208,6 +208,8 @@ namespace RDA {
 		int counted = 0;
 		for (const auto& child : mChildren) {
 			if (!child) continue;
+			// A popup asks for nothing here: see Widget::inFlow.
+			if (!child->inFlow()) continue;
 			// Asked for every child, gone or not, so a hidden one keeps its place in the
 			// table and grows back rather than reappearing at full size.
 			const float presence = child->presence(gui);
@@ -257,6 +259,7 @@ namespace RDA {
 		float gaps = 0.0f;   // fractional, because a collapsing child's gap closes with it
 		for (const auto& child : mChildren) {
 			if (!child) continue;
+			if (!child->inFlow()) continue;
 			const float presence = child->presence(gui);
 			if (presence <= 0.004f) continue;
 			if (visibleCount++) gaps += presence;
@@ -309,6 +312,13 @@ namespace RDA {
 		for (size_t i = 0; i < mChildren.size(); ++i) {
 			Widget* child = mChildren[i].get();
 			if (!child) continue;
+			// Painted where the stack's own content begins and then stepped over: it
+			// places itself against its anchor, and the cursor must not move for it or
+			// everything after it would be pushed down by a widget that is not there.
+			if (!child->inFlow()) {
+				if (child->visible) child->paint(gui, glm::vec2(area.x + padding, area.y + padding));
+				continue;
+			}
 			const float presence = child->presence(gui);
 			if (presence <= 0.004f) continue;
 
@@ -443,6 +453,8 @@ namespace RDA {
 
 	void Scroll::paint(Gui& gui, glm::vec2 origin) {
 		const Rect view = placement(gui, origin);
+		// A starting value. Refined below once the content is measured, because a bar
+		// along the bottom takes a strip out of what can be seen.
 		mViewHeight = view.h;
 		mViewTop = view.y;
 
@@ -461,6 +473,9 @@ namespace RDA {
 		for (size_t i = 0; i < mChildren.size(); ++i) {
 			const Widget* child = mChildren[i].get();
 			if (!child || !child->visible) continue;
+			// Out of flow is out of the scroll range too, or a menu would add its own
+			// height to how far the view can be scrolled.
+			if (!child->inFlow()) { if (heights) heights[i] = 0.0f; continue; }
 			const float h = mainAxisRequest(*child, gui, measureSpace, true);
 			if (heights) heights[i] = h;
 			if (counted++) total += spacing;
@@ -476,12 +491,23 @@ namespace RDA {
 		mContentHeight = total;
 		mContentWidth = horizontal ? widest + padding * 2.0f : 0.0f;
 
-		const float maxOff = maxOffset();
-		// Sideways, the room is whatever the widest child needs past the view. The bar
-		// along the bottom takes its own strip, the way the vertical one does.
-		const float horizontalBar = (horizontal && mContentWidth > view.w) ? barWidth : 0.0f;
+		// Sideways, the room is whatever the widest child needs past the view.
 		const float maxOffX = horizontal
 			? (std::max)(0.0f, mContentWidth - (view.w - barWidth)) : 0.0f;
+
+		// And the bar along the bottom takes its own strip, the way the one down the side
+		// does -- so what can be seen down the view is its height less that strip.
+		//
+		// This is what the `horizontalBar` written here was for, and it was written and
+		// never used. Without it the vertical range is computed as though the bar were not
+		// there, and the bar then sits over the last few units of content the range stops
+		// short of: in a view that scrolls both ways, the bottom of the content could not
+		// be reached at all. Taken only when the bar is really there, which is the same
+		// test that draws it -- a view that cannot scroll sideways loses nothing.
+		const float horizontalBar = (maxOffX > 0.0f) ? barWidth : 0.0f;
+		mViewHeight = view.h - horizontalBar;
+
+		const float maxOff = maxOffset();
 		const GuiInput& in = gui.input();
 
 		// The wheel, if nothing inside the view already claimed it this frame. Held
@@ -539,6 +565,12 @@ namespace RDA {
 		for (size_t i = 0; i < mChildren.size(); ++i) {
 			Widget* child = mChildren[i].get();
 			if (!child || !child->visible) continue;
+			// Painted at the top of the view and stepped over, cursor and all: a widget
+			// that is not in the flow does not take a row's worth of spacing either.
+			if (!child->inFlow()) {
+				child->paint(gui, glm::vec2(view.x + padding, view.y + padding));
+				continue;
+			}
 			const float h = heights ? heights[i] : mainAxisRequest(*child, gui, measureSpace, true);
 			// Across the column. Stretching is the default and costs nothing to decide;
 			// anything else asks the child how wide it wants to be, which is the same
@@ -1374,8 +1406,12 @@ namespace RDA {
 			// what the rasteriser does with the shape inside the box it is given, so both
 			// fits come out of one call and there is no second scaling afterwards to go
 			// soft.
-			ensureDrawn(static_cast<uint32_t>((std::max)(1.0f, std::round(box.w))),
-			            static_cast<uint32_t>((std::max)(1.0f, std::round(box.h))));
+			// Rasterised in pixels, drawn in units. The box is 24 units wide and on a
+			// display at 150% that is 36 pixels of picture -- which is the whole reason a
+			// drawing is rasterised at the size it is given rather than exported at one.
+			const float k = gui.unitScale();
+			ensureDrawn(static_cast<uint32_t>((std::max)(1.0f, std::round(box.w * k))),
+			            static_cast<uint32_t>((std::max)(1.0f, std::round(box.h * k))));
 			if (mFrames.empty()) return;
 			size_t frame = 0;
 			if (mFrames.size() > 1 && mLoopSeconds > 0.0f) {

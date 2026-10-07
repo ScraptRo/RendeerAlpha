@@ -1,0 +1,52 @@
+{
+  "tutorials": [
+    {
+      "slug": "what-it-is",
+      "title": "What RendeerAlpha is",
+      "tagline": "An interface compiled ahead of time, and a backend in whatever language you already write.",
+      "summary": "The shape of the whole thing before any of the details: a TypeScript layout compiled into a flat binary blueprint, an application that loads it with no parser and no JavaScript engine, and a seam that sits at the state rather than at the pixels.",
+      "minutes": 6,
+      "file": "what-it-is.md"
+    },
+    {
+      "slug": "install",
+      "title": "Installing the engine",
+      "tagline": "One bring-up script, run once, that fills bin/ with everything an application needs.",
+      "summary": "What has to be on the machine, what the bring-up script does with it, and what lands in bin/ afterwards. The engine is a checkout you build once — after that a project in any language points at the result.",
+      "minutes": 7,
+      "file": "install.md"
+    },
+    {
+      "slug": "project-setup",
+      "title": "Adding it to a project",
+      "tagline": "Four project shapes — and only one of them has a build system.",
+      "summary": "What sits beside your res/ folder in each language: a CMakeLists.txt for C++, a package.json for Node, a .csproj for C#, and nothing at all for Python.",
+      "minutes": 6,
+      "file": "project-setup.md"
+    },
+    {
+      "slug": "first-interface",
+      "title": "Your first interface",
+      "tagline": "A counter, a text field, and a button that asks the backend to do something.",
+      "summary": "Small enough to type in, and it exercises the whole path: a declaration both sides are generated from, a theme, a layout with bindings and handlers, and a backend answering a command.",
+      "minutes": 10,
+      "file": "first-interface.md"
+    },
+    {
+      "slug": "layout-language",
+      "title": "The layout language",
+      "tagline": "Constants, bindings and handlers — and a grammar small enough to compile into data.",
+      "summary": "What a .tsx layout may contain: the three kinds of value, the full expression grammar and the two rules it enforces, how sizing works, and the nineteen elements you have to build from.",
+      "minutes": 12,
+      "file": "layout-language.md"
+    },
+    {
+      "slug": "backends",
+      "title": "State and backends",
+      "tagline": "One declaration, four generated sides, and the same application in each language.",
+      "summary": "How res/state.ts becomes the C++ header, the Python module, the JavaScript module, the C# class and the layout’s type definitions — and what the same program looks like written against each of them.",
+      "minutes": 9,
+      "file": "backends.md"
+    }
+  ]
+}

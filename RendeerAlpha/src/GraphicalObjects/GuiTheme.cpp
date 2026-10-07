@@ -334,6 +334,47 @@ namespace RDA {
 
 	Theme::Theme() { reset(); }
 
+	// The three presets a text field's mode means, as a style. Here rather than beside the
+	// widget that draws one: it builds a style and nothing else, and every other line that
+	// builds one is in this file. It also means a theme can be read without linking the
+	// immediate-mode widgets, which is what lets the tests cover it.
+	TextFieldStyle TextFieldStyle::forMode(TextFieldMode mode) {
+		TextFieldStyle style;
+		style.mode = mode;
+		switch (mode) {
+		case TextFieldMode::Line:
+			style.multiline = false;
+			style.padding = 6.0f;
+			break;
+		case TextFieldMode::Document:
+			style.multiline = true;
+			style.padding = 12.0f;
+			style.background = rgba(24, 24, 28);
+			break;
+		case TextFieldMode::Code:
+			style.multiline = true;
+			style.showLineNumbers = true;
+			style.highlightCurrentLine = true;
+			style.padding = 6.0f;
+			style.background = rgba(16, 18, 24);
+			break;
+		}
+		return style;
+	}
+
+	void Theme::forgetResolvedMeshes() {
+		// Buttons are the only styles that name a mesh today. When a second one does, it
+		// belongs in this loop -- which is the whole reason this is one function rather
+		// than two lines at the call site.
+		for (auto& one : mButtons) {
+			one.second.meshColours.clear();
+			one.second.meshResolvedFor = nullptr;
+		}
+		// The look may have changed, and the revision is what tells the GUI that last
+		// frame's geometry cannot simply be shown again.
+		++mRevision;
+	}
+
 	void Theme::reset() {
 		mButtons.clear();
 		mCheckboxes.clear();

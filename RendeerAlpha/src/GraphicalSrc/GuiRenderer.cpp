@@ -82,7 +82,9 @@ namespace RDA {
 
 	bool GuiRenderer::init(VkRenderPass targetRenderPass, const std::string& fontPath,
 	                       float fontHeight, const std::vector<float>& fontSizes,
-	                       uint32_t framesInFlight) {
+	                       uint32_t framesInFlight, float unitScale) {
+		mUnitScale = (unitScale > 0.0f) ? unitScale : 1.0f;
+
 		// The base size first, because index 0 is what anything with no opinion is drawn
 		// at, and only sizes nobody asked for twice.
 		std::vector<float> sizes{ fontHeight };
@@ -90,6 +92,9 @@ namespace RDA {
 			if (size <= 0.0f) continue;
 			if (std::find(sizes.begin(), sizes.end(), size) == sizes.end()) sizes.push_back(size);
 		}
+		// Before the bake, because the bake is what it changes: the sizes above are layout
+		// units and the atlas holds pixels.
+		mFont.setScale(mUnitScale);
 		if (!mFont.bake(fontPath, sizes)) {
 			RDA_LOG_ERROR("GUI: failed to bake font atlas");
 			return false;
@@ -343,8 +348,18 @@ namespace RDA {
 			fb.hasUpload = true;
 		}
 
+		// The one place layout units become pixels.
+		//
+		// Everything in the draw list -- every vertex, every clip rectangle -- is in the
+		// units the layout was written in. On a display at 150% the framebuffer has half
+		// again as many pixels as the interface has units, so this matrix carries the scale
+		// and nothing above it has to: a vertex at 100 lands on pixel 150. Glyphs are the
+		// exception that proves the rule -- they are baked at the scaled size rather than
+		// stretched by this, which is what keeps them sharp. See FontAtlas::setScale.
+		const float k = (mUnitScale > 0.0f) ? mUnitScale : 1.0f;
+
 		GuiPush push{};
-		push.scale = { 2.0f / targetExtent.width, 2.0f / targetExtent.height };
+		push.scale = { 2.0f * k / targetExtent.width, 2.0f * k / targetExtent.height };
 		push.translate = { -1.0f, -1.0f };
 
 		VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(targetExtent.width), static_cast<float>(targetExtent.height), 0.0f, 1.0f };
@@ -373,10 +388,12 @@ namespace RDA {
 			}
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, nullptr);
 
-			float x0 = (std::max)(command.clip.x, 0.0f);
-			float y0 = (std::max)(command.clip.y, 0.0f);
-			float x1 = (std::min)(command.clip.z, static_cast<float>(targetExtent.width));
-			float y1 = (std::min)(command.clip.w, static_cast<float>(targetExtent.height));
+			// A scissor is pixels, and a clip rectangle is layout units, so it is scaled
+			// here the same way the vertices are by the matrix above.
+			float x0 = (std::max)(command.clip.x * k, 0.0f);
+			float y0 = (std::max)(command.clip.y * k, 0.0f);
+			float x1 = (std::min)(command.clip.z * k, static_cast<float>(targetExtent.width));
+			float y1 = (std::min)(command.clip.w * k, static_cast<float>(targetExtent.height));
 			if (x1 <= x0 || y1 <= y0) continue;
 			VkRect2D scissor{};
 			scissor.offset = { static_cast<int32_t>(x0), static_cast<int32_t>(y0) };
@@ -405,7 +422,12 @@ namespace RDA {
 			vertices[base + 2] = { { r.x + r.w, r.y + r.h }, { 1.0f, 1.0f }, white };
 			vertices[base + 3] = { { r.x,       r.y + r.h }, { 0.0f, 1.0f }, white };
 		};
-		quad(0, sceneRect);
+		// Both quads are built in pixels here rather than in layout units, because the
+		// second one is the whole framebuffer and the push constant below is the unscaled
+		// one. So the scene's rect, which arrives in layout units like every other rect the
+		// GUI produces, is converted.
+		const float k = (mUnitScale > 0.0f) ? mUnitScale : 1.0f;
+		quad(0, { sceneRect.x * k, sceneRect.y * k, sceneRect.w * k, sceneRect.h * k });
 		quad(4, { 0.0f, 0.0f, static_cast<float>(targetExtent.width), static_cast<float>(targetExtent.height) });
 		const uint16_t indices[12] = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
 

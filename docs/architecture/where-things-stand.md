@@ -3,9 +3,10 @@
 **Live and load-bearing.** The blueprint format and its compiler; the widget and theme
 schemas and the types generated from them; components, expanded at compile time; signals,
 bindings and compiled event handlers; routing, with history and restored params; the theme
-compiler, including the type scale and transitions; the twenty-one elements, the overlay layer
-and `<popup>` among them; the headless probe; hot reload; the CMake build with per-platform
-scripts.
+compiler, including the type scale and transitions; the twenty-three elements, the overlay
+layer and `<popup>` among them; the headless probe; hot reload -- of a layout, and of the
+theme and meshes it is drawn with; the display scale, so a unit is a unit on a display at
+150%; the CMake build with per-platform scripts.
 
 And the seam out of C++: the C ABI, the Python, Node and C# packages written on it, and
 the generators and build rules that give each of them the same declaration the C++ and
@@ -84,10 +85,13 @@ what makes them loose ends rather than reasons to wait.
 - A tile cannot be pulled out of the grid to float, and two tiles cannot be tabbed
   together. Both are `panes` ideas: a tile is a rectangle rather than a share of its
   neighbour, so neither has anything to mean in a grid.
-- A focus ring is a rectangle, even around a widget a mesh drew as something else. It no
-  longer appears on a click, so the case that showed it worst is gone; a keyboard walk
-  onto a mesh-drawn tab still puts a box around a shape that is not one. Making it
-  follow would mean a second pass over the mesh's outline.
+- A window dragged onto a monitor at a different scale keeps the scale it opened with. The
+  font atlas is baked at a scale, and re-baking it mid-run means rebuilding the texture and
+  the descriptor set every frame in flight is reading from -- so the interface comes out
+  slightly the wrong size rather than blurry, and the log says so once. Reopening the window
+  there gets it right.
+- A focus ring around a widget drawn by a mesh follows that mesh's shape, and around
+  everything else it is still a rectangle, which is the right answer for a rectangle.
 - A widget can be clicked while it is collapsing. Brief, and not wrong enough to be worth
   wrapping every collapsing child in `pushInert()` — which is what a route's outgoing
   screen does now.

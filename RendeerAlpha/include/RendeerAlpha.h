@@ -39,6 +39,23 @@ namespace RDA {
 		// read as different, which is what a scale is for.
 		std::vector<float> fontSizes = { 12.0f, 15.0f, 22.0f, 28.0f, 36.0f };
 
+		// How many physical pixels one unit in a layout is worth.
+		//
+		// 0 means "ask the display", which is what an application wants unless it has a
+		// reason not to: at 150% a `height={30}` button is 45 pixels tall and still looks
+		// 30 units tall, and the font for it is baked at 150% so it is sharp rather than
+		// stretched. Everything an application says -- a window's size, a padding, a font
+		// size -- is in those units, and physical pixels appear only in the renderer.
+		//
+		// A number sets it by hand. 1 draws in physical pixels, which is what this engine
+		// did before: correct on a 100% display and two thirds the intended size on a
+		// 150% one.
+		//
+		// Read once, when the window opens. Dragging a window between monitors of
+		// different scales keeps the scale it started with, because the font atlas is
+		// baked at it -- see docs/architecture/where-things-stand.md.
+		float uiScale = 0.0f;
+
 		// Optional XML theme loaded at startup into the main window's Gui::theme().
 		// Empty = the built-in look only. Variants can also be added later from code
 		// (gui().theme().defineButton(...) / loadFromFile(...)).
@@ -80,6 +97,19 @@ namespace RDA {
 		// What that leaves is a process whose only visible windows are ones it opened
 		// itself with rendeerCreateWindow, and a headless run that still has a device.
 		bool         hiddenMainWindow = false;
+
+		// Run the interface, and never put it on screen.
+		//
+		// The opposite end of hiddenMainWindow from the window's point of view and the
+		// opposite of it in intent: that one says "this window is a device anchor and
+		// nothing else", and skips the interface in it entirely. This one builds every
+		// frame -- the walk, the bindings, the animation, the draw list -- and only
+		// declines to present it.
+		//
+		// What that is for is looking at a frame rather than watching one: with this set,
+		// rendeerCaptureFrame hands back what the window would have shown. `rda shot` is
+		// that, with a project around it and a .png at the end.
+		bool         offscreen = false;
 
 		// The size the main window opens at. Zero means the engine's own default, which
 		// is what every application got before this existed.
@@ -130,6 +160,19 @@ namespace RDA {
 		std::function<void(float dtSeconds)> onUpdate;   // once per frame, before that frame is drawn
 		std::function<void()>              onShutdown;   // once, after the loop ends, before teardown
 
+		// Once per frame, after every window has finished its frame and before any of
+		// them is drawn.
+		//
+		// The difference from onUpdate is one call, and it is the whole reason this
+		// exists: a frame is not finished when onUpdate runs. The focus ring, and
+		// anything else the GUI adds once the walk is over, is added by Gui::end()
+		// afterwards -- so a capture taken from onUpdate is a picture of the frame
+		// *minus* those things, which is a difference nobody would think to look for.
+		//
+		// Nothing may restructure the widget tree from here: the walk has happened and
+		// the geometry it produced is about to be drawn.
+		std::function<void()>              onFrameEnd;
+
 		// Optional discrete-input callbacks, dispatched on the main window during the
 		// event poll. Continuous input (movement, held keys) is better read from
 		// getMainWindow()->input() inside onUpdate.
@@ -165,6 +208,39 @@ bool rendeerRunning();
 // This form wakes *every* window, because it means "something changed that the engine
 // cannot see" and the engine cannot know which window was meant.
 void rendeerRequestRedraw();
+
+// The interface as it would look on screen, in ordinary memory.
+//
+// Draws the main window's current frame into an offscreen target and hands back RGBA, the
+// top row first, at the window's own size. Nothing is presented, so this works with the
+// window hidden -- which is the point: an interface can be looked at, kept, or compared
+// with the last one without a window being on screen at all.
+//
+// Call it from the loop: `onUpdate` is the right place, after the walk that built the frame.
+// False, with a reason in the log, when there is no GUI or no room for the target.
+//
+// What it does not include: a <viewport>'s own drawing, which needs the scene passes.
+// `rda shot` is this with a project around it and a .png at the end.
+bool rendeerCaptureFrame(std::vector<unsigned char>& rgba,
+                         unsigned& width, unsigned& height);
+
+// The pointer, moved by something other than a hand.
+//
+// Hover and press are worked out from where the pointer is, so a capture of a widget
+// under the pointer needs a pointer to be somewhere. This puts one there until it is
+// cleared: `rendeerClearSyntheticPointer()` gives the real mouse its place back.
+//
+// For driving an interface no hand is on -- a capture of a hover state, a press that has
+// to be held across a frame. It is not an event: nothing is clicked by setting `down`,
+// the GUI simply sees a button held where it was told, and a click is down on one frame
+// and up on the next, the way a real one is.
+void rendeerSetSyntheticPointer(float x, float y, bool down);
+void rendeerClearSyntheticPointer();
+
+// The wheel, turned by nobody. Set, it is applied on every frame until it is cleared, so
+// a large number scrolls whatever is under the pointer to its end -- which is what a
+// capture of "the bottom of this list" wants. Negative is downward, as a real wheel is.
+void rendeerSetSyntheticScroll(float notches);
 
 // The same, for one window. Prefer it whenever the caller knows which window changed:
 // each window earns its frames separately, so waking all of them makes an application
