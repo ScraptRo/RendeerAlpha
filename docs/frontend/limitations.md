@@ -5,27 +5,34 @@ Worth knowing up front, so you do not go looking:
 - **No loops or lists of elements.** Repeating a widget over data is what `<list>` and a
   table are for; repeating it over a fixed set is what a component and three call sites
   are for.
-- **No function calls in a binding**, other than a command in a handler. A computation
-  belongs in the backend, which has a language for it.
+- **Code that runs reads; it does not reach.** A function a binding calls reads and writes
+  signals and reads tables, and that is all of the world it has -- no files, no network,
+  no `Intl` (`format` stands in for it, and timers run on the frame clock). See
+  [functions](functions.md).
 - **No CSS-like cascade.** A widget's look comes from its variant, and `animate` is the
   only property that is inherited.
 - **No layout that depends on itself.** A wrapped label's height depends on the width it
   was given, and that is as far as it goes: nothing measures what it is going to become.
-- **No application shortcuts.** Tab order, arrows, Space, Escape and Ctrl+Z are the
-  engine's and are described in [keyboard.md](keyboard.md); a chord of your own — Ctrl+S,
-  Ctrl+K — is not a thing a layout can declare, and has to be read from the backend.
-- **One font face.** No second family and no real bold — `weight: "bold"` is drawn twice a
-  pixel apart.
-- **Latin text only.** Every string is UTF-8, and the atlas covers Basic Latin, Latin-1
-  Supplement, Latin Extended-A, the Romanian comma-below letters, common punctuation and
-  the euro — so `Șase limbi și un preț — Straße, mañana, Łódź, Győr, İstanbul` all draw,
-  and can be typed into a `<textfield>`. Anything outside those ranges is baked into the
-  atlas the first time something asks to draw it, so emoji and symbols draw as long as
-  the font — or a fallback face named in `config.font` — actually holds them.
+- **One body face, no real bold.** `config.font` names a body font and any number of
+  fallbacks after a `;`, which the engine reaches for one codepoint at a time — but every
+  label is drawn in the body face, and `weight: "bold"` is drawn twice a pixel apart
+  rather than from a bold face. See [themes](themes.md).
+- **No shaping and no right-to-left.** Every string is UTF-8. The atlas is baked with Basic
+  Latin, Latin-1 Supplement, Latin Extended-A, the Romanian comma-below letters, common
+  punctuation and the euro — so `Șase limbi și un preț — Straße, mañana, Łódź, Győr,
+  İstanbul` all draw, and can be typed into a `<textfield>`. Anything outside those
+  ranges is baked the first time something asks to draw it, so symbols, monochrome emoji
+  and scripts drawn one glyph per codepoint — Greek, Cyrillic, CJK — draw as long as a
+  named face or one of the system's holds them. A line with no space in it wraps between
+  characters, which is how Chinese and Japanese wrap anyway.
 
-  Greek, Cyrillic, Hebrew, Arabic and CJK are the ones that do not: they need shaping
-  and, for two of them, bidirectional layout, which is a different job from a wider
-  range of glyphs.
+  Hebrew and Arabic are the ones that do not draw correctly: they need shaping and
+  bidirectional layout, which is a different job from a wider range of glyphs.
+- **Input methods on Windows only.** Chinese, Japanese and Korean are typed through the
+  system's input method on Windows, composed at the caret — see
+  [the keyboard](keyboard.md#chinese-japanese-and-korean). On Linux under X11 the method
+  works through its own window and hands over finished text; under Wayland it does not
+  reach the window at all, because GLFW does not yet speak Wayland's text input.
 
 ---
 

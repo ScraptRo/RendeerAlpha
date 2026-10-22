@@ -168,11 +168,20 @@ TEST(a_value_binding_may_not_call_a_command) {
 	CHECK(out.error.find("value binding") != std::string::npos);
 }
 
-TEST(a_command_takes_no_arguments) {
+TEST(a_command_carries_its_arguments) {
 	Fixture fixture;
-	const Run out = run("() => commands.anything(state.count)", /*handler*/ true);
-	CHECK(!out.parsed);
-	CHECK(out.error.find("no arguments") != std::string::npos);
+	const uint32_t id = commands().define("test_rename");
+	std::string received;
+	commands().bind(id, CommandWork([&received](const CommandArgs& args) {
+		received = args.json() + " " + std::to_string(static_cast<int>(args.number(0))) + " " + args.text(1);
+	}));
+	signals().define("count", 3.0);
+	Table table = makeCatalogue();
+	const Run out = run("() => commands.test_rename(state.count + 1, item.title)", /*handler*/ true,
+	                    "item", &table, 1);
+	CHECK(out.parsed);
+	CHECK(out.ran);
+	CHECK(received == "[4,\"second\"] 4 second");
 }
 
 TEST(a_handler_calling_an_unbound_command_fails_rather_than_pretending) {

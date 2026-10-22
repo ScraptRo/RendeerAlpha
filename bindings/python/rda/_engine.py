@@ -8,7 +8,9 @@ Nothing in this file is public. `rda/__init__.py` is the API; a generated state 
 calls the accessors here by name.
 """
 
+import base64
 import ctypes
+import json
 import os
 import shutil
 import sys
@@ -21,7 +23,7 @@ from ctypes import (CFUNCTYPE, POINTER, Structure, c_char_p, c_double, c_float, 
 # RendeerC.h. Checked rather than assumed, because the two are installed separately and
 # a mismatch would otherwise arrive much later, as a missing attribute or a wrong answer.
 ABI_MAJOR = 1
-ABI_MINOR = 6
+ABI_MINOR = 8
 
 NO_SIGNAL = 0xFFFFFFFF
 NO_TABLE = 0xFFFFFFFF
@@ -50,6 +52,20 @@ class DrawCmd(Structure):
         ("a", c_float), ("b", c_float), ("c", c_float), ("d", c_float),
         ("e", c_float),
         ("text", c_char_p),
+    ]
+
+
+class ViewportEventC(Structure):
+    """rda_viewport_event, field for field. See rda.ViewportEvent for what they mean."""
+    _fields_ = [
+        ("x", c_float), ("y", c_float),
+        ("dx", c_float), ("dy", c_float),
+        ("wheel", c_float),
+        ("held", c_uint32), ("pressed", c_uint32), ("released", c_uint32),
+        ("clicks", c_int32), ("inside", c_int32),
+        ("mods", c_uint32),
+        ("width", c_float), ("height", c_float),
+        ("resized", c_int32),
     ]
 
 
@@ -328,6 +344,13 @@ def _declare(lib):
     lib.rda_viewport_size.argtypes = [c_char_p, POINTER(c_float), POINTER(c_float)]
     lib.rda_viewport_size.restype = c_int
 
+    lib.rda_viewport_listen.argtypes = [c_char_p, c_int]
+    lib.rda_viewport_listen.restype = c_int
+    lib.rda_viewport_take.argtypes = [c_char_p, POINTER(ViewportEventC)]
+    lib.rda_viewport_take.restype = c_int
+    lib.rda_viewport_wait.argtypes = [c_char_p, c_int, c_int]
+    lib.rda_viewport_wait.restype = c_int
+
     lib.rda_signal_find.argtypes = [c_char_p]
     lib.rda_signal_find.restype = c_uint32
     lib.rda_signal_type.argtypes = [c_uint32]
@@ -349,6 +372,12 @@ def _declare(lib):
     lib.rda_command_bind.restype = c_int
     lib.rda_command_invoke.argtypes = [c_char_p]
     lib.rda_command_invoke.restype = c_int
+    lib.rda_command_args.argtypes = []
+    lib.rda_command_args.restype = c_char_p
+    lib.rda_call.argtypes = [c_char_p, c_char_p]
+    lib.rda_call.restype = c_char_p
+    lib.rda_load_state_code.argtypes = [c_void_p, c_int]
+    lib.rda_load_state_code.restype = c_int
 
 
 def _fail(what):
@@ -571,20 +600,55 @@ def cell(row, name, index):
 _pending = []
 
 
-def bind_command(name, fn):
-    """Binds `fn` to a declared command. Returns `fn`, so it works as a decorator."""
+def bind_command(name, fn, takes_args=False):
+    """Binds `fn` to a declared command. Returns `fn`, so it works as a decorator.
+
+    With `takes_args`, `fn` is called with the command's arguments -- what the event
+    meant, as the declaration's `params` say -- rather than with nothing.
+    """
     if _lib is None or not _lib.rda_running():
-        _pending.append((name, fn))
+        _pending.append((name, fn, takes_args))
         return fn
-    _bind_now(name, fn)
+    _bind_now(name, fn, takes_args)
     return fn
 
 
-def _bind_now(name, fn):
-    trampoline = _Callback(lambda _user: fn())
+def command_args():
+    """The arguments of the command being handled, as a list."""
+    raw = load().rda_command_args()
+    return json.loads(raw.decode("utf-8")) if raw else []
+
+
+def _bind_now(name, fn, takes_args=False):
+    if takes_args:
+        trampoline = _Callback(lambda _user: fn(*command_args()))
+    else:
+        trampoline = _Callback(lambda _user: fn())
     _alive.append(trampoline)
     if not _lib.rda_command_bind(name.encode("utf-8"), trampoline, None):
         _fail("cannot bind {!r}".format(name))
+
+
+def call(name, *args):
+    """Runs a command and returns what it returned.
+
+    One state.ts answers returns its function's result; one a handler answers runs the
+    handler and returns None.
+    """
+    raw = load().rda_call(name.encode("utf-8"), json.dumps(list(args)).encode("utf-8"))
+    if raw is None:
+        _fail("cannot call {!r}".format(name))
+    return json.loads(raw.decode("utf-8"))
+
+
+def load_state_code(encoded):
+    """Hands the engine state.ts's code, as a generated state module carries it."""
+    if isinstance(encoded, (tuple, list)):
+        encoded = "".join(encoded)
+    data = base64.b64decode(encoded)
+    buffer = ctypes.create_string_buffer(data, len(data))
+    if not load().rda_load_state_code(buffer, len(data)):
+        _fail("cannot load state.ts's code")
 
 
 def invoke(name):
@@ -606,5 +670,5 @@ def flush_pending():
     """
     waiting = list(_pending)
     del _pending[:]
-    for name, fn in waiting:
-        _bind_now(name, fn)
+    for name, fn, takes_args in waiting:
+        _bind_now(name, fn, takes_args)

@@ -36,26 +36,77 @@
 // touches any of it.
 #include <RendeerAlpha.h>
 #include <GraphicalObjects/Gui.h>
+#include <GraphicalObjects/Shortcut.h>
 #include <Core/Signals.h>
 #include <Layout/Prototype.h>
 #include <Core/Png.h>
 #include <Layout/Router.h>
 #include <Layout/LayoutHost.h>
+#include <Layout/ScriptHost.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <set>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
 namespace {
 
+	// --no-runtime-code, anywhere on the line: a layout that would need run-time code is a
+	// build error instead, naming the binding. For an application that wants "a shipped
+	// binary evaluates no JavaScript" to stay true.
+	bool gNoRuntimeCode = false;
+
+	RDA::Layout::CompileOptions compileOptions() {
+		RDA::Layout::CompileOptions options;
+		options.allowRuntimeCode = !gNoRuntimeCode;
+		return options;
+	}
+
+	// state.ts's code, compiled into the schema a generated module is written from -- the
+	// module carries it. A declaration with no code needs nothing; one whose code does not
+	// compile is said, and false.
+	bool withStateCode(RDA::Layout::StateSchema& schema, const std::string& source) {
+		if (!schema.hasCode() || !schema.code.empty()) return true;
+		const RDA::Layout::StateCodeResult code = RDA::Layout::compileStateCode(source, compileOptions());
+		if (!code.ok) {
+			std::printf("rda: %s\n%s\n", source.c_str(), code.error.c_str());
+			return false;
+		}
+		schema.code = code.bytes;
+		return true;
+	}
+
+	// ", 2 computed, 1 action, 3412 bytes of code", or nothing for a declaration with none.
+	std::string stateSummary(const RDA::Layout::StateSchema& schema) {
+		if (schema.code.empty()) return {};
+		size_t computed = 0, actions = 0;
+		for (const RDA::Layout::StateField& one : schema.fields) computed += one.computed ? 1 : 0;
+		for (const RDA::Layout::StateCommand& one : schema.commands) actions += one.action ? 1 : 0;
+		char text[160];
+		std::snprintf(text, sizeof(text), ", %zu computed, %zu action%s, %zu bytes of code",
+		              computed, actions, actions == 1 ? "" : "s", schema.code.size());
+		return text;
+	}
+
+	// ", 3 run-time bindings, 2 functions, 4 KB of bytecode", or nothing for a layout with none.
+	std::string runtimeSummary(const RDA::Layout::CompileResult& result) {
+		if (result.scriptBytes == 0) return {};
+		char text[160];
+		std::snprintf(text, sizeof(text), ", run-time code: %zu binding%s and %zu function%s in %zu bytes",
+		              result.scriptBindings, result.scriptBindings == 1 ? "" : "s",
+		              result.scriptCalls, result.scriptCalls == 1 ? "" : "s", result.scriptBytes);
+		return text;
+	}
+
 	void usage() {
 		std::printf(
 			"rda - the Rendeer layout toolchain\n\n"
 			"  rda build  <project> [--python] [--node] [--csharp] [--cpp <dir>] [--force]\n"
+			"             [--no-runtime-code]\n"
 			"                                     compile everything under <project>/res/\n"
 			"  rda layout <file.tsx> [out.rdab]   compile a layout into a blueprint\n"
 			"  rda types  <out.d.ts> [theme] [state]  emit the TypeScript definitions\n"
@@ -73,7 +124,12 @@ namespace {
 			"                                     open the interface with placeholder state\n"
 			"  rda shot   <project> [--out <file.png>] [--size WxH] [--scale <n>]\n"
 			"                       [--frames <n>] [--every <ms>] [--settle <n>]\n"
-			"                       [--hover X,Y] [--press X,Y] [--scroll <n>]  + the above\n"
+			"                       [--hover X,Y] [--press X,Y] [--scroll <n>]\n"
+			"                       [--key <chord>]... [--type <text>]...\n"
+			"                       [--drag X1,Y1,X2,Y2 [--hold]] [--files <a;b>]\n"
+			"                       [--click [Ctrl+][Shift+]X,Y]...\n"
+			"                       [--a11y <tree.txt>] [--compose <text>]\n"
+			"                                                          + the above\n"
 			"                                     the same with no window: writes a .png\n\n"
 			"A layout is TypeScript with JSX in it. Compiling turns it into a flat file of\n"
 			"nodes and strings that an application reads without a parser of any kind.\n\n"
@@ -87,15 +143,17 @@ namespace {
 		const std::string target =
 			output.empty() ? RDA::Layout::blueprintPathFor(source) : output;
 
-		const RDA::Layout::CompileResult result = RDA::Layout::compileToFile(source, target);
+		const RDA::Layout::CompileResult result =
+			RDA::Layout::compileToFile(source, target, compileOptions());
 		if (!result.ok) {
 			std::printf("rda: %s\n%s\n", source.c_str(), result.error.c_str());
 			return 1;
 		}
 		std::printf("rda: %s -> %s\n"
-		            "     %zu nodes, %zu bindings, %zu bytes  (transform %.1f ms, evaluate %.1f ms)\n",
+		            "     %zu nodes, %zu bindings, %zu bytes%s  (transform %.1f ms, evaluate %.1f ms)\n",
 		            source.c_str(), target.c_str(), result.nodeCount, result.bindingCount,
-		            result.bytes.size(), result.transformMs, result.evaluateMs);
+		            result.bytes.size(), runtimeSummary(result).c_str(),
+		            result.transformMs, result.evaluateMs);
 		return 0;
 	}
 
@@ -174,37 +232,40 @@ namespace {
 	}
 
 	int state(const std::string& source, const std::string& output) {
-		const RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
+		RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
 		if (!schema.ok) {
 			std::printf("rda: %s\n", schema.error.c_str());
 			return 1;
 		}
+		if (!withStateCode(schema, source)) return 1;
 		std::string error;
 		if (!RDA::Layout::emitStateHeader(schema, output, error)) {
 			std::printf("rda: %s\n", error.c_str());
 			return 1;
 		}
 		std::printf("rda: %s -> %s\n"
-		            "     %zu signals\n", source.c_str(), output.c_str(), schema.fields.size());
+		            "     %zu signals%s\n", source.c_str(), output.c_str(), schema.fields.size(),
+		            stateSummary(schema).c_str());
 		return 0;
 	}
 
 	// The same declaration as Python. A backend written in Python reaches the engine
 	// through its C ABI, and this is what gives it names to reach with.
 	int python(const std::string& source, const std::string& output) {
-		const RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
+		RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
 		if (!schema.ok) {
 			std::printf("rda: %s\n", schema.error.c_str());
 			return 1;
 		}
+		if (!withStateCode(schema, source)) return 1;
 		std::string error;
 		if (!RDA::Layout::emitStatePython(schema, output, error)) {
 			std::printf("rda: %s\n", error.c_str());
 			return 1;
 		}
 		std::printf("rda: %s -> %s\n"
-		            "     %zu signals, %zu commands\n", source.c_str(), output.c_str(),
-		            schema.fields.size(), schema.commands.size());
+		            "     %zu signals, %zu commands%s\n", source.c_str(), output.c_str(),
+		            schema.fields.size(), schema.commands.size(), stateSummary(schema).c_str());
 		return 0;
 	}
 
@@ -212,38 +273,40 @@ namespace {
 	// ABI Python does; what differs is which side calls the other, and the binding is
 	// where that difference lives.
 	int node(const std::string& source, const std::string& output) {
-		const RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
+		RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
 		if (!schema.ok) {
 			std::printf("rda: %s\n", schema.error.c_str());
 			return 1;
 		}
+		if (!withStateCode(schema, source)) return 1;
 		std::string error;
 		if (!RDA::Layout::emitStateNode(schema, output, error)) {
 			std::printf("rda: %s\n", error.c_str());
 			return 1;
 		}
 		std::printf("rda: %s -> %s\n"
-		            "     %zu signals, %zu commands\n", source.c_str(), output.c_str(),
-		            schema.fields.size(), schema.commands.size());
+		            "     %zu signals, %zu commands%s\n", source.c_str(), output.c_str(),
+		            schema.fields.size(), schema.commands.size(), stateSummary(schema).c_str());
 		return 0;
 	}
 
 	// The same declaration as C#. The one generator whose output the consuming compiler
 	// checks as thoroughly as the engine does.
 	int csharp(const std::string& source, const std::string& output) {
-		const RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
+		RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(source);
 		if (!schema.ok) {
 			std::printf("rda: %s\n", schema.error.c_str());
 			return 1;
 		}
+		if (!withStateCode(schema, source)) return 1;
 		std::string error;
 		if (!RDA::Layout::emitStateCSharp(schema, output, error)) {
 			std::printf("rda: %s\n", error.c_str());
 			return 1;
 		}
 		std::printf("rda: %s -> %s\n"
-		            "     %zu signals, %zu commands\n", source.c_str(), output.c_str(),
-		            schema.fields.size(), schema.commands.size());
+		            "     %zu signals, %zu commands%s\n", source.c_str(), output.c_str(),
+		            schema.fields.size(), schema.commands.size(), stateSummary(schema).c_str());
 		return 0;
 	}
 
@@ -255,9 +318,17 @@ namespace {
 			return 1;
 		}
 
-		std::printf("%s: %zu nodes, %zu bindings, %zu bytes\n\n",
+		std::printf("%s: %zu nodes, %zu bindings, %zu bytes\n",
 		            path.c_str(), blueprint.nodeCount(), blueprint.bindingCount(),
 		            blueprint.byteSize());
+		if (blueprint.hasScript()) {
+			const RDA::Layout::BlueprintScript& script = blueprint.script();
+			size_t lines = script.lineMap.empty() ? 0 : 1;
+			for (const char c : script.lineMap) if (c == '\n') ++lines;
+			std::printf("run-time code: %zu bytes of QuickJS %s bytecode, %zu lines mapped to source\n",
+			            script.code.size(), script.engine.c_str(), lines);
+		}
+		std::printf("\n");
 
 		for (size_t i = 0; i < blueprint.nodeCount(); ++i) {
 			const RDA::Layout::BlueprintNode& node = blueprint.node(i);
@@ -488,6 +559,11 @@ namespace {
 			++made;
 		}
 
+		// state.ts, read and its code compiled at most once per run: the types need the one
+		// and the generated modules carry the other.
+		RDA::Layout::StateSchema checkedState;
+		bool stateChecked = false;
+
 		// The definitions a layout is checked against, from the first theme and the state.
 		// Regenerated whenever either moves, and whenever the tool does: a .d.ts that has
 		// drifted from the widget schema is worse than none.
@@ -499,7 +575,11 @@ namespace {
 			}
 			std::vector<fs::path> inputs;
 			if (!firstTheme.empty()) inputs.push_back(firstTheme);
-			if (haveState) inputs.push_back(state);
+			// What state.ts imports too: an action's signature is read from it.
+			if (haveState) {
+				for (const std::string& one : RDA::Layout::importedFiles(state.string())) inputs.emplace_back(one);
+				inputs.push_back(state);
+			}
 			if (stale(out, inputs, tool)) {
 				fs::create_directories(out.parent_path(), ec);
 				const RDA::Layout::TypesResult result = RDA::Layout::emitTypeDefinitions(
@@ -513,6 +593,17 @@ namespace {
 					            shown(out).c_str(), result.widgetCount, result.variantCount,
 					            result.stateCount);
 					++made;
+				}
+				// state.ts's code is checked whenever its types are: a mistake in a computed
+				// value or an action is this build's to report, whether or not a backend
+				// module was asked for.
+				if (result.ok && haveState) {
+					checkedState = RDA::Layout::loadStateSchema(state.string());
+					stateChecked = checkedState.ok;
+					if (stateChecked && !withStateCode(checkedState, state.string())) {
+						stateChecked = false;
+						++failed;
+					}
 				}
 			} else {
 				++kept;
@@ -531,14 +622,15 @@ namespace {
 			if (inputs.empty()) inputs.push_back(source);
 			if (!stale(out, inputs, tool)) { ++kept; continue; }
 			const RDA::Layout::CompileResult result =
-				RDA::Layout::compileToFile(source.string(), out.string());
+				RDA::Layout::compileToFile(source.string(), out.string(), compileOptions());
 			if (!result.ok) {
 				std::printf("rda: %s\n%s\n", shown(source).c_str(), result.error.c_str());
 				++failed;
 				continue;
 			}
-			std::printf("rda: %s -> %s  (%zu nodes, %zu bindings)\n", shown(source).c_str(),
-			            shown(out).c_str(), result.nodeCount, result.bindingCount);
+			std::printf("rda: %s -> %s  (%zu nodes, %zu bindings%s)\n", shown(source).c_str(),
+			            shown(out).c_str(), result.nodeCount, result.bindingCount,
+			            runtimeSummary(result).c_str());
 			++made;
 		}
 
@@ -565,14 +657,26 @@ namespace {
 		} else if (anyWanted) {
 			RDA::Layout::StateSchema schema;
 			bool loaded = false;
+			// What state.ts imports is part of it now: its code ships in these modules.
+			std::vector<fs::path> stateInputs;
+			for (const std::string& one : RDA::Layout::importedFiles(state.string())) stateInputs.emplace_back(one);
+			if (stateInputs.empty()) stateInputs.push_back(state);
 			for (const Emit& e : emits) {
 				if (!e.wanted) continue;
-				if (!stale(e.out, { state }, tool)) { ++kept; continue; }
+				if (!stale(e.out, stateInputs, tool)) { ++kept; continue; }
+				if (!loaded && stateChecked) {
+					schema = checkedState;
+					loaded = true;
+				}
 				if (!loaded) {
 					schema = RDA::Layout::loadStateSchema(state.string());
 					loaded = true;
 					if (!schema.ok) {
 						std::printf("rda: %s\n", schema.error.c_str());
+						++failed;
+						break;
+					}
+					if (!withStateCode(schema, state.string())) {
 						++failed;
 						break;
 					}
@@ -584,8 +688,9 @@ namespace {
 					++failed;
 					continue;
 				}
-				std::printf("rda: %s -> %s  (%zu signals, %zu commands)\n", shown(state).c_str(),
-				            shown(e.out).c_str(), schema.fields.size(), schema.commands.size());
+				std::printf("rda: %s -> %s  (%zu signals, %zu commands%s)\n", shown(state).c_str(),
+				            shown(e.out).c_str(), schema.fields.size(), schema.commands.size(),
+				            stateSummary(schema).c_str());
 				++made;
 			}
 		}
@@ -629,14 +734,68 @@ namespace {
 	// thing, which is the one way a message is worse than useless: a script believes it.
 	bool gPrototypeRefused = false;
 
-	void prototypeCommand(const char* name) {
+	void prototypeCommand(const char* name, const char* args) {
 		// Printed rather than logged: this is the tool talking, not the engine, and the
 		// whole point of pressing the button is to see that it asked for something.
 		// Flushed, because stdout to a pipe is block-buffered and this process does not
 		// exit -- it sits there with a window open, and a line nobody sees until then is
-		// a line that told nobody anything.
-		std::printf("rda: commands.%s()\n", name);
+		// a line that told nobody anything. With what it was asked with: `[3,"x"]` is
+		// printed as the call it was, commands.rename(3,"x").
+		std::string inside = args ? args : "[]";
+		if (inside.size() >= 2 && inside.front() == '[' && inside.back() == ']')
+			inside = inside.substr(1, inside.size() - 2);
+		std::printf("rda: commands.%s(%s)\n", name, inside.c_str());
 		std::fflush(stdout);
+	}
+
+	// state.ts while a prototype runs: what it and its imports were when last read, so a
+	// save is noticed and its code swapped in with every value kept.
+	struct StateWatch {
+		fs::path                                     file;
+		std::vector<std::pair<fs::path, fs::file_time_type>> stamps;
+		float                                        sinceCheck = 0.0f;
+
+		void remember() {
+			stamps.clear();
+			std::error_code ec;
+			for (const std::string& one : RDA::Layout::importedFiles(file.string())) {
+				stamps.emplace_back(one, fs::last_write_time(one, ec));
+			}
+		}
+		bool changed() {
+			std::error_code ec;
+			for (const auto& [path, when] : stamps) {
+				if (fs::last_write_time(path, ec) != when) return true;
+			}
+			return false;
+		}
+	};
+	StateWatch gStateWatch;
+
+	// Reads state.ts again and swaps its code in. What it newly declares is defined; what
+	// already existed keeps its value, which is the point of reloading rather than
+	// restarting.
+	void reloadPrototypeState() {
+		gStateWatch.remember();
+		RDA::Layout::StateSchema schema = RDA::Layout::loadStateSchema(gStateWatch.file.string());
+		if (!schema.ok) {
+			std::printf("rda: state.ts did not reload: %s\n", schema.error.c_str());
+			std::fflush(stdout);
+			return;
+		}
+		RDA::Layout::definePrototypeState(schema, prototypeCommand, /*onlyNew*/ true);
+		std::string error;
+		if (!schema.hasCode()) {
+			RDA::Layout::scriptHost().unloadState();
+		} else if (!withStateCode(schema, gStateWatch.file.string()) ||
+		           !RDA::Layout::scriptHost().loadState(schema.code.data(), schema.code.size(), error)) {
+			if (!error.empty()) std::printf("rda: state.ts did not reload: %s\n", error.c_str());
+			std::fflush(stdout);
+			return;
+		}
+		std::printf("rda: state.ts reloaded%s\n", stateSummary(schema).c_str());
+		std::fflush(stdout);
+		rendeerRequestRedraw();
 	}
 
 	// `prototype` and `shot` are one command with two endings: everything up to the window
@@ -664,6 +823,10 @@ namespace {
 		bool hovering = false, pressing = false;
 		float pointerX = 0.0f, pointerY = 0.0f;
 		float scrolling = 0.0f;
+		// Chords to press before the picture, in order, one a frame: "--key Ctrl+S".
+		std::vector<std::string> keys;
+		bool holdDrag = false;   // --hold: picture a --drag before it is let go
+		std::string a11yOut;     // --a11y: where to write the accessibility tree
 
 		const auto number = [](const std::string& text, float& into) {
 			try { into = std::stof(text); return true; } catch (...) { return false; }
@@ -716,6 +879,94 @@ namespace {
 					std::printf("rda: --scroll wants notches, negative for downward\n");
 					return 1;
 				}
+			}
+			else if (shooting && arg == "--key" && i + 1 < args.size()) {
+				// Checked now rather than when it is sent, so a typo is a refusal before a
+				// window opens instead of a picture of nothing having happened.
+				RDA::Chord chord;
+				std::string error;
+				if (!RDA::parseChord(args[i + 1], chord, &error)) {
+					std::printf("rda: --key '%s' %s\n", args[i + 1].c_str(), error.c_str());
+					return 1;
+				}
+				keys.push_back(args[++i]);
+			}
+			// Text rather than a chord: what a field or a dropdown reads as typing. In
+			// order with --key, so "--key Tab --type abc" is the keyboard reaching
+			// something and then typing into it.
+			else if (shooting && arg == "--type" && i + 1 < args.size()) {
+				keys.push_back(std::string("\x01") + args[++i]);
+			}
+			// A drag from one point to another: down at the first, carried across in
+			// steps -- a pick-up waits for the pointer to have moved, and a target is
+			// found by where the pointer is on each frame -- and let go at the second,
+			// unless --hold says to take the picture while it is still being carried.
+			// In order with --key and --type, so a drag can be followed by Escape.
+			else if (shooting && arg == "--drag" && i + 1 < args.size()) {
+				const std::string spec = args[++i];
+				float at[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+				size_t from = 0;
+				bool ok = true;
+				for (int k = 0; k < 4 && ok; ++k) {
+					const size_t comma = spec.find(',', from);
+					const std::string part = spec.substr(from, comma == std::string::npos
+					                                           ? std::string::npos : comma - from);
+					ok = number(part, at[k]) && (k == 3 || comma != std::string::npos);
+					from = (comma == std::string::npos) ? spec.size() : comma + 1;
+				}
+				if (!ok) {
+					std::printf("rda: --drag wants X1,Y1,X2,Y2 in layout units, like 40,60,300,60\n");
+					return 1;
+				}
+				auto step = [&](float x, float y, bool down) {
+					keys.push_back(std::string("\x02") + std::to_string(x) + "," +
+					               std::to_string(y) + "," + (down ? "1" : "0"));
+				};
+				step(at[0], at[1], false);
+				step(at[0], at[1], true);
+				constexpr int kSteps = 10;
+				for (int k = 1; k <= kSteps; ++k) {
+					const float t = static_cast<float>(k) / kSteps;
+					step(at[0] + (at[2] - at[0]) * t, at[1] + (at[3] - at[1]) * t, true);
+				}
+				keys.push_back("\x03");   // let go, unless --hold
+			}
+			else if (shooting && arg == "--hold") holdDrag = true;
+			// A click with Ctrl or Shift held through it, which a chord cannot do: a chord
+			// holds its modifiers for one frame, and a click is a press and a release. In
+			// order with --key and --drag, so a selection can be built a click at a time.
+			else if (shooting && arg == "--click" && i + 1 < args.size()) {
+				std::string spec = args[++i];
+				bool ctrl = false, shift = false;
+				for (;;) {
+					if (spec.rfind("Ctrl+", 0) == 0)       { ctrl = true;  spec.erase(0, 5); }
+					else if (spec.rfind("Shift+", 0) == 0) { shift = true; spec.erase(0, 6); }
+					else break;
+				}
+				const size_t comma = spec.find(',');
+				float x = 0.0f, y = 0.0f;
+				if (comma == std::string::npos || !number(spec.substr(0, comma), x) ||
+				    !number(spec.substr(comma + 1), y)) {
+					std::printf("rda: --click wants X,Y in layout units, Ctrl+ and Shift+ in front "
+					            "if they are held, like Ctrl+120,340\n");
+					return 1;
+				}
+				const std::string at = std::to_string(x) + "," + std::to_string(y);
+				keys.push_back(std::string("\x06") + (ctrl ? "1" : "0") + "," + (shift ? "1" : "0"));
+				keys.push_back(std::string("\x02") + at + ",1");
+				keys.push_back(std::string("\x02") + at + ",0");
+				keys.push_back(std::string("\x06") + "0,0");
+			}
+			else if (shooting && arg == "--a11y" && i + 1 < args.size()) a11yOut = args[++i];
+			// An input method part way through a word, in order with --key and --type, so
+			// "--key Tab --compose nihao" reaches a field and starts composing in it.
+			else if (shooting && arg == "--compose" && i + 1 < args.size()) {
+				keys.push_back(std::string("\x05") + args[++i]);
+			}
+			// Files let go of where the pointer is -- put it there with --hover first.
+			// Separated by ';', which is rarer in a path than a comma is.
+			else if (shooting && arg == "--files" && i + 1 < args.size()) {
+				keys.push_back(std::string("\x04") + args[++i]);
 			}
 			else if (shooting && arg == "--still")   { still = true;  stillSet = true; }
 			else if (shooting && arg == "--moving")  { still = false; stillSet = true; }
@@ -770,6 +1021,11 @@ namespace {
 				std::printf("rda: %s\n", schema.error.c_str());
 				return 1;
 			}
+			// state.ts's code runs here exactly as it would under a backend: compiled now,
+			// loaded once its signals exist, and reloaded when it is saved.
+			if (!withStateCode(schema, stateFile.string())) return 1;
+			gStateWatch.file = stateFile;
+			gStateWatch.remember();
 		}
 
 		const std::vector<fs::path> themes = filesIn(res / "themes", ".rdth");
@@ -825,8 +1081,17 @@ namespace {
 				rendeerStop();
 				return;
 			}
-			std::printf("rda: %zu signals, %zu tables, %zu commands\n",
-			            defined.signals, defined.tables, defined.commands);
+			std::printf("rda: %zu signals, %zu tables, %zu commands%s\n",
+			            defined.signals, defined.tables, defined.commands, stateSummary(schema).c_str());
+			if (!schema.code.empty()) {
+				std::string error;
+				if (!RDA::Layout::scriptHost().loadState(schema.code.data(), schema.code.size(), error)) {
+					std::printf("rda: %s\n", error.c_str());
+					gPrototypeRefused = true;
+					rendeerStop();
+					return;
+				}
+			}
 
 			// A file first, then generated rows, then single values: each is more
 			// specific than the one before, so the last word goes to the shortest thing
@@ -930,6 +1195,7 @@ namespace {
 		// returned yet -- but a static says plainly that the loop owns it.
 		int taken = 0;
 		int tick = 0;
+		size_t sentKeys = 0;
 		float sinceStart = 0.0f;    // milliseconds the interface has been running
 		float waited = 0.0f;        // since the last frame of a sequence
 		float stillFor = 0.0f;      // how long nothing has moved
@@ -943,6 +1209,15 @@ namespace {
 			// widget's own callback.
 			if (gPrototypeRouted) gPrototypeRouter.update();
 			else                  gPrototypeHost.reloadIfChanged();
+			// state.ts, a few times a second rather than every frame: a stat of each file
+			// it imports is cheap, and a save is a human pressing a key.
+			if (!shooting && !gStateWatch.file.empty()) {
+				gStateWatch.sinceCheck += dt;
+				if (gStateWatch.sinceCheck >= 0.25f) {
+					gStateWatch.sinceCheck = 0.0f;
+					if (gStateWatch.changed()) reloadPrototypeState();
+				}
+			}
 			if (!shooting || gPrototypeRefused) return;
 
 			// The first frame's dt is not a frame's worth of time: it carries everything
@@ -953,6 +1228,9 @@ namespace {
 			// animated yet. So the opening frames are not counted, and no single frame may
 			// contribute more than a frame plausibly takes.
 			++tick;
+			// Asked for from the first frame, so the tree exists by the time anything is
+			// captured; it is built by the walk, and only once somebody wants it.
+			if (tick == 1 && !a11yOut.empty()) getMainWindow()->describeForAccessibility();
 			if (tick <= 2) return;
 			const float ms = (std::min)(dt * 1000.0f, 100.0f);
 			sinceStart += ms;
@@ -982,6 +1260,60 @@ namespace {
 			// Held until the first picture, so a large number means "to the end". After
 			// that it stops, or a sequence would keep scrolling between its frames.
 			if (scrolling != 0.0f) rendeerSetSyntheticScroll(taken == 0 ? scrolling : 0.0f);
+
+			// The keys, one a frame, before anything is counted as settled: a shortcut's
+			// handler writes state, the binding applies on the frame after, and whatever
+			// it set moving starts from there. So the settle time and the wait for
+			// stillness both begin again once the last key is down.
+			if (sentKeys < keys.size()) {
+				const std::string& next = keys[sentKeys++];
+				if (!next.empty() && next[0] == '\x02') {
+					// A step of a drag. Kept in the pointer the frames after it, so the
+					// pointer stays where the drag left it.
+					float x = 0.0f, y = 0.0f;
+					int down = 0;
+					std::sscanf(next.c_str() + 1, "%f,%f,%d", &x, &y, &down);
+					hovering = true;
+					pointerX = x;
+					pointerY = y;
+					pressing = (down != 0);
+					rendeerSetSyntheticPointer(pointerX, pointerY, pressing);
+				}
+				else if (!next.empty() && next[0] == '\x03') {
+					pressing = holdDrag;
+					rendeerSetSyntheticPointer(pointerX, pointerY, pressing);
+				}
+				else if (!next.empty() && next[0] == '\x04') {
+					std::vector<std::string> paths;
+					size_t from = 1;
+					while (from <= next.size()) {
+						const size_t semi = next.find(';', from);
+						const std::string one = next.substr(from, semi == std::string::npos
+						                                          ? std::string::npos : semi - from);
+						if (!one.empty()) paths.push_back(one);
+						if (semi == std::string::npos) break;
+						from = semi + 1;
+					}
+					rendeerSyntheticDrop(paths);
+				}
+				else if (!next.empty() && next[0] == '\x06') {
+					int ctrl = 0, shift = 0;
+					std::sscanf(next.c_str() + 1, "%d,%d", &ctrl, &shift);
+					rendeerSetSyntheticModifiers(ctrl != 0, shift != 0);
+				}
+				else if (!next.empty() && next[0] == '\x05') {
+					// The method's cursor at the end of what it is composing, in characters.
+					int characters = 0;
+					for (size_t c = 1; c < next.size(); ++c)
+						if ((static_cast<unsigned char>(next[c]) & 0xC0) != 0x80) ++characters;
+					rendeerSyntheticComposition(next.c_str() + 1, characters);
+				}
+				else if (!next.empty() && next[0] == '\x01') rendeerSyntheticText(next.c_str() + 1);
+				else                                     rendeerSyntheticChord(next.c_str());
+				sinceStart = 0.0f;
+				stillFor = 0.0f;
+				return;
+			}
 
 			// The opening moments are thrown away on purpose: a layout's motion starts
 			// from nothing and its first frame is a picture of an interface mid-arrival.
@@ -1038,6 +1370,18 @@ namespace {
 			std::printf("rda: %s  (%ux%u)\n", target.string().c_str(), w, h);
 			std::fflush(stdout);
 
+			// The tree, beside the picture of the same frame.
+			if (!a11yOut.empty()) {
+				const auto tree = getMainWindow()->gui().accessibleTree();
+				std::ofstream text(a11yOut, std::ios::trunc);
+				if (tree && text) {
+					text << RDA::formatAccessibleTree(*tree);
+					std::printf("rda: %s  (%zu nodes)\n", a11yOut.c_str(), tree->nodes.size());
+				} else {
+					std::printf("rda: no accessibility tree to write to %s\n", a11yOut.c_str());
+				}
+			}
+
 			if (++taken >= frames) rendeerStop();
 		};
 
@@ -1089,7 +1433,10 @@ int main(int argc, char** argv) {
 	// know it exists.
 	std::vector<std::string> meshes;
 	for (size_t i = 0; i < args.size();) {
-		if (args[i] == "--mesh" && i + 1 < args.size()) {
+		if (args[i] == "--no-runtime-code") {
+			gNoRuntimeCode = true;
+			args.erase(args.begin() + static_cast<ptrdiff_t>(i));
+		} else if (args[i] == "--mesh" && i + 1 < args.size()) {
 			meshes.push_back(args[i + 1]);
 			args.erase(args.begin() + static_cast<ptrdiff_t>(i),
 			           args.begin() + static_cast<ptrdiff_t>(i) + 2);

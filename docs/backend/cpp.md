@@ -56,6 +56,23 @@ RDA::State::onSave([] {
 Until something is bound, the command exists and does nothing, and whatever calls it
 reports that rather than failing quietly.
 
+A command declared with `params` is bound with a function of them, in order and typed:
+
+```cpp
+RDA::State::onRename([](double id, const std::string& name) { renameLine(id, name); });
+```
+
+One state.ts answers -- an action -- runs inside the engine; `onX` on it takes
+`const CommandArgs&` and runs after the action. Any command can be run with its result:
+
+```cpp
+std::string result, error;
+RDA::State::call("validate", RDA::CommandArgs().addText("ABC-1234"), result, error);  // "true"
+```
+
+A computed signal has a getter and no setter. The code that computes it is in the generated
+header, and `define()` loads it.
+
 ## Tables
 
 ```cpp

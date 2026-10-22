@@ -11,9 +11,10 @@ engine's own build staged into `bin/`.
 | `RDA_BUILD_C_API` | ON | the `rendeer_c` shared library. Off for a C++-only application |
 | `RDA_COMPILE_LAYOUTS` | ON | recompile `.tsx` during the build. Off uses what is committed |
 | `RDA_ENABLE_SCRIPTING` | OFF | an embedded JavaScript host at run time. See below |
+| `RDA_RUNTIME_CODE` | ON | layouts may define functions that run. Off makes any binding that would need one a build error -- see [functions](../frontend/functions.md) |
 
-`RDA_ENABLE_SCRIPTING` stays off because *a shipped binary evaluates no JavaScript* is a
-promise this engine makes, and this switch is what qualifies it.
+`RDA_ENABLE_SCRIPTING` is an older thing than a layout's functions: a host for the 3D scene,
+off by default, and unrelated to `RDA_RUNTIME_CODE`.
 
 Three more that are not switches:
 

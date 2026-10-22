@@ -28,6 +28,14 @@ namespace RDA::Layout {
 	bool transformModule(const std::string& sourcePath, const std::string& esbuildPath,
 	                     bool withJsx, std::string& js, std::string& error);
 
+	// A layout, bundled as one ES module rather than an IIFE: every top-level name of
+	// every file it imports then lives in one flat scope -- renamed apart where two files
+	// used the same one -- which is the scope a binding's names are resolved in. The
+	// source map comes back separately, as JSON, for turning a line of the bundle back
+	// into a line of the file it came from. See ScriptCompiler.h.
+	bool bundleLayout(const std::string& sourcePath, const std::string& esbuildPath,
+	                  std::string& js, std::string& sourceMap, std::string& error);
+
 	// JavaScript prepended before a transformed module is evaluated: the colour
 	// helpers a theme is written with. Ambient rather than imported, because the
 	// transform does not bundle and an import would have nothing to resolve it.
@@ -36,6 +44,13 @@ namespace RDA::Layout {
 	// The rest of what a layout is evaluated with: signal(), which declares state the
 	// layout owns. Themes do not get it -- a theme has no state to declare.
 	const char* layoutPrelude();
+
+	// What state.ts is evaluated with at build: defineState, defineTables and
+	// defineCommands, which hand back what they were given -- they exist for TypeScript, so
+	// the editor types run-time code as it runs -- and __rdaEvaluateComputed, which turns
+	// the declarations into the starting values they describe and runs every computed one
+	// once against them, for its type and its starting value.
+	const char* statePrelude();
 
 	// What a mesh is written with: boxes, shapes, and the three operations that combine
 	// them. Also ambient, for the same reason -- and separate from the layout's prelude

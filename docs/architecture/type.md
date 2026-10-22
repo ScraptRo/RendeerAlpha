@@ -70,9 +70,12 @@ Contiguous blocks rather than a set, because a TrueType packer wants ranges anyw
 because it makes "where is this glyph" a walk over seven entries rather than a hash lookup,
 on a path that runs once per glyph per frame.
 
-**What is not baked**: Greek, Cyrillic, Hebrew, Arabic, CJK, emoji. Those are not a wider
-range — they are shaping, bidirectional layout, colour, and an atlas that cannot be baked
-once at startup. The line is drawn at Latin and it is drawn on purpose.
+**What is not baked up front**: everything else. Greek, Cyrillic, CJK and monochrome
+symbols are baked the first time they are drawn, from the first face in `config.font` that
+has them, or failing that from the faces the system ships for them, loaded one at a time
+-- see [themes](../frontend/themes.md). What is not done at all is shaping,
+bidirectional layout and colour glyphs, so Hebrew, Arabic and colour emoji do not draw
+correctly. Those are not a wider range; they are a different job.
 
 **And what happens at that line is the whole point.** Anything undrawable renders as a
 hollow box, not as blank space. The box is stroked into the atlas by the engine at every

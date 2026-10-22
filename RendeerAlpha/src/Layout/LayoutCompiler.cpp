@@ -1,12 +1,22 @@
 ﻿#include <Layout/LayoutCompiler.h>
 #include <Layout/ExpressionParser.h>
 #include "ModuleTransform.h"
+#include "ScriptCompiler.h"
+#include "ScriptPreludes.h"
 #include <Logger/Logger.h>
 #include <vendor/quickjs/quickjs.h>
 
 #include <chrono>
 #include <cstdio>
 #include <deque>
+#include <functional>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 #include <filesystem>
 #include <fstream>
 #include <unordered_map>
@@ -15,6 +25,58 @@ namespace RDA::Layout {
 
 	namespace {
 		using Clock = std::chrono::steady_clock;
+
+		// The options of the compile in progress, reached from the walk without threading
+		// them through every function of it. One compile at a time per thread.
+		thread_local const CompileOptions* gOptions = nullptr;
+		const CompileOptions& options() {
+			static const CompileOptions defaults;
+			return gOptions ? *gOptions : defaults;
+		}
+		struct OptionsScope {
+			const CompileOptions* previous;
+			explicit OptionsScope(const CompileOptions& now) : previous(gOptions) { gOptions = &now; }
+			~OptionsScope() { gOptions = previous; }
+		};
+
+		// How much stack a compile runs on, and how much of it QuickJS may use.
+		//
+		// acorn is a recursive-descent parser running inside an interpreter that recurses in C
+		// for every JavaScript call, and in a Debug build each of those frames is large -- so
+		// reading even a small bundle went through the main thread's one megabyte and took
+		// the process down with it, before QuickJS's own limit, measured from wherever the
+		// runtime happened to be created, had said anything. A thread of its own with room to
+		// spare, and the limit set just under it, makes running out an error like any other.
+		constexpr size_t kCompileStack = size_t{ 64 } * 1024 * 1024;
+		constexpr size_t kCompileJsStack = size_t{ 56 } * 1024 * 1024;
+
+		// Runs `work` on a thread with kCompileStack of stack, and waits for it. Reserved, not
+		// committed: an untouched page costs nothing.
+		bool onLargeStack(const std::function<void()>& work) {
+#if defined(_WIN32)
+			struct Box { const std::function<void()>* work; };
+			Box box{ &work };
+			HANDLE thread = CreateThread(nullptr, kCompileStack,
+				[](LPVOID raw) -> DWORD { (*static_cast<Box*>(raw)->work)(); return 0; },
+				&box, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+			if (!thread) return false;
+			WaitForSingleObject(thread, INFINITE);
+			CloseHandle(thread);
+			return true;
+#else
+			pthread_attr_t attr;
+			if (pthread_attr_init(&attr) != 0) return false;
+			pthread_attr_setstacksize(&attr, kCompileStack);
+			pthread_t thread;
+			const bool started = pthread_create(&thread, &attr,
+				[](void* raw) -> void* { (*static_cast<const std::function<void()>*>(raw))(); return nullptr; },
+				const_cast<std::function<void()>*>(&work)) == 0;
+			pthread_attr_destroy(&attr);
+			if (!started) return false;
+			pthread_join(thread, nullptr);
+			return true;
+#endif
+		}
 
 		double millisSince(Clock::time_point start) {
 			return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -36,6 +98,18 @@ namespace RDA::Layout {
 			JS_FreeValue(ctx, stack);
 			JS_FreeValue(ctx, error);
 			return text;
+		}
+
+		// The helpers a file is built with, evaluated as a script of their own before it: in
+		// front of its source, a frame inside one would be reported as a line of the file --
+		// and every line of the file after them would be off by however long they are.
+		bool evaluateHelpers(JSContext* ctx, const std::string& helpers, std::string& error) {
+			JSValue result = JS_Eval(ctx, helpers.c_str(), helpers.size(), "<rda helpers>",
+			                         JS_EVAL_TYPE_GLOBAL);
+			const bool ok = !JS_IsException(result);
+			if (!ok) error = exceptionText(ctx);
+			JS_FreeValue(ctx, result);
+			return ok;
 		}
 
 		// Children arrive as trailing arguments and may themselves be arrays, since a
@@ -139,7 +213,7 @@ namespace RDA::Layout {
 		bool readBinding(JSContext* ctx, JSValueConst value, BlueprintBuilder& builder,
 		                 uint32_t node, const std::string& key, const std::string& nodeId,
 		                 std::string& error, const std::string& rowParam,
-		                 const DeclaredMap& declared) {
+		                 const DeclaredMap& declared, ScriptPlanner& planner) {
 			const char* raw = JS_ToCString(ctx, value);
 			const std::string source = raw ? raw : "";
 			if (raw) JS_FreeCString(ctx, raw);
@@ -150,19 +224,48 @@ namespace RDA::Layout {
 			}
 
 			const bool isEvent = namesAnEvent(key);
-			const ParseResult parsed = parseBinding(source, isEvent, rowParam);
-			if (!parsed.ok) {
-				error = "in '" + key + "' on '" + nodeId + "': " + parsed.error +
-				        "\n  " + pointAt(source, parsed.position);
-				return false;
+			// The grammar first: what it accepts runs in the VM with its dependencies known
+			// now, and a name followed by `(` may be one of the layout's own functions.
+			const CallableName callable = [&planner](const std::string& name) {
+				return planner.isFunction(name);
+			};
+			const ParseResult parsed = parseBinding(source, isEvent, rowParam, callable);
+			Program program;
+			if (parsed.ok) {
+				if (!parsed.calls.empty()) {
+					if (!options().allowRuntimeCode) {
+						error = "in '" + key + "' on '" + nodeId + "': this calls " + parsed.calls.front() +
+						        "(), which runs at run time, and this build was asked for no "
+						        "run-time code (--no-runtime-code)";
+						return false;
+					}
+					std::string why;
+					if (!planner.noteCalls(source, rowParam, parsed.calls, why)) {
+						error = "in '" + key + "' on '" + nodeId + "': " + why + "\n  " + source;
+						return false;
+					}
+				}
+				program = parsed.program;
+			} else {
+				// What the grammar does not cover is JavaScript instead, unless it is wrong
+				// rather than merely bigger -- a name that is nothing, a write in a value
+				// binding -- which is still refused, here, with the reason.
+				std::string slot, why;
+				if (!planner.addBinding(source, rowParam, isEvent, parsed.error, slot, why)) {
+					error = "in '" + key + "' on '" + nodeId + "': " + why +
+					        "\n  " + (options().allowRuntimeCode ? source : pointAt(source, parsed.position));
+					return false;
+				}
+				program.code = { { Op::RunScript, 0 }, { Op::Halt, 0 } };
+				program.signals = { slot };
 			}
 
 			// A name the layout declared for itself is stored scoped, so two layouts
-			// may each have an `open` without being the same signal. Commands and columns
-			// carry their own mark and are left alone.
-			Program program = parsed.program;
+			// may each have an `open` without being the same signal. Commands, columns and
+			// the layout's functions carry their own mark and are left alone.
 			for (std::string& pooled : program.signals) {
-				if (!pooled.empty() && (pooled.front() == '@' || pooled.front() == '#')) continue;
+				if (!pooled.empty() && (pooled.front() == '@' || pooled.front() == '#' ||
+				                        pooled.front() == '$' || pooled.front() == '%')) continue;
 				const auto found = declared.find(pooled);
 				if (found != declared.end()) pooled = found->second;
 			}
@@ -176,7 +279,7 @@ namespace RDA::Layout {
 		bool readProps(JSContext* ctx, JSValueConst props, BlueprintBuilder& builder,
 		               uint32_t node, const std::string& nodeId, std::string& error,
 		               const std::string& type, const std::string& rowParam,
-		               const DeclaredMap& declared) {
+		               const DeclaredMap& declared, ScriptPlanner& planner) {
 			if (!JS_IsObject(props)) return true;
 
 			JSPropertyEnum* names = nullptr;
@@ -199,7 +302,7 @@ namespace RDA::Layout {
 				if (key == "id" || key == "children") continue;
 				// A list's row template is structure, not a property: it was called once
 				// above and its result queued as this node's child.
-				if (key == "row" && type == "list") continue;
+				if (key == "row" && (type == "list" || type == "tree")) continue;
 
 				JSValue value = JS_GetProperty(ctx, props, names[i].atom);
 				if (JS_IsString(value)) {
@@ -217,7 +320,7 @@ namespace RDA::Layout {
 					                JS_ToBool(ctx, value) ? 1.0f : 0.0f, 0);
 				} else if (JS_IsFunction(ctx, value)) {
 					ok = readBinding(ctx, value, builder, node, key, nodeId, error, rowParam,
-					                 declared);
+					                 declared, planner);
 				} else {
 					error = "'" + key + "' on '" + nodeId + "' is not a string, number, "
 					        "boolean or binding";
@@ -326,7 +429,8 @@ namespace RDA::Layout {
 
 		bool flatten(JSContext* ctx, JSValue root, BlueprintBuilder& builder, std::string& error,
 		             const DeclaredMap& declared,
-		             const std::vector<DeclaredSignal>& declaredSignals) {
+		             const std::vector<DeclaredSignal>& declaredSignals,
+		             ScriptPlanner& planner) {
 			// Breadth-first, so a node's children land contiguously and every parent is
 			// written before them. Both are properties the loader relies on.
 			std::deque<Pending> queue;
@@ -422,7 +526,7 @@ namespace RDA::Layout {
 				// time. What varies per row are the column reads inside its bindings.
 				std::string templateParam;
 				JSValue rowTemplate = JS_UNDEFINED;
-				if (type == "list" && JS_IsObject(props)) {
+				if ((type == "list" || type == "tree") && JS_IsObject(props)) {
 					JSValue fn = JS_GetPropertyStr(ctx, props, "row");
 					if (JS_IsFunction(ctx, fn)) {
 						const char* raw = JS_ToCString(ctx, fn);
@@ -470,7 +574,7 @@ namespace RDA::Layout {
 				}
 
 				if (!readProps(ctx, props, builder, index, id, error, type, pending.rowParam,
-				               declared)) {
+				               declared, planner)) {
 					JS_FreeValue(ctx, props);
 					JS_FreeValue(ctx, pending.value);
 					ok = false;
@@ -561,10 +665,12 @@ namespace RDA::Layout {
 			return out;
 		}
 
-		bool evaluate(const std::string& js, const std::string& name, const std::string& propsJson,
-		              BlueprintBuilder& builder, std::string& error) {
+		bool evaluate(const std::string& bundle, const std::string& sourceMap, const std::string& name,
+		              BlueprintBuilder& builder, CompileResult& compiled, std::string& error) {
+			const std::string& propsJson = options().propsJson;
 			JSRuntime* runtime = JS_NewRuntime();
 			if (!runtime) { error = "cannot create a JS runtime"; return false; }
+			JS_SetMaxStackSize(runtime, kCompileJsStack);
 			JSContext* ctx = JS_NewContext(runtime);
 			if (!ctx) { JS_FreeRuntime(runtime); error = "cannot create a JS context"; return false; }
 
@@ -573,14 +679,25 @@ namespace RDA::Layout {
 			JS_SetPropertyStr(ctx, global, "h", JS_NewCFunction(ctx, js_h, "h", 3));
 
 			// The helpers first, so the module can call them as it is evaluated.
-			const std::string source =
-				std::string(colourPrelude()) + layoutPrelude() + js;
-			JSValue result = JS_Eval(ctx, source.c_str(), source.size(), name.c_str(),
-			                         JS_EVAL_TYPE_GLOBAL);
-			if (JS_IsException(result)) {
+			std::string wrapped;
+			if (!wrapBundle(bundle, wrapped, error)) {
+				JS_FreeValue(ctx, global);
+				JS_FreeContext(ctx);
+				JS_FreeRuntime(runtime);
+				return false;
+			}
+			const std::string helpers = std::string(colourPrelude()) + formatPrelude() +
+				buildTimerPrelude() + layoutPrelude();
+			JSValue result = evaluateHelpers(ctx, helpers, error)
+				? JS_Eval(ctx, wrapped.c_str(), wrapped.size(), name.c_str(), JS_EVAL_TYPE_GLOBAL)
+				: JS_EXCEPTION;
+			if (!error.empty()) {
+				// The helpers did not evaluate, which is the engine's mistake; said as it was.
+			} else if (JS_IsException(result)) {
 				error = exceptionText(ctx);
 			} else {
-				JSValue exports = JS_GetPropertyStr(ctx, global, "__module");
+				ScriptPlanner planner(ctx, bundle, sourceMap, name, options().allowRuntimeCode);
+				JSValue exports = JS_GetPropertyStr(ctx, global, "__rdaModule");
 				JSValue builderFn = JS_GetPropertyStr(ctx, exports, "default");
 
 				// Collected before the tree is walked, because the bindings in it name
@@ -609,7 +726,20 @@ namespace RDA::Layout {
 						error = "the builder returned nothing to lay out";
 					} else {
 						ok = error.empty() &&
-						     flatten(ctx, tree, builder, error, declared, declaredSignals);
+						     flatten(ctx, tree, builder, error, declared, declaredSignals, planner);
+						// After the tree, because the tree is what said which functions are
+						// reached: the run-time module, written and compiled.
+						if (ok && planner.needed()) {
+							BlueprintScript script;
+							ok = planner.emit(declared, script, error);
+							if (ok) {
+								compiled.scriptBytes = script.code.size();
+								builder.setScript(std::move(script));
+							}
+						}
+						compiled.warnings = planner.warnings();
+						compiled.scriptBindings = planner.bindingCount();
+						compiled.scriptCalls = planner.callCount();
 					}
 					JS_FreeValue(ctx, tree);
 					JS_FreeValue(ctx, props);
@@ -632,24 +762,145 @@ namespace RDA::Layout {
 		return path.string();
 	}
 
+	static CompileResult compileOnThisThread(const std::string& sourcePath, const CompileOptions& options);
+
 	CompileResult compileFile(const std::string& sourcePath, const CompileOptions& options) {
 		CompileResult result;
+		const bool ran = onLargeStack([&] { result = compileOnThisThread(sourcePath, options); });
+		if (!ran) result = compileOnThisThread(sourcePath, options);
+		return result;
+	}
+
+	static CompileResult compileOnThisThread(const std::string& sourcePath, const CompileOptions& options) {
+		CompileResult result;
+		const OptionsScope scope(options);
 
 		const Clock::time_point transformStart = Clock::now();
-		std::string js;
-		if (!transformModule(sourcePath, options.esbuildPath, /*withJsx*/ true, js, result.error))
+		std::string js, sourceMap;
+		if (!bundleLayout(sourcePath, options.esbuildPath, js, sourceMap, result.error))
 			return result;
 		result.transformMs = millisSince(transformStart);
 
 		const Clock::time_point evaluateStart = Clock::now();
 		BlueprintBuilder builder;
-		if (!evaluate(js, sourcePath, options.propsJson, builder, result.error)) return result;
+		if (!evaluate(js, sourceMap, sourcePath, builder, result, result.error)) return result;
 		result.evaluateMs = millisSince(evaluateStart);
+		for (const std::string& warning : result.warnings) RDA_LOG_WARNING(sourcePath << ": " << warning);
 
 		result.bytes     = builder.finish();
 		result.nodeCount = builder.nodeCount();
 		result.bindingCount = builder.bindingCount();
 		result.ok        = true;
+		return result;
+	}
+
+	static StateCodeResult compileStateOnThisThread(const std::string& statePath,
+	                                                const CompileOptions& options) {
+		StateCodeResult result;
+		const OptionsScope scope(options);
+		std::string& error = result.error;
+
+		std::string js, sourceMap;
+		if (!bundleLayout(statePath, options.esbuildPath, js, sourceMap, error)) return result;
+		std::unordered_map<std::string, std::string> exports;
+		std::string wrapped;
+		if (!wrapBundle(js, wrapped, exports, error)) return result;
+
+		JSRuntime* runtime = JS_NewRuntime();
+		if (!runtime) { error = "cannot create a JS runtime"; return result; }
+		JS_SetMaxStackSize(runtime, kCompileJsStack);
+		JSContext* ctx = JS_NewContext(runtime);
+		if (!ctx) { JS_FreeRuntime(runtime); error = "cannot create a JS context"; return result; }
+
+		bool ok = evaluateHelpers(ctx, std::string(colourPrelude()) + formatPrelude() + buildTimerPrelude() +
+		                          statePrelude(), error);
+		if (ok) {
+			JSValue evaluated = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), statePath.c_str(), JS_EVAL_TYPE_GLOBAL);
+			ok = !JS_IsException(evaluated);
+			if (!ok) error = exceptionText(ctx);
+			JS_FreeValue(ctx, evaluated);
+		}
+
+		// The functions a declaration names: `compute` on a field of state, `run` on a
+		// command. Their source is what toString() gives, which is the bundle's own text --
+		// so it is found there again for its lines, as a binding's is.
+		struct Found { std::string name, source; };
+		std::vector<Found> computed, actions;
+		auto collect = [&](const char* exportName, const char* key, std::vector<Found>& into) {
+			JSValue global = JS_GetGlobalObject(ctx);
+			JSValue module = JS_GetPropertyStr(ctx, global, "__rdaModule");
+			JSValue table = JS_GetPropertyStr(ctx, module, "exports");
+			JSValue object = JS_GetPropertyStr(ctx, table, exportName);
+			JSPropertyEnum* names = nullptr;
+			uint32_t count = 0;
+			if (JS_IsObject(object) &&
+			    JS_GetOwnPropertyNames(ctx, &names, &count, object, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+				for (uint32_t i = 0; i < count; ++i) {
+					JSValue entry = JS_GetProperty(ctx, object, names[i].atom);
+					JSValue fn = JS_IsObject(entry) ? JS_GetPropertyStr(ctx, entry, key) : JS_UNDEFINED;
+					if (JS_IsFunction(ctx, fn)) {
+						const char* name = JS_AtomToCString(ctx, names[i].atom);
+						const char* text = JS_ToCString(ctx, fn);
+						if (name && text) into.push_back(Found{ name, text });
+						if (text) JS_FreeCString(ctx, text);
+						if (name) JS_FreeCString(ctx, name);
+					}
+					JS_FreeValue(ctx, fn);
+					JS_FreeValue(ctx, entry);
+				}
+				JS_FreePropertyEnum(ctx, names, count);
+			}
+			JS_FreeValue(ctx, object);
+			JS_FreeValue(ctx, table);
+			JS_FreeValue(ctx, module);
+			JS_FreeValue(ctx, global);
+		};
+		if (ok) {
+			collect("state", "compute", computed);
+			collect("commands", "run", actions);
+		}
+
+		if (ok && (!computed.empty() || !actions.empty())) {
+			if (!options.allowRuntimeCode) {
+				error = computed.empty()
+					? "commands." + actions.front().name + " is answered by state.ts"
+					: "state." + computed.front().name + " is computed by state.ts";
+				error += ", which is code that runs -- and this build was asked for no run-time code "
+				         "(--no-runtime-code)";
+				ok = false;
+			}
+			ScriptPlanner planner(ctx, js, sourceMap, statePath, options.allowRuntimeCode);
+			// The declarations are top-level names of the bundle; code that names one means
+			// the live one. Under whatever name esbuild gave it.
+			std::unordered_map<std::string, std::string> aliases;
+			for (const char* live : { "state", "tables", "commands" }) {
+				const auto found = exports.find(live);
+				if (found != exports.end()) aliases[found->second] = live;
+			}
+			if (ok) ok = planner.setStateAliases(aliases, error);
+			for (size_t i = 0; ok && i < computed.size(); ++i) ok = planner.addComputed(computed[i].name, computed[i].source, error);
+			for (size_t i = 0; ok && i < actions.size(); ++i) ok = planner.addAction(actions[i].name, actions[i].source, error);
+			BlueprintScript script;
+			if (ok) ok = planner.emit({}, script, error);
+			if (ok) {
+				result.bytes = writeScriptSection(script);
+				result.computedCount = computed.size();
+				result.actionCount = actions.size();
+			}
+			result.warnings = planner.warnings();
+		}
+
+		JS_FreeContext(ctx);
+		JS_FreeRuntime(runtime);
+		result.ok = ok;
+		return result;
+	}
+
+	StateCodeResult compileStateCode(const std::string& statePath, const CompileOptions& options) {
+		StateCodeResult result;
+		const bool ran = onLargeStack([&] { result = compileStateOnThisThread(statePath, options); });
+		if (!ran) result = compileStateOnThisThread(statePath, options);
+		for (const std::string& warning : result.warnings) RDA_LOG_WARNING(statePath << ": " << warning);
 		return result;
 	}
 

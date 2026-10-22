@@ -6,6 +6,7 @@
 #include <chrono>
 #include <Core/Datatypes.h>
 #include <GraphicalObjects/GuiTypes.h>
+#include <GraphicalObjects/ViewportEvents.h>
 
 typedef struct VmaAllocator_T* VmaAllocator;
 
@@ -113,6 +114,24 @@ namespace RDA {
 		void setCommands(const std::string& name, std::vector<DrawCommand> commands);
 		const std::vector<DrawCommand>* commands(const std::string& name) const;
 
+		// ---- what happens to one, for either half ----
+		// Every viewport reports its size to events() when it changes -- on the first frame
+		// that places it, and whenever a splitter, a closed panel or the window moves its
+		// edges -- so a drawing can be made again at the new size instead of being left
+		// stretched or cropped. A hidden viewport is not laid out, and keeps its last size.
+		//
+		// The pointer is reported only once somebody says they are listening. Until then a
+		// viewport is a picture, and a press or the wheel goes through it to whatever is
+		// around it -- which is what an existing viewport inside a scroll view relies on.
+		// Listening, it is a surface: a press over it is its own and a drag that starts on
+		// it stays with it, and the wheel stops there.
+		void listen(const std::string& name, bool on);
+		bool listening(const std::string& name) const;
+
+		// What happened to each viewport, not yet taken. Safe from any thread; see
+		// ViewportEvents.h.
+		ViewportEventQueue& events() { return mEvents; }
+
 		// ---- what both halves ask ----
 		// The size the named viewport was last laid out at, in interface pixels. Zero
 		// until a frame has placed it -- a backend that draws before the first frame is
@@ -162,6 +181,7 @@ namespace RDA {
 			std::vector<DrawCommand>                 commands;
 			uint32_t                                 clearColor = 0xFF080505u; // the engine's slate
 			bool                                     hasCommands = false;
+			glm::vec2                                reportedSize{ -1.0f }; // last told to events()
 		};
 		Slot* find(const std::string& name);
 		const Slot* find(const std::string& name) const;
@@ -169,6 +189,10 @@ namespace RDA {
 		// A handful at most, and looked up by name once per frame each, so a vector of
 		// pairs beats a hash map and keeps the order they were first seen in.
 		std::vector<std::pair<std::string, Slot>> mSlots;
+		// Names rather than a flag on a slot, because listening is usually said before the
+		// first frame has placed the viewport and made its slot.
+		std::vector<std::string> mListening;
+		ViewportEventQueue mEvents;
 		std::string mGpuViewport;
 		// The clock a recording animates on. Members rather than statics inside record(),
 		// so a second run in the same process starts from zero rather than from wherever

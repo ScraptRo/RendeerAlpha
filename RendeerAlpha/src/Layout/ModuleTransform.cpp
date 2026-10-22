@@ -130,6 +130,77 @@ namespace RDA::Layout {
 		return {};
 	}
 
+	namespace {
+		// esbuild on one file, with the flags that differ between the two callers.
+		bool runEsbuild(const std::string& sourcePath, const std::string& esbuildPath,
+		                const std::string& flags, std::string& js, std::string& error) {
+			const std::string exe = esbuildPath.empty() ? findEsbuild() : esbuildPath;
+			if (exe.empty()) {
+				error = "esbuild not found. Run 'npm install' in the engine checkout or in "
+				        "this project, set RDA_ESBUILD to a copy, or configure with "
+				        "-DRDA_COMPILE_LAYOUTS=OFF to use the blueprints as they are.";
+				return false;
+			}
+			const std::string command = "\"" + exe + "\" \"" + sourcePath + "\" " + flags;
+			std::string diagnostics;
+			if (!runCapturing(command, js, diagnostics)) {
+				error = !diagnostics.empty() ? diagnostics
+				                             : (js.empty() ? "esbuild failed" : js);
+				return false;
+			}
+			if (!diagnostics.empty()) RDA_LOG_WARNING(sourcePath << ":\n" << diagnostics);
+			return true;
+		}
+
+		// Base64, for the source map esbuild writes inline at the end of the bundle.
+		std::string decodeBase64(std::string_view text) {
+			auto value = [](char c) -> int {
+				if (c >= 'A' && c <= 'Z') return c - 'A';
+				if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+				if (c >= '0' && c <= '9') return c - '0' + 52;
+				if (c == '+') return 62;
+				if (c == '/') return 63;
+				return -1;
+			};
+			std::string out;
+			uint32_t bits = 0;
+			int count = 0;
+			for (const char c : text) {
+				const int v = value(c);
+				if (v < 0) continue;   // padding, line breaks
+				bits = (bits << 6) | static_cast<uint32_t>(v);
+				count += 6;
+				if (count >= 8) {
+					count -= 8;
+					out.push_back(static_cast<char>((bits >> count) & 0xFF));
+				}
+			}
+			return out;
+		}
+	}
+
+	bool bundleLayout(const std::string& sourcePath, const std::string& esbuildPath,
+	                  std::string& js, std::string& sourceMap, std::string& error) {
+		// No sources-content: the map is for line numbers, and the files it would carry are
+		// on disk beside the layout anyway.
+		if (!runEsbuild(sourcePath, esbuildPath,
+		                "--jsx-factory=h --jsx-fragment=Fragment --bundle --format=esm "
+		                "--target=es2020 --sourcemap=inline --sources-content=false",
+		                js, error))
+			return false;
+
+		constexpr std::string_view kMarker = "//# sourceMappingURL=data:application/json;base64,";
+		const size_t at = js.rfind(kMarker);
+		sourceMap.clear();
+		if (at != std::string::npos) {
+			size_t end = js.find('\n', at);
+			if (end == std::string::npos) end = js.size();
+			sourceMap = decodeBase64(std::string_view(js).substr(at + kMarker.size(), end - at - kMarker.size()));
+			js.erase(at);
+		}
+		return true;
+	}
+
 	bool transformModule(const std::string& sourcePath, const std::string& esbuildPath,
 	                     bool withJsx, std::string& js, std::string& error) {
 		const std::string exe = esbuildPath.empty() ? findEsbuild() : esbuildPath;
@@ -196,6 +267,101 @@ function signal(name, value, options) {
 )JS";
 	}
 
+
+	// What state.ts is evaluated with. See the header.
+	//
+	// The evaluator works on the declaration objects themselves, in place: a computed value's
+	// function closes over the module's own `state`, so the only way it can read starting
+	// values is for that very object to hand them out. Called after the declarations have
+	// been read, which is the last thing that needed them as they were written.
+	const char* statePrelude() {
+		return R"JS(
+function defineState(declaration) { return declaration; }
+function defineTables(declaration) { return declaration; }
+function defineCommands(declaration) { return declaration; }
+function __rdaEmptyTable() {
+  var none = [];
+  var t = {
+    length: 0,
+    at: function () { return undefined; },
+    toArray: function () { return []; },
+    forEach: function () {},
+    map: function () { return []; },
+    filter: function () { return []; },
+    find: function () { return undefined; },
+    findIndex: function () { return -1; },
+    some: function () { return false; },
+    every: function () { return true; },
+    reduce: function (f, start) { return arguments.length > 1 ? start : none.reduce(f); }
+  };
+  t[Symbol.iterator] = function () { return none[Symbol.iterator](); };
+  return t;
+}
+function __rdaEvaluateComputed(state, tables, commands) {
+  function isDecl(d) { return d !== null && typeof d === "object" && !Array.isArray(d); }
+  function computes(d) { return isDecl(d) && typeof d.compute === "function"; }
+  var raw = {}, results = {}, computing = {}, out = {};
+  Object.keys(state).forEach(function (k) { raw[k] = state[k]; });
+  function valueOf(k) {
+    var d = raw[k];
+    if (computes(d)) {
+      if ("value" in d) return d.value;
+      if (k in results) return results[k];
+      if (computing[k]) {
+        var loop = new Error("it reads state." + k + ", which is itself or is computed from it -- a value " +
+                             "made from its own last value never settles");
+        loop.__rdaPlain = true;
+        throw loop;
+      }
+      computing[k] = true;
+      try { results[k] = d.compute(); } finally { computing[k] = false; }
+      return results[k];
+    }
+    if (isDecl(d) && "value" in d) return d.value;
+    return d;
+  }
+  Object.keys(raw).forEach(function (k) {
+    Object.defineProperty(state, k, { get: function () { return valueOf(k); }, enumerable: true, configurable: true });
+  });
+  if (tables !== null && typeof tables === "object") {
+    Object.keys(tables).forEach(function (k) {
+      Object.defineProperty(tables, k, { value: __rdaEmptyTable(), enumerable: true, configurable: true, writable: true });
+    });
+  }
+  if (commands !== null && typeof commands === "object") {
+    Object.keys(commands).forEach(function (k) {
+      Object.defineProperty(commands, k, { enumerable: true, configurable: true, writable: true, value: function () {
+        var e = new Error("it calls commands." + k + " -- a computed value runs every time what it reads " +
+                          "changes, and a command changes something. Call it from an action instead");
+        e.__rdaPlain = true;
+        throw e;
+      } });
+    });
+  }
+  function noTimer() {
+    var e = new Error("it starts a timer -- a computed value runs every time what it reads changes, " +
+                      "and a timer is something happening. Start it from an action instead");
+    e.__rdaPlain = true;
+    throw e;
+  }
+  var savedTimeout = typeof setTimeout === "function" ? setTimeout : undefined;
+  var savedInterval = typeof setInterval === "function" ? setInterval : undefined;
+  setTimeout = noTimer;
+  setInterval = noTimer;
+  try {
+    Object.keys(raw).forEach(function (k) {
+      if (!computes(raw[k]) || "value" in raw[k]) return;
+      try { out[k] = { value: valueOf(k) }; }
+      catch (e) { out[k] = { error: String(e && e.message ? e.message : e), plain: !!(e && e.__rdaPlain) }; }
+    });
+  } finally {
+    setTimeout = savedTimeout;
+    setInterval = savedInterval;
+  }
+  return out;
+}
+)JS";
+	}
 
 	// What a mesh is written with.
 	//

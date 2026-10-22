@@ -114,10 +114,15 @@ One dockable panel; its children are what it holds.
 | `size` | panes: how wide or tall its pane starts |
 | `col`, `row` | tiles: which cell it starts in; unset means wherever it fits |
 | `cols`, `rows` | tiles: how many cells wide and tall it starts (default 3 × 3) |
+| `x`, `y`, `w`, `h` | floating: where it starts and how big. Unset, it starts near the top left, stepped down and across from any other floating panel that would be in the same place |
 
 All of these are where a panel *starts*. Once it has been placed — by the layout, or by a
 restored `persist` file — where it sits belongs to whoever dragged it, and the layout does
 not pull it back.
+
+A press anywhere on a floating panel brings it to the front, and the last one brought
+forward is on top. The order is saved with the rest of a `persist` file, so a restart puts
+them back in the same stack.
 
 ## `<header>` — a bar of your own
 

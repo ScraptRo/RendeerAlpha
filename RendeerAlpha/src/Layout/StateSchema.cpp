@@ -1,8 +1,10 @@
 ﻿#include <Layout/StateSchema.h>
 #include "ModuleTransform.h"
+#include "ScriptPreludes.h"
 #include <vendor/tinyxml2/tinyxml2.h>
 #include <vendor/quickjs/quickjs.h>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -124,6 +126,10 @@ namespace RDA::Layout {
 			if (JS_IsNumber(value)) {
 				double number = 0.0;
 				JS_ToFloat64(ctx, &number, value);
+				// Every language spells NaN differently and C++ not at all; a computed value
+				// that started as one -- an average over an empty table -- starts at zero,
+				// and the engine works out the real one as soon as the code is loaded.
+				if (!std::isfinite(number)) number = 0.0;
 				std::ostringstream out;
 				out << number;
 				field.type = StateType::Number;
@@ -137,25 +143,41 @@ namespace RDA::Layout {
 				if (text) JS_FreeCString(ctx, text);
 				return true;
 			}
-			error = "'" + field.name + "' is a " +
-			        (JS_IsObject(value) ? "object" : "value") +
-			        "; state holds a number, a boolean or a string";
+			error = "'" + field.name + "' is " +
+			        (JS_IsFunction(ctx, value) ? "a function -- a computed value is written { compute: () => ... }, and"
+			         : JS_IsObject(value) ? "an object, and" : "neither a number, a boolean nor a string, and") +
+			        " state holds a number, a boolean or a string";
 			return false;
 		}
 
-		// Either the value itself, or { value, doc }.
-		bool readField(JSContext* ctx, JSValueConst entry, StateField& field, std::string& error) {
+		// Either the value itself, or { value, doc }, or -- where `computable` -- a computed
+		// one, { compute, doc }, whose type is not known until it has been run. `pending` is
+		// then set, and the caller runs it once the whole declaration has been read.
+		bool readField(JSContext* ctx, JSValueConst entry, StateField& field, std::string& error,
+		               bool computable = false, bool* pending = nullptr) {
 			if (JS_IsObject(entry) && !JS_IsFunction(ctx, entry)) {
-				JSValue inner = JS_GetPropertyStr(ctx, entry, "value");
-				if (JS_IsUndefined(inner)) {
-					JS_FreeValue(ctx, inner);
-					error = "'" + field.name + "' is an object without a `value`; write the "
-					        "initial value, or { value, doc }";
+				JSValue compute = JS_GetPropertyStr(ctx, entry, "compute");
+				const bool computes = JS_IsFunction(ctx, compute);
+				JS_FreeValue(ctx, compute);
+				if (computes && !computable) {
+					error = "'" + field.name + "' has a `compute`, and only a field of state can be computed";
 					return false;
 				}
-				const bool ok = readValue(ctx, inner, field, error);
+				field.computed = computes;
+				JSValue inner = JS_GetPropertyStr(ctx, entry, "value");
+				if (JS_IsUndefined(inner) && computes) {
+					// Typed by running it, once the rest is read.
+					if (pending) *pending = true;
+				} else if (JS_IsUndefined(inner)) {
+					JS_FreeValue(ctx, inner);
+					error = "'" + field.name + "' is an object without a `value`; write the "
+					        "initial value, { value, doc }, or { compute, doc }";
+					return false;
+				} else {
+					const bool ok = readValue(ctx, inner, field, error);
+					if (!ok) { JS_FreeValue(ctx, inner); return false; }
+				}
 				JS_FreeValue(ctx, inner);
-				if (!ok) return false;
 
 				JSValue doc = JS_GetPropertyStr(ctx, entry, "doc");
 				if (JS_IsString(doc)) {
@@ -207,9 +229,15 @@ namespace RDA::Layout {
 			JSContext* ctx = JS_NewContext(runtime);
 			if (!ctx) { JS_FreeRuntime(runtime); schema.error = "cannot create a JS context"; return schema; }
 
-			const std::string source = std::string(colourPrelude()) + js;
-			JSValue result = JS_Eval(ctx, source.c_str(), source.size(), path.c_str(),
+			// The helpers as a script of their own, so a line in an error is a line of the file.
+			const std::string helpers = std::string(colourPrelude()) + formatPrelude() + buildTimerPrelude() +
+				statePrelude();
+			JSValue result = JS_Eval(ctx, helpers.c_str(), helpers.size(), "<rda helpers>",
 			                         JS_EVAL_TYPE_GLOBAL);
+			if (!JS_IsException(result)) {
+				JS_FreeValue(ctx, result);
+				result = JS_Eval(ctx, js.c_str(), js.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
+			}
 			JSValue global = JS_GetGlobalObject(ctx);
 
 			if (JS_IsException(result)) {
@@ -224,10 +252,13 @@ namespace RDA::Layout {
 					JSValue commandObject = JS_GetPropertyStr(ctx, exports, "commands");
 					JSValue tableObject = JS_GetPropertyStr(ctx, exports, "tables");
 
+					std::vector<size_t> pending;   // computed fields still to be run for a type
 					bool ok = forEachEntry(ctx, stateObject, [&](const std::string& name, JSValueConst value) {
 						StateField field;
 						field.name = name;
-						if (!readField(ctx, value, field, schema.error)) return false;
+						bool unknown = false;
+						if (!readField(ctx, value, field, schema.error, /*computable*/ true, &unknown)) return false;
+						if (unknown) pending.push_back(schema.fields.size());
 						schema.fields.push_back(std::move(field));
 						return true;
 					});
@@ -239,9 +270,52 @@ namespace RDA::Layout {
 							if (JS_IsString(value)) {
 								const char* text = JS_ToCString(ctx, value);
 								if (text) { command.doc = text; JS_FreeCString(ctx, text); }
+							} else if (JS_IsObject(value) && !JS_IsFunction(ctx, value)) {
+								// The long form: { doc, params } for one the backend answers,
+								// { doc, run } for one state.ts answers.
+								JSValue doc = JS_GetPropertyStr(ctx, value, "doc");
+								if (JS_IsString(doc)) {
+									const char* text = JS_ToCString(ctx, doc);
+									if (text) { command.doc = text; JS_FreeCString(ctx, text); }
+								}
+								JS_FreeValue(ctx, doc);
+								JSValue run = JS_GetPropertyStr(ctx, value, "run");
+								command.action = JS_IsFunction(ctx, run);
+								const bool runGiven = !JS_IsUndefined(run);
+								JS_FreeValue(ctx, run);
+								if (runGiven && !command.action) {
+									schema.error = "command '" + name + "' has a `run` that is not a function";
+									return false;
+								}
+								JSValue params = JS_GetPropertyStr(ctx, value, "params");
+								bool fine = true;
+								if (!JS_IsUndefined(params)) {
+									if (command.action) {
+										schema.error = "command '" + name + "' has both `run` and `params`. An "
+										               "action's parameters are its function's -- drop `params`";
+										fine = false;
+									} else if (!JS_IsObject(params) || JS_IsArray(params)) {
+										schema.error = "command '" + name + "' has `params` that are not an object: "
+										               "write them by example, in order -- params: { id: 0, name: \"\" }";
+										fine = false;
+									} else {
+										fine = forEachEntry(ctx, params, [&](const std::string& param, JSValueConst example) {
+											StateField one;
+											one.name = param;
+											if (!readField(ctx, example, one, schema.error)) {
+												schema.error = "command '" + name + "': " + schema.error;
+												return false;
+											}
+											command.params.push_back(std::move(one));
+											return true;
+										});
+									}
+								}
+								JS_FreeValue(ctx, params);
+								if (!fine) return false;
 							} else if (!JS_IsUndefined(value) && !JS_IsNull(value)) {
-								schema.error = "command '" + name + "' should be a description, "
-								               "or an empty string";
+								schema.error = "command '" + name + "' should be a description, an empty "
+								               "string, or { doc, params } or { doc, run }";
 								return false;
 							}
 							schema.commands.push_back(std::move(command));
@@ -326,6 +400,52 @@ namespace RDA::Layout {
 							return true;
 						});
 						JS_FreeValue(ctx, routeObject);
+					}
+
+					// A computed field's type is what it returns, so each is run once, now,
+					// against the declared starting values with every table empty. Last,
+					// because every declaration -- the tables too -- has to have been read
+					// first: the evaluator turns them into values in place.
+					if (ok && !pending.empty()) {
+						JSValue evaluate = JS_GetPropertyStr(ctx, global, "__rdaEvaluateComputed");
+						JSValueConst args[3] = { stateObject, tableObject, commandObject };
+						JSValue results = JS_Call(ctx, evaluate, JS_UNDEFINED, 3, args);
+						JS_FreeValue(ctx, evaluate);
+						if (JS_IsException(results)) {
+							schema.error = "the computed values could not be worked out: " + exceptionText(ctx);
+							ok = false;
+						}
+						for (size_t i = 0; ok && i < pending.size(); ++i) {
+							StateField& field = schema.fields[pending[i]];
+							JSValue one = JS_GetPropertyStr(ctx, results, field.name.c_str());
+							JSValue value = JS_GetPropertyStr(ctx, one, "value");
+							JSValue why = JS_GetPropertyStr(ctx, one, "error");
+							if (JS_IsString(why)) {
+								const char* text = JS_ToCString(ctx, why);
+								JSValue plainValue = JS_GetPropertyStr(ctx, one, "plain");
+								const bool plain = JS_ToBool(ctx, plainValue) == 1;
+								JS_FreeValue(ctx, plainValue);
+								// A refusal says what to do; anything else may just be data that
+								// is not there yet, which a starting value answers.
+								schema.error = "state." + field.name + " is computed, and " +
+								               (plain ? std::string(text ? text : "")
+								                      : "running it once while state.ts was built failed: " +
+								                        std::string(text ? text : "") +
+								                        ". If it needs data that is not there yet, give it a "
+								                        "starting value as well -- { compute, value: 0 } -- "
+								                        "which is also its type");
+								if (text) JS_FreeCString(ctx, text);
+								ok = false;
+							} else if (!readValue(ctx, value, field, schema.error)) {
+								schema.error = "state." + field.name + " is computed and returned a value no signal "
+								               "can hold: " + schema.error;
+								ok = false;
+							}
+							JS_FreeValue(ctx, why);
+							JS_FreeValue(ctx, value);
+							JS_FreeValue(ctx, one);
+						}
+						JS_FreeValue(ctx, results);
 					}
 
 					schema.ok = ok && schema.error.empty();
@@ -662,6 +782,47 @@ namespace RDA::Layout {
 			return out;
 		}
 
+		// state.ts's code as text a generated file can carry: base64, which Python, Node and
+		// C# all decode with what they already have.
+		std::string base64(const std::vector<uint8_t>& bytes) {
+			static const char* const kAlphabet =
+				"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+			std::string out;
+			out.reserve((bytes.size() + 2) / 3 * 4);
+			for (size_t i = 0; i < bytes.size(); i += 3) {
+				const uint32_t a = bytes[i];
+				const uint32_t b = i + 1 < bytes.size() ? bytes[i + 1] : 0;
+				const uint32_t c = i + 2 < bytes.size() ? bytes[i + 2] : 0;
+				const uint32_t n = (a << 16) | (b << 8) | c;
+				out += kAlphabet[(n >> 18) & 63];
+				out += kAlphabet[(n >> 12) & 63];
+				out += i + 1 < bytes.size() ? kAlphabet[(n >> 6) & 63] : '=';
+				out += i + 2 < bytes.size() ? kAlphabet[n & 63] : '=';
+			}
+			return out;
+		}
+
+		// The same, in lines short enough to read past -- for a language whose string
+		// literals concatenate across lines.
+		std::vector<std::string> base64Lines(const std::vector<uint8_t>& bytes) {
+			const std::string all = base64(bytes);
+			std::vector<std::string> lines;
+			for (size_t at = 0; at < all.size(); at += 76) lines.push_back(all.substr(at, 76));
+			return lines;
+		}
+
+		// A declaration that has code and none compiled is a generator called the wrong way
+		// round, and a module generated from it would define computed signals that never
+		// compute. Refused where it would happen.
+		bool codeReady(const StateSchema& schema, std::string& error) {
+			if (schema.hasCode() && schema.code.empty()) {
+				error = "state.ts has computed values or actions, and its code was not compiled -- "
+				        "generate the state module with `rda build`, which compiles it";
+				return false;
+			}
+			return true;
+		}
+
 		// `products` -> `_Products`. The C++ side names a *row* struct; this names the
 		// table itself, which is what a Python application holds.
 		std::string pythonTableClass(const std::string& table) {
@@ -682,6 +843,7 @@ namespace RDA::Layout {
 
 	bool emitStatePython(const StateSchema& schema, const std::string& outputPath,
 	                     std::string& error) {
+		if (!codeReady(schema, error)) return false;
 		std::ostringstream out;
 		// The source is a path, and on Windows a path is full of backslashes -- which
 		// in a Python string are escapes. Left raw, the generated module fails to
@@ -697,8 +859,15 @@ namespace RDA::Layout {
 		       "misspelling is an AttributeError where it is written, not a value that\n"
 		       "quietly stays zero.\n"
 		       "\"\"\"\n\n"
-		       "from rda import _engine\n\n\n"
-		       "def define() -> None:\n"
+		       "from rda import _engine\n\n\n";
+		if (!schema.code.empty()) {
+			out << "# state.ts's code -- its computed values and its actions -- compiled when this was\n"
+			       "# generated. define() hands it to the engine.\n"
+			       "_STATE_CODE = (\n";
+			for (const std::string& line : base64Lines(schema.code)) out << "\t\"" << line << "\"\n";
+			out << ")\n\n\n";
+		}
+		out << "def define() -> None:\n"
 		       "\t\"\"\"Creates every signal, command and table this declaration names.\n"
 		       "\n"
 		       "\tA layout is compiled against these names and cannot load before they\n"
@@ -723,6 +892,7 @@ namespace RDA::Layout {
 				    << column.name << "\", " << kind << ")\n";
 			}
 		}
+		if (!schema.code.empty()) out << "\t_engine.load_state_code(_STATE_CODE)\n";
 
 		out << "\n\nclass _State:\n"
 		       "\t__slots__ = ()\n";
@@ -738,8 +908,11 @@ namespace RDA::Layout {
 			if (!field.doc.empty()) {
 				out << "\t\t\"\"\"" << pythonDoc(field.doc) << "\"\"\"\n";
 			}
-			out << "\t\treturn _engine.get_" << accessor << "(\"" << field.name << "\")\n"
-			    << "\n\t@" << field.name << ".setter\n"
+			out << "\t\treturn _engine.get_" << accessor << "(\"" << field.name << "\")\n";
+			// Computed by state.ts: there is nothing to assign, so no setter, and assigning
+			// is an AttributeError where it is written.
+			if (field.computed) continue;
+			out << "\n\t@" << field.name << ".setter\n"
 			    << "\tdef " << field.name << "(self, value: " << type << ") -> None:\n"
 			    << "\t\t_engine.set_" << accessor << "(\"" << field.name << "\", value)\n";
 		}
@@ -755,12 +928,37 @@ namespace RDA::Layout {
 			       "\t__slots__ = ()\n";
 			for (const StateCommand& command : schema.commands) {
 				out << "\n\tdef " << command.name << "(self, fn):\n";
-				if (!command.doc.empty()) {
-					out << "\t\t\"\"\"" << pythonDoc(command.doc) << "\"\"\"\n";
+				// What the handler is called with, said where an editor shows it.
+				std::string called;
+				if (command.action) {
+					called = "state.ts answers this; a function bound here watches it, called after "
+					         "the action with the same arguments.";
+				} else if (!command.params.empty()) {
+					called = "Called as fn(";
+					for (size_t i = 0; i < command.params.size(); ++i) {
+						if (i) called += ", ";
+						called += command.params[i].name + ": " + pythonType(command.params[i].type);
+					}
+					called += ").";
 				}
-				out << "\t\treturn _engine.bind_command(\"" << command.name << "\", fn)\n";
+				if (!command.doc.empty() || !called.empty()) {
+					out << "\t\t\"\"\"" << pythonDoc(command.doc);
+					if (!command.doc.empty() && !called.empty()) out << "\n\n\t\t";
+					out << pythonDoc(called) << "\"\"\"\n";
+				}
+				const bool takesArgs = command.action || !command.params.empty();
+				out << "\t\treturn _engine.bind_command(\"" << command.name << "\", fn"
+				    << (takesArgs ? ", takes_args=True" : "") << ")\n";
 			}
-			out << "\n\nCommands = _Commands()\n";
+			out << "\n\nCommands = _Commands()\n\n\n"
+			       "def call(name: str, *args):\n"
+			       "\t\"\"\"Runs a command and returns what it returned.\n"
+			       "\n"
+			       "\tOne state.ts answers returns its function's result; one a handler answers\n"
+			       "\truns the handler and returns None. How a rule written once in state.ts --\n"
+			       "\ta validation, a price -- is the backend's rule too.\n"
+			       "\t\"\"\"\n"
+			       "\treturn _engine.call(name, *args)\n";
 		}
 
 		// ---- tables ----
@@ -889,6 +1087,7 @@ namespace RDA::Layout {
 
 	bool emitStateNode(const StateSchema& schema, const std::string& outputPath,
 	                   std::string& error) {
+		if (!codeReady(schema, error)) return false;
 		std::ostringstream out;
 		// The source is a path, and on Windows a path is full of backslashes. Inside a
 		// block comment they are harmless, which is why this needs no escaping where the
@@ -906,8 +1105,17 @@ namespace RDA::Layout {
 		       " * extensible -- so `State.notAThing = 1` throws where it is written rather than\n"
 		       " * quietly becoming a property nobody reads.\n"
 		       " */\n\n"
-		       "import * as engine from 'rda/engine'\n\n"
-		       "/**\n"
+		       "import * as engine from 'rda/engine'\n\n";
+		if (!schema.code.empty()) {
+			out << "// state.ts's code -- its computed values and its actions -- compiled when this was\n"
+			       "// generated. define() hands it to the engine.\n"
+			       "const STATE_CODE =\n";
+			const std::vector<std::string> lines = base64Lines(schema.code);
+			for (size_t i = 0; i < lines.size(); ++i)
+				out << "\t'" << lines[i] << "'" << (i + 1 < lines.size() ? " +\n" : "\n");
+			out << "\n";
+		}
+		out << "/**\n"
 		       " * Creates every signal, command and table this declaration names.\n"
 		       " *\n"
 		       " * A layout is compiled against these names and cannot load before they exist, so\n"
@@ -930,6 +1138,7 @@ namespace RDA::Layout {
 				    << column.name << "', " << kind << ")\n";
 			}
 		}
+		if (!schema.code.empty()) out << "\tengine.loadStateCode(STATE_CODE)\n";
 		out << "}\n";
 
 		// ---- the state ----
@@ -943,9 +1152,12 @@ namespace RDA::Layout {
 				out << "\t/** " << jsDoc(field.doc) << " */\n";
 			}
 			out << "\tget " << field.name << "() { return engine.get"
-			    << jsAccessor(field.type) << "('" << field.name << "') },\n"
-			    << "\tset " << field.name << "(value) { engine.set"
-			    << jsAccessor(field.type) << "('" << field.name << "', value) },\n";
+			    << jsAccessor(field.type) << "('" << field.name << "') },\n";
+			// Computed by state.ts: no setter, so assigning throws where it is written.
+			if (!field.computed) {
+				out << "\tset " << field.name << "(value) { engine.set"
+				    << jsAccessor(field.type) << "('" << field.name << "', value) },\n";
+			}
 		}
 		out << "})\n";
 
@@ -960,13 +1172,32 @@ namespace RDA::Layout {
 			       " */\n"
 			       "export const Commands = Object.freeze({\n";
 			for (const StateCommand& command : schema.commands) {
-				if (!command.doc.empty()) {
-					out << "\t/** " << jsDoc(command.doc) << " */\n";
+				std::string called;
+				if (command.action) {
+					called = "state.ts answers this; a function given here watches it, called after the "
+					         "action with the same arguments.";
+				} else if (!command.params.empty()) {
+					called = "Called as fn(";
+					for (size_t i = 0; i < command.params.size(); ++i) {
+						if (i) called += ", ";
+						called += command.params[i].name;
+					}
+					called += ").";
+				}
+				if (!command.doc.empty() || !called.empty()) {
+					out << "\t/** " << jsDoc(command.doc)
+					    << (!command.doc.empty() && !called.empty() ? " " : "") << jsDoc(called) << " */\n";
 				}
 				out << "\t" << command.name << ": (fn) => engine.onCommand('"
 				    << command.name << "', fn),\n";
 			}
-			out << "})\n";
+			out << "})\n\n"
+			       "/**\n"
+			       " * Runs a command and returns what it returned. One state.ts answers returns its\n"
+			       " * function's result; one a handler answers runs it and returns null. How a rule\n"
+			       " * written once in state.ts -- a validation, a price -- is the backend's rule too.\n"
+			       " */\n"
+			       "export function call(name, ...args) { return engine.call(name, ...args) }\n";
 		}
 
 		// ---- tables ----
@@ -1078,6 +1309,7 @@ namespace RDA::Layout {
 
 	bool emitStateCSharp(const StateSchema& schema, const std::string& outputPath,
 	                     std::string& error) {
+		if (!codeReady(schema, error)) return false;
 		std::ostringstream out;
 		out << "// Generated by `rda csharp` from " << schema.source << ". Do not edit.\n"
 		       "//\n"
@@ -1093,6 +1325,7 @@ namespace RDA::Layout {
 		       "#nullable enable\n"
 		       "using System;\n"
 		       "using System.Collections.Generic;\n"
+		       "using System.Text.Json;\n"
 		       "using Rendeer;\n\n"
 		       "namespace RdaState {\n\n"
 		       "\t/// <summary>Creates every signal, command and table this declaration names.\n"
@@ -1118,7 +1351,17 @@ namespace RDA::Layout {
 				    << column.name << "\", " << kind << ");\n";
 			}
 		}
-		out << "\t\t}\n\t}\n";
+		if (!schema.code.empty()) out << "\t\t\tEngine.LoadStateCode(StateCode);\n";
+		out << "\t\t}\n";
+		if (!schema.code.empty()) {
+			out << "\n\t\t// state.ts's code -- its computed values and its actions -- compiled when\n"
+			       "\t\t// this was generated. Define() hands it to the engine.\n"
+			       "\t\tconst string StateCode =\n";
+			const std::vector<std::string> lines = base64Lines(schema.code);
+			for (size_t i = 0; i < lines.size(); ++i)
+				out << "\t\t\t\"" << lines[i] << "\"" << (i + 1 < lines.size() ? " +\n" : ";\n");
+		}
+		out << "\t}\n";
 
 		// ---- the state ----
 		out << "\n\t/// <summary>The state, as one class. Read it, assign to it.</summary>\n"
@@ -1131,10 +1374,13 @@ namespace RDA::Layout {
 			out << "\t\tpublic static " << csharpType(field.type) << " "
 			    << csharpName(field.name) << " {\n"
 			    << "\t\t\tget => Engine.Get" << csharpAccessor(field.type) << "(\""
-			    << field.name << "\");\n"
-			    << "\t\t\tset => Engine.Set" << csharpAccessor(field.type) << "(\""
-			    << field.name << "\", value);\n"
-			    << "\t\t}\n";
+			    << field.name << "\");\n";
+			// Computed by state.ts: get only, so assigning is a build error.
+			if (!field.computed) {
+				out << "\t\t\tset => Engine.Set" << csharpAccessor(field.type) << "(\""
+				    << field.name << "\", value);\n";
+			}
+			out << "\t\t}\n";
 		}
 		out << "\t}\n";
 
@@ -1151,10 +1397,41 @@ namespace RDA::Layout {
 				if (!command.doc.empty()) {
 					out << "\t\t/// <summary>" << csharpDoc(command.doc) << "</summary>\n";
 				}
-				out << "\t\tpublic static void " << csharpName(command.name)
-				    << "(Action handler) => Engine.OnCommand(\"" << command.name
-				    << "\", handler);\n";
+				if (command.action) {
+					// state.ts answers it; a handler here watches it, with the arguments as
+					// JSON, because what an action takes is its function's and TypeScript's.
+					out << "\t\t/// <para>Answered by state.ts. A handler here watches it, and is called\n"
+					       "\t\t/// after the action with the same arguments.</para>\n"
+					       "\t\tpublic static void " << csharpName(command.name)
+					    << "(Action<JsonElement[]> handler) => Engine.OnCommand(\"" << command.name
+					    << "\", handler);\n";
+				} else if (command.params.empty()) {
+					out << "\t\tpublic static void " << csharpName(command.name)
+					    << "(Action handler) => Engine.OnCommand(\"" << command.name
+					    << "\", handler);\n";
+				} else if (command.params.size() <= 16) {
+					out << "\t\tpublic static void " << csharpName(command.name) << "(Action<";
+					for (size_t i = 0; i < command.params.size(); ++i) {
+						if (i) out << ", ";
+						out << csharpType(command.params[i].type);
+					}
+					out << "> handler) =>\n\t\t\tEngine.OnCommand(\"" << command.name << "\", a => handler(";
+					for (size_t i = 0; i < command.params.size(); ++i) {
+						if (i) out << ", ";
+						out << "Engine.Arg" << csharpAccessor(command.params[i].type) << "(a, " << i << ")";
+					}
+					out << "));\n";
+				} else {
+					out << "\t\tpublic static void " << csharpName(command.name)
+					    << "(Action<JsonElement[]> handler) => Engine.OnCommand(\"" << command.name
+					    << "\", handler);\n";
+				}
 			}
+			out << "\n\t\t/// <summary>Runs a command and returns what it returned, as JSON. One\n"
+			       "\t\t/// state.ts answers returns its function's result; one a handler answers\n"
+			       "\t\t/// runs it and returns null.</summary>\n"
+			       "\t\tpublic static JsonElement Call(string name, params object?[] args) =>\n"
+			       "\t\t\tEngine.Call(name, args);\n";
 			out << "\t}\n";
 		}
 
@@ -1291,6 +1568,7 @@ namespace RDA::Layout {
 
 	bool emitStateHeader(const StateSchema& schema, const std::string& outputPath,
 	                     std::string& error) {
+		if (!codeReady(schema, error)) return false;
 		std::ostringstream out;
 		out << "// Generated by `rda state` from " << schema.source << ". Do not edit.\n"
 		       "//\n"
@@ -1301,11 +1579,28 @@ namespace RDA::Layout {
 		       "#pragma once\n"
 		       "#include <Core/Signals.h>\n"
 		       "#include <Core/Commands.h>\n"
-		       "#include <Core/Tables.h>\n"
-		       "#include <vector>\n"
+		       "#include <Core/Tables.h>\n";
+		if (!schema.code.empty()) {
+			out << "#include <Layout/ScriptHost.h>\n"
+			       "#include <Logger/Logger.h>\n";
+		}
+		out << "#include <vector>\n"
 		       "#include <functional>\n"
+		       "#include <string>\n"
 		       "#include <string_view>\n\n"
-		       "namespace RDA::State {\n\n"
+		       "namespace RDA::State {\n\n";
+		if (!schema.code.empty()) {
+			out << "\t// state.ts's code -- its computed values and its actions -- compiled when this was\n"
+			       "\t// generated. define() hands it to the engine.\n"
+			       "\tinline const unsigned char kStateCode[] = {";
+			for (size_t i = 0; i < schema.code.size(); ++i) {
+				if (i % 20 == 0) out << "\n\t\t";
+				static const char* const kHex = "0123456789abcdef";
+				out << "0x" << kHex[schema.code[i] >> 4] << kHex[schema.code[i] & 15] << ",";
+			}
+			out << "\n\t};\n\n";
+		}
+		out << 
 		       "\t// Filled by define(). Held rather than looked up, so reading a signal is an\n"
 		       "\t// array index instead of a hash of its name.\n"
 		       "\tstruct Ids {\n";
@@ -1423,6 +1718,13 @@ namespace RDA::Layout {
 			}
 			out << "\t\t}\n";
 		}
+		if (!schema.code.empty()) {
+			out << "\t\t// After the signals and commands it computes and answers exist.\n"
+			       "\t\tstd::string error;\n"
+			       "\t\tif (!Layout::scriptHost().loadState(kStateCode, sizeof(kStateCode), error)) {\n"
+			       "\t\t\tRDA_LOG_ERROR(\"state: \" << error);\n"
+			       "\t\t}\n";
+		}
 		out << "\t}\n";
 
 		for (const StateField& field : schema.fields) {
@@ -1430,8 +1732,10 @@ namespace RDA::Layout {
 			if (!field.doc.empty()) out << "\t/** " << field.doc << " */\n";
 			out << "\tinline " << cppType(field.type) << " " << field.name << "() {\n"
 			    << "\t\treturn signals()." << readerCall(field.type) << "(ids()." << field.name << ");\n"
-			    << "\t}\n"
-			    << "\tinline void " << setterName(field.name) << "(" << cppType(field.type)
+			    << "\t}\n";
+			// Computed by state.ts: there is no setter to call.
+			if (field.computed) continue;
+			out << "\tinline void " << setterName(field.name) << "(" << cppType(field.type)
 			    << " value) {\n"
 			    << "\t\tsignals().set(ids()." << field.name << ", value);\n"
 			    << "\t}\n";
@@ -1440,11 +1744,57 @@ namespace RDA::Layout {
 		for (const StateCommand& command : schema.commands) {
 			out << "\n";
 			if (!command.doc.empty()) out << "\t/** " << command.doc << " */\n";
+			if (command.action) {
+				out << "\t// Answered by state.ts. Work given here watches it: it runs after the action,\n"
+				       "\t// with the same arguments.\n"
+				       "\tinline void " << handlerName(command.name)
+				    << "(std::function<void(const CommandArgs&)> work) {\n"
+				    << "\t\tcommands().bind(commandIds()." << command.name << ", CommandWork(std::move(work)));\n"
+				    << "\t}\n";
+				continue;
+			}
 			out << "\t// Supplies the work. Until this is called the command exists and does\n"
-			       "\t// nothing, and whatever calls it reports that rather than failing quietly.\n"
-			       "\tinline void " << handlerName(command.name) << "(std::function<void()> work) {\n"
-			    << "\t\tcommands().bind(commandIds()." << command.name << ", std::move(work));\n"
+			       "\t// nothing, and whatever calls it reports that rather than failing quietly.\n";
+			if (command.params.empty()) {
+				out << "\tinline void " << handlerName(command.name) << "(std::function<void()> work) {\n"
+				    << "\t\tcommands().bind(commandIds()." << command.name << ", std::move(work));\n"
+				    << "\t}\n";
+				continue;
+			}
+			// Typed: the arguments arrive as the declaration says, in its order.
+			out << "\tinline void " << handlerName(command.name) << "(std::function<void(";
+			for (size_t i = 0; i < command.params.size(); ++i) {
+				const StateField& param = command.params[i];
+				if (i) out << ", ";
+				out << (param.type == StateType::Text ? "const std::string&" : cppType(param.type))
+				    << " " << param.name;
+			}
+			out << ")> work) {\n"
+			    << "\t\tcommands().bind(commandIds()." << command.name
+			    << ", CommandWork([work = std::move(work)](const CommandArgs& args) {\n"
+			    << "\t\t\twork(";
+			for (size_t i = 0; i < command.params.size(); ++i) {
+				const StateField& param = command.params[i];
+				if (i) out << ", ";
+				out << "args." << (param.type == StateType::Text ? "text"
+				                  : param.type == StateType::Bool ? "boolean" : "number")
+				    << "(" << i << ")";
+			}
+			out << ");\n"
+			    << "\t\t}));\n"
 			    << "\t}\n";
+		}
+
+		if (!schema.commands.empty()) {
+			out << "\n\t// Runs a command and reports what it returned, as JSON: an action's result, or\n"
+			       "\t// \"null\" for one a handler answers. How a rule written once in state.ts is the\n"
+			       "\t// backend's rule too.\n"
+			       "\tinline bool call(std::string_view name, const CommandArgs& args, std::string& result,\n"
+			       "\t                 std::string& error) {\n"
+			       "\t\tconst uint32_t command = commands().find(name);\n"
+			       "\t\tif (command == kNoCommand) { error = \"no command by that name\"; return false; }\n"
+			       "\t\treturn commands().call(command, args, result, error);\n"
+			       "\t}\n";
 		}
 
 		// The accessors, after define() so the ids they use exist.

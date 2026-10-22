@@ -93,7 +93,7 @@ extern "C" {
 // These two functions may never change, since they are what a binding calls before it
 // trusts anything else here.
 #define RDA_ABI_MAJOR 1
-#define RDA_ABI_MINOR 6
+#define RDA_ABI_MINOR 8
 RDA_C_API int rda_abi_major(void);
 RDA_C_API int rda_abi_minor(void);
 
@@ -351,6 +351,38 @@ RDA_C_API int rda_command_watch(const char* name);
 // The queue holds a bounded number of pending commands; a backend that stops polling
 // entirely loses the oldest, and the log says so once.
 RDA_C_API int rda_poll_command(char* buffer, int capacity);
+
+// ---- what a command carries, and calling one ----------------------------------------
+//
+// A command carries its arguments: what the event meant at the moment it happened, rather
+// than something written into state first and read back. They are one JSON array, because
+// every language a backend is written in reads that without help -- `[3, "notes.txt"]`, or
+// `[]` for none. A state declaration says what they are (`params: { id: 0, name: "" }`) and
+// the generated module hands them to a handler typed; this is what it reads them from.
+//
+// The arguments of the command this thread is handling: inside a callback rda_command_bind
+// registered, the one running; after rda_poll_command, the one it just returned. "[]" when
+// there are none or nothing is being handled. Owned by the engine and valid on this thread
+// until the next command is handled on it. Added in ABI 1.8.
+RDA_C_API const char* rda_command_args(void);
+
+// Runs a command and returns what it returned, as JSON. A command state.ts answers -- an
+// action -- returns its function's result; one a backend answers runs its handler and
+// returns "null". `args_json` is a JSON array, or NULL for none. NULL back means it could not
+// run -- no such command, nothing answering it, arguments that are not an array, an action
+// that threw -- and rda_last_error says which, with the action's line.
+//
+// This is how a rule written once in state.ts -- a validation, a price -- is also the
+// backend's rule. The result is owned by the engine and valid on this thread until its next
+// rda_call: a string the engine keeps rather than a buffer the caller sizes, because asking
+// twice, the way the other readers here are asked, would run the action twice. Added in 1.8.
+RDA_C_API const char* rda_call(const char* name, const char* args_json);
+
+// Loads state.ts's code -- its computed signals and its actions -- from the bytes a
+// generated state module carries. Call after the signals and commands are defined, which is
+// where the generated define() calls it; calling it again replaces the code and keeps every
+// value. Refused, with the reason, for code from a different engine build. Added in 1.8.
+RDA_C_API int rda_load_state_code(const void* bytes, int size);
 
 // ---- viewports -------------------------------------------------------------------
 //
@@ -610,6 +642,58 @@ RDA_C_API int rda_measure_text(const char* text, float size, float* out_width, f
 // zero until a frame has placed it, so a backend that wants to fit its drawing to the
 // surface should draw again when it changes rather than only once at start-up.
 RDA_C_API int rda_viewport_size(const char* name, float* out_width, float* out_height);
+
+// ---- what happens to a viewport ------------------------------------------------
+//
+// Two things a backend drawing in a viewport needs to hear about. It was **resized** -- a
+// splitter moved, a panel beside it closed, the window changed -- and the drawing has to be
+// made again at the new size rather than left stretched or cropped. Every viewport reports
+// that, from the first frame that places it. And the **pointer** did something over it: a
+// graph to pan, a plot to zoom, a model to orbit. That is reported only for a viewport a
+// backend listens to. Listening, a press over it belongs to it until the button comes up,
+// wherever the pointer goes meanwhile, and the wheel stops there instead of scrolling what
+// is around it. One not listened to lets the pointer through, as before.
+//
+// What happened is *summed* until taken, not queued: a pan wants how far the pointer
+// travelled since the drawing was last made, a redraw wants the size now, and a backend
+// that was busy drawing must not come back to a backlog. Movement and the wheel add up, a
+// button that went down or came up stays recorded, `resized` says the size changed at
+// least once, and the position and the size are the latest.
+//
+// Neither reading call crosses to the loop thread. They read a queue of their own behind
+// a lock, like rda_poll_command, so a thread may sit in rda_viewport_wait for the life of
+// the window -- an idle window stays idle, which asking the loop every frame would not
+// allow. A hidden viewport is not laid out and keeps its last size. Added in ABI 1.7.
+typedef struct rda_viewport_event {
+	float    x, y;      // the pointer, in the viewport's own coordinates (as a drawing's)
+	float    dx, dy;    // how far it moved with a button held, summed since last taken
+	float    wheel;     // notches, summed; positive is away from the reader
+	uint32_t held;      // buttons down now that went down over it: 1 left, 2 right, 4 middle
+	uint32_t pressed;   // went down over it since last taken, same bits
+	uint32_t released;  // came up since last taken -- only ones that went down over it
+	int32_t  clicks;    // of the most recent press: 1 a click, 2 a double click, 3 a triple
+	int32_t  inside;    // 1 while the pointer is over it
+	uint32_t mods;      // with the latest pointer event: 1 shift, 2 ctrl, 4 alt
+	float    width;     // its size as last laid out, in the units a drawing uses
+	float    height;
+	int32_t  resized;   // 1 when the size changed since last taken
+} rda_viewport_event;
+
+// Starts (`on` = 1) or stops taking the pointer over every <viewport> with this name.
+// May be called before the layout that has it is loaded. Resizes are reported either way.
+RDA_C_API int rda_viewport_listen(const char* name, int on);
+
+// What happened to `name` since the last call. Returns 1 when something did, 0 when
+// nothing new arrived -- and `out` is then still filled with where the pointer is and how
+// big the viewport is, with every movement, button change and `resized` zero -- or -1 on
+// a bad argument.
+RDA_C_API int rda_viewport_take(const char* name, rda_viewport_event* out);
+
+// Blocks until some viewport has something not yet taken, and writes its name. Returns 1
+// then, 0 on a timeout or when the engine shut down, -1 on a bad argument. `timeout_ms`
+// < 0 waits as long as it takes. Two busy viewports are answered in turn rather than one
+// starving the other.
+RDA_C_API int rda_viewport_wait(char* name, int capacity, int timeout_ms);
 
 // A circle is a rect with equal sides and a radius of half of them; there is no separate
 // op for it, and one fewer thing to learn.

@@ -31,6 +31,13 @@ decisions a layout cannot express, such as changing a stack's direction.
 | `marginRight` `marginBottom` | number | distance kept from that parent edge when anchored |
 | `anchor` | `fill` `stretchX` `stretchY` `bottomLeft` `bottomRight` | which parent edges this follows |
 | `onHover` | handler(boolean) | true when the pointer arrives, false when it leaves |
+| `alt` | string | what a screen reader calls this; needed only where nothing else names it -- a slider, an icon button, an `<image>` |
+| `live` | `off` `polite` `assertive` | read out by a screen reader when its text changes or it appears; on a container, all its text as one sentence. For a status line or an error, sparingly |
+| `drag` `dragKind` | string | what this carries when picked up and dragged, and its sort; empty `drag` is not draggable |
+| `accepts` | string | as a drop target, the kinds it takes, `"task\|note"`; empty takes any |
+| `onDrop` | handler(string) | what an accepted drag carried, let go of over this |
+| `onDragOver` | handler(boolean) | a drag it would take arrived over it, or left |
+| `onFiles` | handler(string) | files from outside let go of over this; paths, one per line |
 
 `onHover` fires on the edges only, never every frame the pointer is inside, so a handler
 that writes a signal is not rewriting it sixty times a second. It answers for the rectangle
@@ -142,6 +149,7 @@ and overlaps go to whichever starts first.
 | `hAlign` | `start` `center` `end` | where that text sits; centred unless said otherwise |
 | `padding` | number | inset around its children, when it has any |
 | `selected` | boolean | chosen, and staying chosen |
+| `shortcut` | chord | a key chord that clicks it, `"Ctrl+S"` -- see the keyboard, below |
 | `variant` | string | theme variant (`button`) |
 | `onClick` | handler | runs on each completed click |
 
@@ -240,6 +248,7 @@ line only -- a suggestion with a newline is cut at it.
 | --- | --- | --- |
 | `label` | string | the text beside the box |
 | `value` | boolean | ticked when true |
+| `shortcut` | chord | a key chord that toggles it |
 | `variant` | string | theme variant (`checkbox`) |
 | `onChange` | handler(boolean) | runs when toggled, with the new state |
 
@@ -292,11 +301,13 @@ than drawn as a blank row.
 | `rowHeight` | number | height of a row, and the fallback where the column below has no answer |
 | `rowHeights` | string | a number column holding each row's own height, for rows that vary |
 | `spacing` | number | gap between rows |
-| `poolSize` | number | how many row widgets to keep; enough to fill the view |
+| `poolSize` | number | rows to build ahead of time; optional -- the list builds what its view needs |
 | `barWidth` | number | thickness of the scroll bar |
 | `wheelStep` | number | pixels per wheel notch |
 | `follow` | boolean | stay at the end when rows arrive, while already there |
 | `revealRow` | number | scroll until this row index is on screen; `-1` asks for nothing |
+| `sortBy` `sortDescending` | string, boolean | show the rows ordered by a column, without the table changing |
+| `filter` `filterColumns` | string | show only rows containing this, ignoring case; in every text column, or the ones named, `"name|kind"` |
 | `variant` | string | theme variant (`textfield` styles) |
 
 `rowHeights` is how a transcript gets one row per message instead of one per wrapped line.
@@ -316,6 +327,68 @@ jerking to the middle on every step.
 Inside `row`, the parameter is the only way to read a cell: `item.price`. It is resolved
 to a column index when the layout loads, so nothing is looked up by name while scrolling.
 See `references/recipes.md`.
+
+### `<tree>` — rows that hang off one another
+
+A `<list>` whose table holds every node in reading order (each node, then everything under
+it) with a number column `depth`. Same `row={(node) => ...}` template, same pooling.
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `of` | string | the table |
+| `depthColumn` `keyColumn` `childrenColumn` | string | column names; default `depth`, `id`, `hasChildren` |
+| `indent` | number | per level; 16 |
+| `openDepth` | number | nodes shallower than this start open; 0 = all shut |
+| `selected` | string | the chosen node's key; never written by the tree |
+| `multiSelect` `selectedKeys` `onSelectionChange` | | several chosen at once, as `<grid>` |
+| `rowHeight` `spacing` `poolSize` `barWidth` `wheelStep` `revealRow` `variant` | | as `<list>` |
+| `onSelect` `onActivate` `onExpand` `onCollapse` | handler(string) | with the node's key |
+
+Open/shut state is the tree's, remembered by key. `hasChildren: true` with nothing under it
+shows an arrow and starts shut; opening it fires `onExpand` -- insert its rows after it, one
+level deeper, to load lazily. Keyboard: Up/Down, Home/End, Right opens then steps in, Left
+shuts then steps out, Space toggles, Enter activates. Double-click toggles and activates.
+
+### `<grid>` and `<column>` — a table as a table
+
+Columns under titles, sorted by clicking a title, resized by dragging a title's edge. No
+widget per cell -- a cell is drawn text -- so a cell cannot hold a button or a checkbox;
+a row that needs widgets is a `<list>`.
+
+```tsx
+<grid id="files" of="files" height="fill" alt="Files"
+      selected={() => state.chosen} onSelect={(id) => state.chosen = id}
+      onActivate={(id) => commands.open()} filter={() => state.query}>
+  <column id="name" field="name" title="Name" width="fill" minWidth={120} />
+  <column id="size" field="size" title="Size" width={90} hAlign="end" />
+</grid>
+```
+
+| `<grid>` property | Type | Meaning |
+| --- | --- | --- |
+| `of` | string | the table |
+| `keyColumn` | string | what `selected` holds and the handlers get; default `id` |
+| `selected` | string | the chosen row's key; never written by the grid |
+| `sortBy` `sortDescending` `filter` `filterColumns` | | as `<list>`; clicking a title sets the first two |
+| `rowHeight` `headerHeight` `barWidth` `wheelStep` `variant` | | rows 24, titles a line and some room |
+| `onSelect` `onActivate` | handler(string) | with the row's key; activate is double-click or Enter |
+| `onSort` | handler(string) | the column clicked, `-` in front for descending: `"size"`, `"-size"` |
+| `multiSelect` | boolean | several rows can be chosen: Ctrl+click toggles, Shift+click reaches, Shift+arrows, Ctrl+A |
+| `selectedKeys` | string | with `multiSelect`, the chosen keys **one per line**; never written by the grid |
+| `onSelectionChange` | handler(string) | the chosen keys changed, one per line. `selected` is then the row the keyboard is on |
+
+| `<column>` property | Type | Meaning |
+| --- | --- | --- |
+| `field` | string | the table column |
+| `title` | string | the title; the field's name unless said |
+| `width` `minWidth` | number or `"fill"` | 120 unless said; below `minWidth` the grid scrolls sideways instead |
+| `hAlign` | `start` `center` `end` | values and title; `end` for numbers |
+| `sortable` | boolean | default true |
+| `decimals` | number | places for a number; as many as it has unless said |
+
+Numbers show without trailing zeros, bools as a tick, text as it is. Sorting is natural
+(`file2` before `file10`), case-insensitive and stable. Keyboard: Up/Down, PageUp/PageDown,
+Home/End, Enter. Double-clicking a column edge restores its width.
 
 ### `<tabs>` and `<tab>` — a row of titles and one page
 
@@ -536,11 +609,31 @@ in the order they were drawn.
 | right button | `onContext` on any element; open a `<popup anchor="pointer">` in it |
 | arrows | move a `<slider>`; move the highlight in an open `<select>` |
 | Enter | opens a `<select>`, and takes the highlighted row |
+| letters | in a focused `<select>`, open it on the first choice beginning with them |
 | Escape | closes a `<select>`; leaves a `<textfield>` |
+| Up/Down, PageUp/PageDown, Home/End, Enter | move the choice in a `<grid>`, and activate it |
 
 A keyboard press runs the same handler a click runs: `onClick` fires either way, and there
 is no separate keyboard event to write. The ring around the focused widget is themed once,
 as the `focus` export. See `references/theme.md`.
+
+### Shortcuts
+
+`shortcut="Ctrl+S"` on a `<button>` or `<checkbox>` presses it. For a chord with no button,
+`<shortcut keys="Ctrl+K" onPress={() => state.palette = true} />` -- it draws nothing and
+takes no room, and applies where it is written (its screen, its tab).
+
+A chord is modifiers then a key: `Ctrl` `Alt` `Shift` `Super`, `Mod` for Ctrl; a capital
+letter, a digit, `F1`-`F24`, `Enter` `Escape` `Space` `Backspace` `Delete` `Insert` `Home`
+`End` `PageUp` `PageDown` `Up` `Down` `Left` `Right`, or punctuation as itself with `Plus`
+for `+`. Never `Tab` or `Shift+Tab` alone. It may be a binding -- a keymap kept in state.
+
+Live while the widget could be reached: drawn, scrolled away, or inside a *closed*
+`<popup>` (a menu entry's shortcut works with the menu shut). Not when hidden, on a tab not
+showing, in a `<list>` row, or behind an open blocking popup. A focused `<textfield>` keeps
+plain keys and its own Ctrl editing chords (C X V A Z Y, arrows, Enter); Ctrl+S, F5 and the
+like still reach the shortcut. Two live widgets with one chord: the one drawn last wins, and
+the log says so.
 
 ## Components
 

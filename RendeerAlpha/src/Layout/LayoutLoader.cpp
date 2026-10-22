@@ -5,6 +5,9 @@
 #include <Core/Commands.h>
 #include <Core/Tables.h>
 #include <Layout/ListView.h>
+#include <Layout/TreeView.h>
+#include <Layout/GridView.h>
+#include <Layout/ScriptHost.h>
 #include <Layout/WidgetSchema.h>
 #include <RendeerAlpha.h>
 #include <GraphicalObjects/Widget.h>
@@ -87,6 +90,12 @@ namespace RDA::Layout {
 			const std::string_view word = splitAlignOffset(text, offset);
 			return textAlignFrom(word, fallback);
 		}
+		uint8_t liveFrom(std::string_view word) {
+			if (word == "polite")    return 1;
+			if (word == "assertive") return 2;
+			return 0;
+		}
+
 		DockSide sideFrom(std::string_view word, DockSide fallback) {
 			if (word == "floating") return DockSide::Floating;
 			if (word == "left")     return DockSide::Left;
@@ -119,10 +128,14 @@ namespace RDA::Layout {
 			if (type == "label")     return std::make_unique<Label>(id, std::string(bp.text(node, "text")));
 			if (type == "button")    return std::make_unique<Button>(id, std::string(bp.text(node, "text")));
 			if (type == "checkbox")  return std::make_unique<Checkbox>(id, std::string(bp.text(node, "label")));
+			if (type == "shortcut")  return std::make_unique<ShortcutKey>(id);
 			if (type == "slider")    return std::make_unique<Slider>(id);
 			if (type == "number")    return std::make_unique<NumberField>(id, std::string(bp.text(node, "label")));
 			if (type == "dockspace") return std::make_unique<DockHost>(id);
 			if (type == "list")      return std::make_unique<ListView>(id);
+			if (type == "tree")      return std::make_unique<TreeView>(id);
+			if (type == "grid")      return std::make_unique<GridView>(id);
+			if (type == "column")    return std::make_unique<GridColumn>(id);
 			if (type == "image")     return std::make_unique<Image>(id, std::string(bp.text(node, "src")));
 			if (type == "tabs")      return std::make_unique<Tabs>(id);
 			if (type == "tab")       return std::make_unique<Tab>(id, std::string(bp.text(node, "title")));
@@ -150,6 +163,12 @@ namespace RDA::Layout {
 			widget.visible      = bp.boolean(node, "visible", true);
 			widget.animateMs    = bp.number(node, "animate", 0.0f);
 			widget.dragWindow   = bp.boolean(node, "dragWindow", widget.dragWindow);
+			widget.maximizeButton = bp.boolean(node, "maximizeButton", widget.maximizeButton);
+			widget.alt          = std::string(bp.text(node, "alt"));
+			widget.live         = liveFrom(bp.text(node, "live"));
+			widget.drag         = std::string(bp.text(node, "drag"));
+			widget.dragKind     = std::string(bp.text(node, "dragKind"));
+			widget.accepts      = std::string(bp.text(node, "accepts"));
 			widget.route        = std::string(bp.text(node, "route"));
 			widget.pace         = paceFrom(std::string(bp.text(node, "pace")), widget.pace);
 			widget.marginRight  = bp.number(node, "marginRight", 0.0f);
@@ -215,9 +234,13 @@ namespace RDA::Layout {
 				w->hAlign = textAlignFrom(bp.text(node, "hAlign"), w->hAlign, w->hAlignOffset);
 				w->padding = bp.number(node, "padding", w->padding);
 				w->selected = bp.boolean(node, "selected", false);
+				w->setShortcut(bp.text(node, "shortcut"));
 			} else if (auto* w = dynamic_cast<Checkbox*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->value = bp.boolean(node, "value", false);
+				w->setShortcut(bp.text(node, "shortcut"));
+			} else if (auto* w = dynamic_cast<ShortcutKey*>(&widget)) {
+				w->setShortcut(bp.text(node, "keys"));
 			} else if (auto* w = dynamic_cast<Slider*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->minValue = bp.number(node, "min", 0.0f);
@@ -246,6 +269,21 @@ namespace RDA::Layout {
 				w->blocking = bp.boolean(node, "blocking", w->blocking);
 				w->placement = popupPlacementFrom(bp.text(node, "placement"), w->placement);
 			} else if (auto* w = dynamic_cast<ListView*>(&widget)) {
+				// A tree is a list, so it takes all of this as well -- and then its own.
+				if (auto* tree = dynamic_cast<TreeView*>(&widget)) {
+					const std::string_view depth = bp.text(node, "depthColumn");
+					const std::string_view key = bp.text(node, "keyColumn");
+					const std::string_view kids = bp.text(node, "childrenColumn");
+					if (!depth.empty()) tree->depthColumn = std::string(depth);
+					if (!key.empty())   tree->keyColumn = std::string(key);
+					if (!kids.empty())  tree->childrenColumn = std::string(kids);
+					tree->indent    = bp.number(node, "indent", tree->indent);
+					tree->openDepth = static_cast<int>(bp.number(node, "openDepth",
+					                                            static_cast<float>(tree->openDepth)));
+					tree->selected  = std::string(bp.text(node, "selected"));
+					tree->multiSelect = bp.boolean(node, "multiSelect", false);
+					tree->setSelectedKeys(bp.text(node, "selectedKeys"));
+				}
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->of        = std::string(bp.text(node, "of"));
 				w->rowHeight  = bp.number(node, "rowHeight", w->rowHeight);
@@ -255,6 +293,32 @@ namespace RDA::Layout {
 				w->wheelStep = bp.number(node, "wheelStep", w->wheelStep);
 				w->follow    = bp.boolean(node, "follow", w->follow);
 				w->revealRow = static_cast<int>(bp.number(node, "revealRow", -1.0f));
+				w->sortBy         = std::string(bp.text(node, "sortBy"));
+				w->sortDescending = bp.boolean(node, "sortDescending", false);
+				w->filter         = std::string(bp.text(node, "filter"));
+				w->filterColumns  = std::string(bp.text(node, "filterColumns"));
+			} else if (auto* w = dynamic_cast<GridView*>(&widget)) {
+				if (!variant.empty()) w->variant = Variant(variant);
+				w->of = std::string(bp.text(node, "of"));
+				const std::string_view key = bp.text(node, "keyColumn");
+				if (!key.empty()) w->keyColumn = std::string(key);
+				w->selected       = std::string(bp.text(node, "selected"));
+				w->multiSelect    = bp.boolean(node, "multiSelect", false);
+				w->setSelectedKeys(bp.text(node, "selectedKeys"));
+				w->sortBy         = std::string(bp.text(node, "sortBy"));
+				w->sortDescending = bp.boolean(node, "sortDescending", false);
+				w->filter         = std::string(bp.text(node, "filter"));
+				w->filterColumns  = std::string(bp.text(node, "filterColumns"));
+				w->rowHeight      = bp.number(node, "rowHeight", w->rowHeight);
+				w->headerHeight   = bp.number(node, "headerHeight", w->headerHeight);
+				w->barWidth       = bp.number(node, "barWidth", w->barWidth);
+				w->wheelStep      = bp.number(node, "wheelStep", w->wheelStep);
+			} else if (auto* w = dynamic_cast<GridColumn*>(&widget)) {
+				w->field    = std::string(bp.text(node, "field"));
+				w->title    = std::string(bp.text(node, "title"));
+				w->hAlign   = textAlignFrom(bp.text(node, "hAlign"), w->hAlign);
+				w->sortable = bp.boolean(node, "sortable", true);
+				w->decimals = static_cast<int>(bp.number(node, "decimals", -1.0f));
 			} else if (auto* w = dynamic_cast<Scroll*>(&widget)) {
 				if (!variant.empty()) w->variant = Variant(variant);
 				w->vertical   = bp.boolean(node, "vertical", w->vertical);
@@ -294,6 +358,12 @@ namespace RDA::Layout {
 				w->tileRow  = static_cast<int>(bp.number(node, "row", -1.0f));
 				w->tileCols = static_cast<int>(bp.number(node, "cols", static_cast<float>(w->tileCols)));
 				w->tileRows = static_cast<int>(bp.number(node, "rows", static_cast<float>(w->tileRows)));
+				// Where a floating one starts, in the x, y, w and h every element takes.
+				// Each only if it was written, so `w={320}` alone keeps the default place.
+				if (bp.find(node, "x")) w->floatingRect.x = w->rect.x;
+				if (bp.find(node, "y")) w->floatingRect.y = w->rect.y;
+				if (bp.find(node, "w") && w->rect.w > 0.0f) w->floatingRect.w = w->rect.w;
+				if (bp.find(node, "h") && w->rect.h > 0.0f) w->floatingRect.h = w->rect.h;
 			} else if (auto* w = dynamic_cast<Viewport*>(&widget)) {
 				std::string_view named = bp.text(node, "name");
 				if (!named.empty()) w->name = std::string(named);
@@ -360,14 +430,18 @@ namespace RDA::Layout {
 			mRoot = other.mRoot;
 			mObservers = std::move(other.mObservers);
 			other.mRoot = nullptr;
-			other.mObservers.clear();
+			other.mObservers = std::make_shared<ObserverSink>();
 		}
 		return *this;
 	}
 
 	void LayoutInstance::release() {
-		for (const ObserverId observer : mObservers) bindings().remove(observer);
-		mObservers.clear();
+		for (const ObserverId observer : mObservers->ids) bindings().remove(observer);
+		mObservers->ids.clear();
+		mObservers->open = false;
+		// The functions go with the bindings: nothing that runs them is left.
+		mObservers->module.reset();
+		mObservers = std::make_shared<ObserverSink>();
 		mRoot = nullptr;
 	}
 
@@ -380,10 +454,31 @@ namespace RDA::Layout {
 		// which registry a name belongs to is otherwise only knowable from the opcode
 		// that reads it, and this runs over names rather than code.
 		std::vector<uint32_t> resolveNames(const Program& program, const std::string& what,
-		                                   Table* rowTable = nullptr) {
+		                                   Table* rowTable = nullptr,
+		                                   const ScriptModule* module = nullptr) {
 			std::vector<uint32_t> ids;
 			ids.reserve(program.signals.size());
 			for (const std::string& pooled : program.signals) {
+				// The layout's own functions: "$name" is one a grammar binding calls, "%3"
+				// a binding compiled to JavaScript whole ("%r3" when it reads the row).
+				if (!pooled.empty() && (pooled.front() == '$' || pooled.front() == '%')) {
+					uint32_t id = kNoScript;
+					if (module) {
+						if (pooled.front() == '$') {
+							id = module->function(pooled.substr(1));
+						} else {
+							const size_t digits = pooled.find_first_of("0123456789");
+							if (digits != std::string::npos)
+								id = module->binding(static_cast<uint32_t>(std::strtoul(pooled.c_str() + digits, nullptr, 10)));
+						}
+					}
+					if (id == kNoScript) {
+						RDA_LOG_WARNING("layout: " << what << " runs code this layout's blueprint does not "
+						                "carry -- was it compiled by an older engine?");
+					}
+					ids.push_back(id);
+					continue;
+				}
 				if (!pooled.empty() && pooled.front() == '#') {
 					// A column of the row a template shows, resolved to an index now so that
 					// scrolling never looks a name up.
@@ -438,6 +533,10 @@ namespace RDA::Layout {
 				// would act on whatever was under the pointer when the layout loaded.
 				RowRef ref;
 				const bool haveRow = row && row->rowRefFor(slot, ref);
+				// A handler may write state and call commands, whatever is happening
+				// around it -- a click that lands while a value binding is being applied
+				// is still a click.
+				ScriptHost::Frame frame(ScriptHost::Mode::Handler);
 				const EvalResult result = evaluate(program, signals(), ids, passed,
 				                                   haveRow ? &ref : nullptr);
 				if (!result.ok) {
@@ -521,6 +620,64 @@ namespace RDA::Layout {
 					field->onSubmit = [runner] { runner(nullptr); };
 					return true;
 				}
+			} else if (event == "onSelect" || event == "onActivate" ||
+			           event == "onExpand" || event == "onCollapse") {
+				if (auto* tree = dynamic_cast<TreeView*>(&widget)) {
+					auto handler = [runner](const std::string& key) {
+						const Value passed = Value::fromText(key);
+						runner(&passed);
+					};
+					if (event == "onSelect")        tree->onSelect = handler;
+					else if (event == "onActivate") tree->onActivate = handler;
+					else if (event == "onExpand")   tree->onExpand = handler;
+					else                            tree->onCollapse = handler;
+					return true;
+				}
+				if (auto* grid = dynamic_cast<GridView*>(&widget); grid && event != "onExpand" && event != "onCollapse") {
+					auto handler = [runner](const std::string& key) {
+						const Value passed = Value::fromText(key);
+						runner(&passed);
+					};
+					if (event == "onSelect") grid->onSelect = handler;
+					else                     grid->onActivate = handler;
+					return true;
+				}
+			} else if (event == "onSelectionChange") {
+				auto handler = [runner](const std::string& keys) {
+					const Value passed = Value::fromText(keys);
+					runner(&passed);
+				};
+				if (auto* tree = dynamic_cast<TreeView*>(&widget)) { tree->onSelectionChange = handler; return true; }
+				if (auto* grid = dynamic_cast<GridView*>(&widget)) { grid->onSelectionChange = handler; return true; }
+			} else if (event == "onSort") {
+				if (auto* grid = dynamic_cast<GridView*>(&widget)) {
+					grid->onSort = [runner](const std::string& by) {
+						const Value passed = Value::fromText(by);
+						runner(&passed);
+					};
+					return true;
+				}
+			} else if (event == "onDrop" || event == "onFiles") {
+				// On every widget, like onHover: a drop target is a place, and anything that
+				// takes up room can be one.
+				auto handler = [runner](const std::string& carried) {
+					const Value passed = Value::fromText(carried);
+					runner(&passed);
+				};
+				if (event == "onDrop") widget.onDrop = handler;
+				else                   widget.onFiles = handler;
+				return true;
+			} else if (event == "onDragOver") {
+				widget.onDragOver = [runner](bool over) {
+					const Value passed = Value::fromBool(over);
+					runner(&passed);
+				};
+				return true;
+			} else if (event == "onPress") {
+				if (auto* key = dynamic_cast<ShortcutKey*>(&widget)) {
+					key->onPress = [runner] { runner(nullptr); };
+					return true;
+				}
 			} else if (event == "onClose") {
 				if (auto* popup = dynamic_cast<Popup*>(&widget)) {
 					popup->onClose = [runner] { runner(nullptr); };
@@ -550,6 +707,9 @@ namespace RDA::Layout {
 	static bool readsRow(const Program& program) {
 		for (const Instruction& instruction : program.code) {
 			if (instruction.op == Op::PushRowField) return true;
+			// A binding compiled to JavaScript that names the row's parameter.
+			if (instruction.op == Op::RunScript && instruction.operand < program.signals.size() &&
+			    program.signals[instruction.operand].rfind("%r", 0) == 0) return true;
 		}
 		return false;
 	}
@@ -573,9 +733,12 @@ namespace RDA::Layout {
 
 	// One copy of a list's row template. Called once per pooled row, so every widget
 	// exists before anything scrolls and none is built while it does.
+	// `late` is a row built after the layout loaded, because the list's view grew -- in the
+	// middle of a frame, inside the list's WidgetBuildScope -- and its bindings are applied
+	// at once rather than when their signals next move.
 	static void buildPooledRow(const Blueprint& bp, size_t templateRoot, ListView& list,
 	                           const std::string& idPrefix, Table* table,
-	                           LayoutInstance& instance) {
+	                           LayoutInstance::ObserverSink& observers, bool late) {
 		std::vector<Widget*> made(bp.nodeCount(), nullptr);
 		std::vector<bool> mine(bp.nodeCount(), false);
 		Widget* rowRoot = nullptr;
@@ -608,7 +771,7 @@ namespace RDA::Layout {
 			const std::string property(bp.string(record.key));
 			const std::string where = property + " on '" + target->id() + "'";
 			Program program = bp.programFor(record);
-			std::vector<uint32_t> ids = resolveNames(program, where, table);
+			std::vector<uint32_t> ids = resolveNames(program, where, table, observers.module.get());
 
 			if (record.kind == static_cast<uint32_t>(BindingKind::Event)) {
 				// Handed the list and this copy's slot, so `item` means something inside a
@@ -629,7 +792,14 @@ namespace RDA::Layout {
 				if (list.currentSlot() == 0) {
 					std::vector<uint32_t> watched = signalsReadBy(program, ids);
 					if (!watched.empty()) {
-						instance.track(bindings().addRowRefresh(std::move(watched), &list));
+						observers.ids.push_back(bindings().addRowRefresh(std::move(watched), &list));
+					}
+					// One that runs JavaScript reads what it reads only once it runs, so the
+					// list is given an observer of its own to grow as its rows find out.
+					if (program.usesScript() && list.scriptRefresh() == kNoObserver) {
+						const ObserverId refresh = bindings().addRowRefresh({}, &list);
+						observers.ids.push_back(refresh);
+						list.setScriptRefresh(refresh);
 					}
 				}
 
@@ -642,7 +812,9 @@ namespace RDA::Layout {
 			} else {
 				// Nothing about the row: an ordinary binding, driven by signals like any
 				// other, and it goes on working as the row is reused.
-				instance.track(bindings().add(std::move(program), std::move(ids), target, property));
+				const ObserverId observer = bindings().add(std::move(program), std::move(ids), target, property);
+				observers.ids.push_back(observer);
+				if (late) bindings().applyNow(observer);
 			}
 		}
 	}
@@ -678,6 +850,19 @@ namespace RDA::Layout {
 				}
 			}
 		}
+
+		// The layout's functions, loaded before anything that names them is resolved. A
+		// blueprint with none -- almost every one -- does nothing here and starts nothing.
+		if (blueprint.hasScript()) {
+			const std::string name(blueprint.nodeCount() > 0 ? blueprint.string(blueprint.node(0).id) : "layout");
+			std::string error;
+			instance.sink()->module = scriptHost().load(blueprint, name, error);
+			if (!instance.sink()->module) {
+				RDA_LOG_ERROR("layout '" << name << "': " << error << ". Its bindings that run "
+				              "code will report that they cannot, and the rest work as usual");
+			}
+		}
+		const ScriptModule* module = instance.sink()->module.get();
 
 		std::vector<Widget*> made(blueprint.nodeCount(), nullptr);
 		Widget* root = nullptr;
@@ -739,17 +924,34 @@ namespace RDA::Layout {
 				                << "', which nothing declared");
 			}
 
-			// How many copies to keep. Enough for a tall window, because the height is
-			// not known here -- a layout can raise it, and the list says so if it runs
-			// out rather than leaving a gap nobody can explain.
-			int copies = 40;
+			// How many copies to build now. None, unless the layout asked for some: the
+			// list builds what its view needs the first time it is drawn, and more if the
+			// view grows -- so a list three rows tall has three, and one that fills a tall
+			// window has what fills it. `poolSize` builds that many ahead of time, for a
+			// list that would rather not build anything in the middle of a frame.
+			int copies = 0;
 			if (listNode != kNoParent) {
 				const float asked = blueprint.number(blueprint.node(listNode), "poolSize", 0.0f);
 				if (asked > 0.0f) copies = static_cast<int>(asked);
 			}
+			const std::shared_ptr<LayoutInstance::ObserverSink> sink = instance.sink();
 			for (int k = 0; k < copies; ++k) {
 				buildPooledRow(blueprint, templateRoot, *list,
-				               idPrefix + "#" + std::to_string(k) + "/", table, instance);
+				               idPrefix + "#" + std::to_string(k) + "/", table, *sink, false);
+			}
+
+			// And the means to build more, for when the view outgrows the pool. Its own copy
+			// of the blueprint, because the one this was loaded from belongs to whoever
+			// loaded it and may be replaced by a hot reload while the list lives on.
+			auto source = std::make_shared<Blueprint>();
+			if (blueprint.cloneInto(*source)) {
+				list->setRowFactory([source, templateRoot, idPrefix, sink, list] {
+					if (!sink->open) return;
+					const uint32_t id = tables().find(list->of);
+					Table* rows = (id == kNoTable) ? nullptr : &tables().at(id);
+					buildPooledRow(*source, templateRoot, *list,
+					               idPrefix + "#" + std::to_string(list->poolCount()) + "/", rows, *sink, true);
+				});
 			}
 		}
 
@@ -762,7 +964,7 @@ namespace RDA::Layout {
 			const std::string property(blueprint.string(record.key));
 			const std::string where = property + " on '" + target->id() + "'";
 			Program program = blueprint.programFor(record);
-			std::vector<uint32_t> ids = resolveNames(program, where);
+			std::vector<uint32_t> ids = resolveNames(program, where, nullptr, module);
 
 			if (record.kind == static_cast<uint32_t>(BindingKind::Event)) {
 				if (!attachEvent(*target, property, std::move(program), std::move(ids))) {

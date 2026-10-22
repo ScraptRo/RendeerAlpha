@@ -2,8 +2,13 @@
 #include <GraphicalObjects/Motion.h>
 #include <GraphicalObjects/Widget.h>
 #include <Layout/ListView.h>
+#include <Layout/TreeView.h>
+#include <Layout/GridView.h>
+#include <Layout/ScriptHost.h>
+#include <Core/Tables.h>
 #include <Logger/Logger.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace RDA::Layout {
@@ -87,6 +92,19 @@ namespace RDA::Layout {
 		// A child's own answer for an axis, which every widget has and any of them may
 		// compute: `hAlignSelf={() => state.narrow ? "center" : "start"}`.
 		if (property == "dragWindow")   { widget.dragWindow = value.truthy(); return true; }
+		if (property == "maximizeButton") { widget.maximizeButton = value.truthy(); return true; }
+		// Only on the widgets the schema gives it to, so answering it here for all of them
+		// costs nothing -- and a keymap the application keeps in state is a binding.
+		if (property == "shortcut" || property == "keys") { widget.setShortcut(value.asText()); return true; }
+		if (property == "alt")          { widget.alt = value.asText(); return true; }
+		if (property == "live") {
+			const std::string word = value.asText();
+			widget.live = word == "assertive" ? 2 : word == "polite" ? 1 : 0;
+			return true;
+		}
+		if (property == "drag")         { widget.drag = value.asText(); return true; }
+		if (property == "dragKind")     { widget.dragKind = value.asText(); return true; }
+		if (property == "accepts")      { widget.accepts = value.asText(); return true; }
 		if (property == "route")        { widget.route = value.asText(); return true; }
 		if (property == "pace")         { widget.pace = paceFrom(value.asText(), widget.pace); return true; }
 		if (property == "hAlignSelf")   { widget.hAlignSelf = alignFrom(value.text, widget.hAlignSelf); return true; }
@@ -169,9 +187,34 @@ namespace RDA::Layout {
 			if (property == "vAlign")   { w->vAlign = alignFrom(value.text, w->vAlign); return true; }
 			if (property == "spread")   { w->spread = spreadFrom(value.text, w->spread); return true; }
 		} else if (auto* w = dynamic_cast<ListView*>(&widget)) {
+			if (auto* tree = dynamic_cast<TreeView*>(&widget)) {
+				if (property == "selected")  { tree->selected = value.asText(); return true; }
+				if (property == "selectedKeys") { tree->setSelectedKeys(value.asText()); return true; }
+				if (property == "multiSelect")  { tree->multiSelect = value.truthy(); return true; }
+				if (property == "openDepth") { tree->openDepth = static_cast<int>(value.asNumber()); return true; }
+				if (property == "indent")    { tree->indent = static_cast<float>(value.asNumber()); return true; }
+			}
 			if (property == "follow")    { w->follow = value.truthy(); return true; }
 			if (property == "revealRow") { w->revealRow = static_cast<int>(value.asNumber()); return true; }
 			if (property == "variant") { w->variant = Variant(std::string_view(value.text)); return true; }
+			if (property == "sortBy")         { w->sortBy = value.asText(); return true; }
+			if (property == "sortDescending") { w->sortDescending = value.truthy(); return true; }
+			if (property == "filter")         { w->filter = value.asText(); return true; }
+			if (property == "filterColumns")  { w->filterColumns = value.asText(); return true; }
+		} else if (auto* w = dynamic_cast<GridView*>(&widget)) {
+			if (property == "selected")       { w->selected = value.asText(); return true; }
+			if (property == "selectedKeys")   { w->setSelectedKeys(value.asText()); return true; }
+			if (property == "multiSelect")    { w->multiSelect = value.truthy(); return true; }
+			if (property == "sortBy")         { w->sortBy = value.asText(); return true; }
+			if (property == "sortDescending") { w->sortDescending = value.truthy(); return true; }
+			if (property == "filter")         { w->filter = value.asText(); return true; }
+			if (property == "filterColumns")  { w->filterColumns = value.asText(); return true; }
+			if (property == "rowHeight")      { w->rowHeight = static_cast<float>(value.asNumber()); return true; }
+			if (property == "variant")        { w->variant = Variant(std::string_view(value.text)); return true; }
+		} else if (auto* w = dynamic_cast<GridColumn*>(&widget)) {
+			if (property == "title")    { w->title = value.asText(); return true; }
+			if (property == "decimals") { w->decimals = static_cast<int>(value.asNumber()); return true; }
+			if (property == "sortable") { w->sortable = value.truthy(); return true; }
 		} else if (auto* w = dynamic_cast<Popup*>(&widget)) {
 			if (property == "open")      { w->open = value.truthy(); return true; }
 			if (property == "anchor")    { w->anchor = value.asText(); return true; }
@@ -194,14 +237,20 @@ namespace RDA::Layout {
 		binding.target    = target;
 		binding.property  = std::move(property);
 		binding.live      = true;
+		binding.script    = binding.program.usesScript();
+		return place(std::move(binding));
+	}
 
+	ObserverId BindingRuntime::place(Binding binding) {
 		// Ids are handed out densely and never reused, so Signals can index its own
-		// bookkeeping by them without a map.
-		const ObserverId id = static_cast<ObserverId>(mBindings.size());
-		mBindings.push_back(std::move(binding));
+		// bookkeeping by them without a map -- and it is Signals that hands them out, since
+		// a computed signal observes too.
+		const ObserverId id = signals().newObserver();
+		if (id >= mBindings.size()) mBindings.resize(static_cast<size_t>(id) + 1);
+		mBindings[id] = std::move(binding);
 		++mLive;
 
-		for (const uint32_t signal : mBindings.back().signalIds) {
+		for (const uint32_t signal : mBindings[id].signalIds) {
 			signals().observe(signal, id);
 		}
 		return id;
@@ -212,19 +261,41 @@ namespace RDA::Layout {
 		binding.signalIds = std::move(signalIds);
 		binding.refresh   = list;
 		binding.live      = true;
+		return place(std::move(binding));
+	}
 
-		const ObserverId id = static_cast<ObserverId>(mBindings.size());
-		mBindings.push_back(std::move(binding));
-		++mLive;
+	void BindingRuntime::watch(ObserverId observer, uint32_t signal) {
+		if (observer >= mBindings.size() || !mBindings[observer].live) return;
+		signals().observe(signal, observer);
+	}
 
-		for (const uint32_t signal : mBindings.back().signalIds) {
-			signals().observe(signal, id);
+	void BindingRuntime::rewatch(ObserverId id, Binding& binding, const std::vector<uint32_t>& read,
+	                             const std::vector<std::pair<uint32_t, uint64_t>>& tablesRead) {
+		auto isStatic = [&](uint32_t s) {
+			return std::find(binding.signalIds.begin(), binding.signalIds.end(), s) != binding.signalIds.end();
+		};
+		// Dropped: what it read last time and not this time -- a branch not taken now.
+		for (const uint32_t old : binding.dynamic) {
+			if (std::find(read.begin(), read.end(), old) == read.end() && !isStatic(old))
+				signals().unobserve(old, id);
 		}
-		return id;
+		std::vector<uint32_t> now;
+		for (const uint32_t s : read) {
+			if (isStatic(s)) continue;
+			now.push_back(s);
+			signals().observe(s, id);   // a second edge to the same observer is not added
+		}
+		binding.dynamic = std::move(now);
+		binding.tableReads = tablesRead;
+		if (!binding.tableReads.empty() &&
+		    std::find(mTableWatchers.begin(), mTableWatchers.end(), id) == mTableWatchers.end())
+			mTableWatchers.push_back(id);
 	}
 
 	void BindingRuntime::remove(ObserverId observer) {
 		if (observer >= mBindings.size() || !mBindings[observer].live) return;
+		mTableWatchers.erase(std::remove(mTableWatchers.begin(), mTableWatchers.end(), observer),
+		                     mTableWatchers.end());
 		signals().forget(observer);
 		mBindings[observer] = Binding{}; // frees the program; leaves the slot as a hole
 		--mLive;
@@ -236,6 +307,38 @@ namespace RDA::Layout {
 		// where the row is known.
 		if (binding.refresh) { binding.refresh->invalidateRows(); return true; }
 		if (!binding.target) return false;
+
+		if (binding.script) {
+			// Watched while it runs: what the function reads is what this binding depends
+			// on now, which may not be what it depended on last time.
+			const ObserverId id = static_cast<ObserverId>(&binding - mBindings.data());
+			const ScriptHost::Frame frame(ScriptHost::Mode::Value);
+			const EvalResult result = evaluate(binding.program, signals(), binding.signalIds);
+			rewatch(id, binding, frame.signals(), frame.tables());
+			if (!result.ok) {
+				// A function that threw is kept, with the last value it produced still on
+				// screen: the next thing it reads may well be one it can handle.
+				if (result.scriptError) {
+					if (result.error != binding.lastError) {
+						binding.lastError = result.error;
+						RDA_LOG_WARNING("binding: " << binding.property << " on '"
+						                << binding.target->id() << "' - " << result.error);
+					}
+					return false;
+				}
+				RDA_LOG_WARNING("binding: " << binding.property << " - " << result.error);
+				binding.live = false;
+				return false;
+			}
+			binding.lastError.clear();
+			if (!applyBoundValue(*binding.target, binding.property, result.value)) {
+				RDA_LOG_WARNING("binding: nothing named '" << binding.property
+				                << "' on this widget to drive");
+				binding.live = false;
+				return false;
+			}
+			return true;
+		}
 
 		const EvalResult result = evaluate(binding.program, signals(), binding.signalIds);
 		if (!result.ok) {
@@ -254,6 +357,11 @@ namespace RDA::Layout {
 		return true;
 	}
 
+	bool BindingRuntime::applyNow(ObserverId observer) {
+		if (observer >= mBindings.size()) return false;
+		return applyOne(mBindings[observer]);
+	}
+
 	size_t BindingRuntime::applyAll() {
 		size_t applied = 0;
 		for (Binding& binding : mBindings) {
@@ -263,14 +371,37 @@ namespace RDA::Layout {
 	}
 
 	size_t BindingRuntime::applyDirty() {
+		// Bindings whose functions read a table: a table has no observers, so whether one
+		// moved is asked here -- once, of the sum of every table's version, on a frame
+		// where nothing changed, and binding by binding only when something did.
+		std::vector<ObserverId> fromTables;
+		if (!mTableWatchers.empty()) {
+			const uint64_t revision = tables().revision();
+			if (revision != mSeenTables) {
+				mSeenTables = revision;
+				for (const ObserverId id : mTableWatchers) {
+					if (id >= mBindings.size() || !mBindings[id].live) continue;
+					for (const auto& [table, version] : mBindings[id].tableReads) {
+						if (!tables().valid(table) || tables().at(table).version() != version) {
+							fromTables.push_back(id);
+							break;
+						}
+					}
+				}
+			}
+		}
+
 		const std::vector<ObserverId>& dirty = signals().dirty();
-		if (dirty.empty()) return 0;
+		if (dirty.empty() && fromTables.empty()) return 0;
 
 		size_t applied = 0;
 		// Copied because applying can write a signal — a handler's effect landing on a
 		// bound property — which would otherwise grow the list being walked.
-		const std::vector<ObserverId> pending = dirty;
+		std::vector<ObserverId> pending = dirty;
 		signals().clearDirty();
+		for (const ObserverId id : fromTables) {
+			if (std::find(pending.begin(), pending.end(), id) == pending.end()) pending.push_back(id);
+		}
 
 		for (const ObserverId observer : pending) {
 			if (observer >= mBindings.size()) continue;

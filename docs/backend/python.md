@@ -56,6 +56,25 @@ bury its handlers inside a callback, so instead they are remembered and applied 
 `on_start` has declared them. Binding after the engine is up works too, and happens at
 once.
 
+A command declared with `params` hands them to its handler, in order:
+
+```python
+@Commands.rename
+def on_rename(id: float, name: str):
+    ...
+```
+
+One state.ts answers -- an action -- runs inside the engine; a handler bound to it hears of
+it afterwards, with the same arguments. Any command can be run from Python and its result
+read back:
+
+```python
+ok = rda.call("validate", "ABC-1234")   # what the action returned; None for a backend's
+```
+
+A computed signal is a property with no setter: `State.total = 3` is an AttributeError
+where it is written.
+
 ## Tables
 
 ```python

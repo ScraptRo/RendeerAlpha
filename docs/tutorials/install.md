@@ -32,7 +32,7 @@ The script is written for a machine that has none of this yet. It checks what is
 
 A state declaration, a theme and a layout are all TypeScript. The `rda` tool turns each into what the engine loads, and the first step of that is esbuild transforming the TypeScript into something the tool can evaluate. esbuild is a single static binary, not a node program — the bring-up puts one in `bin/` beside the tool, copied from `node_modules` if you have node and downloaded from the npm registry if you do not.
 
-So a Python project with no `node_modules` anywhere still compiles its layouts, and node appears on the requirements list only for a **Node backend**, where it is the interpreter your application runs in. What ships contains no parser, no JavaScript engine and no node.
+So a Python project with no `node_modules` anywhere still compiles its layouts, and node appears on the requirements list only for a **Node backend**, where it is the interpreter your application runs in. What ships contains no parser and no node; a layout's own functions run as precompiled bytecode on an embedded QuickJS.
 
 ## The manual way
 

@@ -33,6 +33,15 @@ namespace RDA {
 		if (!mInput.typed.empty() || !mInput.editKeys.empty()) return false;
 		if (mInput.copy || mInput.cut || mInput.paste || mInput.selectAll || mInput.submit) return false;
 		if (mInput.undo || mInput.redo) return false;
+		// A shortcut is offered by the widgets the walk reaches, so a frame with a key in
+		// it has to walk -- F5 on an idle window is input like any other.
+		if (!mInput.chords.empty()) return false;
+		// A drag draws a figure that follows the pointer and a target that lights up, and
+		// a drop of files is handed to whatever the walk finds under it.
+		if (mDrag.active || mDrag.pending || !mInput.droppedFiles.empty()) return false;
+		// A screen reader has just started listening and has no tree yet, or asked for
+		// something to be done.
+		if (mA11y && mA11y->wanted() && (!mA11yBuilt || !mA11yRequests.empty())) return false;
 
 		// A focused field blinks its caret, which is geometry changing on a timer.
 		if (mFocused != 0) return false;
@@ -80,6 +89,14 @@ namespace RDA {
 
 	void Gui::begin(const GuiInput& input) {
 		mInput = input;
+		mWalkDestroyed = Widget::destroyedCount();
+		// While an input method is composing, the keys are its: Backspace edits the word
+		// being composed, Enter chooses a candidate. Whatever still reaches here is not for
+		// the interface -- not the field, and not a shortcut.
+		if (!mInput.preedit.empty()) {
+			mInput.editKeys.clear();
+			mInput.chords.clear();
+		}
 		// Before anything asks: a widget's paint reads where a value is *now*, so the
 		// stepping has to have happened. Values nobody asked for last frame are dropped
 		// here too, which is what keeps the table the size of what is on screen.
@@ -105,6 +122,13 @@ namespace RDA {
 		mFocusClaimed = false;
 		mFocusables.clear();
 		mShapedRing = 0;
+		mShortcuts.clear();
+		mTextFocus = false;
+		mTextEntry = false;
+		mPickUp = nullptr;
+		mDropTargets.clear();
+		mFileTarget = nullptr;
+		if (mInput.lPressed) mClickPress = 0;
 		// Tab moves the keyboard on. Read here, spent at the end of the frame: a text
 		// field in code mode inserts spaces instead and says so by consuming it.
 		mFocusMove = 0;
@@ -120,6 +144,15 @@ namespace RDA {
 		if (!mTree.empty()) mLayoutDirty = true;
 		mTree.flush();
 
+		// What a screen reader asked for since last frame. Taken before the cache decides,
+		// because an action waiting is a reason to walk -- it is applied to its widget as
+		// the walk reaches it, which is the only moment the widget is known to exist.
+		mA11yThisFrame = false;
+		if (mA11y && mA11y->wanted()) {
+			std::vector<AccessibleRequest> asked = mA11y->takeRequests();
+			for (AccessibleRequest& one : asked) mA11yRequests.push_back(std::move(one));
+		}
+
 		if (canReuseRetained()) {
 			// Truncate back to where the retained walk finished last frame. The geometry
 			// is already in the buffers, so this costs three size assignments and no
@@ -131,8 +164,16 @@ namespace RDA {
 			// `mHot` and `mViewportRect` are deliberately left alone: without input they
 			// still describe the situation the skipped walk would have reproduced.
 			++mCacheStats.reused;
+			mWalked = false;
 			return;
 		}
+		mWalked = true;
+		mGripIds.clear();
+
+		// Walking, so describing -- when anybody is listening.
+		mA11yThisFrame = mA11y && mA11y->wanted();
+		mA11yRecords.clear();
+		mA11ySeen.clear();
 
 		// Only now: this frame walks the tree, so this is a frame on which every value
 		// still in use will be asked for. Ageing on a reused frame would forget a
@@ -142,9 +183,13 @@ namespace RDA {
 		// Asked for again by whatever is still playing, every frame it still is. Cleared
 		// here rather than when it settles, so nothing has to remember to stop asking.
 		mAwake = false;
+		// The same for the maximise button: a walk that does not draw it means it is gone.
+		// Not on a reused frame, which draws exactly what the last walk did.
+		mMaximizeButton = Rect{};
 		// The same: a grip is held for as long as it is re-declared and the pointer is
 		// still down, so letting go needs no call.
 		mWindowGrabbed = false;
+		mWindowToggle = false;
 
 		mDraw.clear();
 		mOverlays.clear();
@@ -168,10 +213,15 @@ namespace RDA {
 			mInput.pointer = glm::vec2(-1.0e6f, -1.0e6f);
 			mInput.lDown = mInput.lPressed = mInput.lReleased = false;
 			mInput.scroll = 0.0f;
+			// And the keys, as far as shortcuts go: the interface behind a menu is behind
+			// it for the keyboard too, so Delete in a dialog does not also delete the row
+			// the dialog is about. The overlay pass gets them back with the pointer.
+			mInput.chords.clear();
 		}
 		mOpacity = 1.0f;
 		mOpacityStack.clear();
 		mInputStack.clear();
+		mInertDepth = 0;
 		mViewportRect = Rect{}; // a Viewport widget re-reports it during the walk below
 		mCmdStart = 0;
 		// Hot is recomputed from scratch each frame; active persists (a press-drag keeps
@@ -264,7 +314,342 @@ namespace RDA {
 		}
 	}
 
+	// ---- the accessibility tree ----------------------------------------------------------
+
+	void Gui::applyAccessibleRequests(Widget* widget, Widget* owner, int item, uint32_t id) {
+		if (mA11yRequests.empty()) return;
+		for (size_t i = 0; i < mA11yRequests.size();) {
+			if (mA11yRequests[i].id != id) { ++i; continue; }
+			const AccessibleRequest one = std::move(mA11yRequests[i]);
+			mA11yRequests.erase(mA11yRequests.begin() + static_cast<std::ptrdiff_t>(i));
+			if (one.action == AccessibleAction::SetSelection) {
+				// Where a screen reader put the caret, or what it selected, in characters --
+				// turned into the bytes the field indexes by, and set on its state the way a
+				// click sets it.
+				auto* field = dynamic_cast<TextField*>(widget);
+				int from = 0, to = 0;
+				if (field && std::sscanf(one.value.c_str(), "%d,%d", &from, &to) == 2) {
+					const std::string& text = field->text();
+					// The byte the n-th character begins at, or the end.
+					auto bytesAt = [&](int characters) {
+						int seen = 0;
+						for (size_t b = 0; b < text.size(); ++b) {
+							if ((static_cast<unsigned char>(text[b]) & 0xC0) == 0x80) continue;
+							if (seen == characters) return static_cast<int>(b);
+							++seen;
+						}
+						return static_cast<int>(text.size());
+					};
+					TextState& st = mTextStates[id];
+					st.caret = bytesAt(to);
+					st.selectAnchor = (from == to) ? -1 : bytesAt(from);
+					st.boxMode = false;
+					st.blink = 0.0f;
+				}
+			} else if (one.action == AccessibleAction::Focus) {
+				// Moved the way Tab moves it, ring and all: somebody following along on
+				// screen should see where the reader has gone.
+				mFocused = id;
+				mFocusClaimed = true;
+				mFocusByKeyboard = true;
+			} else if (owner) {
+				owner->accessibleItemAction(item, one.action, one.value);
+			} else if (widget) {
+				widget->accessibleAction(one.action, one.value);
+			}
+			mAwake = true;
+		}
+	}
+
+	// Every name the visible widgets under `widget` have, in order, separated by spaces --
+	// what a live container says when it changes.
+	std::string Gui::spokenText(const Widget& widget) {
+		std::string out;
+		for (const std::unique_ptr<Widget>& child : widget.children()) {
+			if (!child || !child->visible) continue;
+			AccessibleInfo info;
+			if (child->describe(info)) {
+				const std::string& said = info.value.empty() ? info.name : info.value;
+				if (!said.empty()) { if (!out.empty()) out += ' '; out += said; }
+				if (info.role != AccessibleRole::Group) continue;
+			}
+			const std::string inner = spokenText(*child);
+			if (!inner.empty()) { if (!out.empty()) out += ' '; out += inner; }
+		}
+		return out;
+	}
+
+	void Gui::noteAccessible(Widget* widget, const Rect& where) {
+		if (!mA11yThisFrame || !widget) return;
+		// Once per frame. A widget an item already stands for -- a list row -- is that
+		// item, and a widget painted twice in one frame is still one widget.
+		if (!mA11ySeen.insert(widget).second) return;
+		AccessibleRecord record;
+		if (!widget->describe(record.info)) {
+			// Not a node of its own, but asked to be read out when it changes: a group,
+			// named by everything it says, so a status made of two labels is one sentence.
+			if (!widget->live) return;
+			record.info = AccessibleInfo{};
+			record.info.role = AccessibleRole::Group;
+			record.info.name = spokenText(*widget);
+		}
+		record.info.live = widget->live;
+		record.widget = widget;
+		record.id = scopedId(widget->id().c_str());
+		record.where = where;
+		record.automationId = widget->id();
+		mA11yRecords.push_back(std::move(record));
+		applyAccessibleRequests(widget, nullptr, -1, mA11yRecords.back().id);
+	}
+
+	void Gui::noteAccessibleItem(Widget* owner, uint32_t id, int item, Widget* row,
+	                             const Rect& where, const AccessibleInfo& info,
+	                             const std::string& automationId, bool focused) {
+		if (!mA11yThisFrame || !owner) return;
+		AccessibleRecord record;
+		record.owner = owner;
+		record.row = row;
+		record.item = item;
+		record.id = id;
+		record.where = where;
+		record.info = info;
+		record.automationId = automationId;
+		record.focused = focused;
+		if (row) mA11ySeen.insert(row);
+		mA11yRecords.push_back(std::move(record));
+		applyAccessibleRequests(nullptr, owner, item, id);
+	}
+
+	void Gui::noteAccessibleText(uint32_t id, AccessibleText text) {
+		if (!mA11yThisFrame) return;
+		for (auto it = mA11yRecords.rbegin(); it != mA11yRecords.rend(); ++it) {
+			if (it->id == id) { it->text = std::move(text); return; }
+		}
+	}
+
+	void Gui::buildAccessibleTree() {
+		auto tree = std::make_shared<AccessibleTree>();
+		tree->unitScale = mUnitScale;
+		tree->version = ++mA11yVersion;
+		tree->nodes.reserve(mA11yRecords.size());
+
+		// Which node each widget became. An item counts for the row it stands for as well,
+		// so what is inside a row hangs off the row.
+		std::unordered_map<const Widget*, int> nodeOf;
+		nodeOf.reserve(mA11yRecords.size() * 2);
+		// An item that stands in for its owner's focus takes it from the owner: the reader
+		// is on the highlighted option, not on the dropdown around it.
+		bool handedOn = false;
+		for (const AccessibleRecord& r : mA11yRecords) if (r.focused) handedOn = true;
+		for (const AccessibleRecord& r : mA11yRecords) {
+			AccessibleNode node;
+			node.id = r.id;
+			node.info = r.info;
+			node.bounds = r.where;
+			node.automationId = r.automationId;
+			node.text = r.text;
+			node.focused = handedOn ? r.focused : (r.id != 0 && r.id == mFocused);
+			const int at = static_cast<int>(tree->nodes.size());
+			if (node.focused) tree->focused = at;
+			tree->byId.emplace(node.id, at);
+			tree->nodes.push_back(std::move(node));
+			if (r.widget) nodeOf.emplace(r.widget, at);
+			if (r.row) nodeOf.emplace(r.row, at);
+		}
+
+		// A node's parent is the nearest node above it in the widget tree. Containers that
+		// are not nodes -- a stack, a scroll view -- are walked past, so their children
+		// hang off whatever is.
+		for (size_t i = 0; i < mA11yRecords.size(); ++i) {
+			const AccessibleRecord& r = mA11yRecords[i];
+			const int self = static_cast<int>(i);
+			const Widget* from = r.owner ? r.owner : (r.widget ? r.widget->parent() : nullptr);
+			int parent = -1;
+			for (const Widget* w = from; w; w = w->parent()) {
+				auto found = nodeOf.find(w);
+				if (found != nodeOf.end() && found->second != self) { parent = found->second; break; }
+			}
+			tree->nodes[i].parent = parent;
+			if (parent >= 0) tree->nodes[static_cast<size_t>(parent)].children.push_back(self);
+			else             tree->roots.push_back(self);
+		}
+
+		mA11yTree = tree;
+		mA11yBuilt = true;
+		if (mA11y) mA11y->publish(std::move(tree));
+	}
+
+	void Gui::notePickUp(Widget* widget, const Rect& where) {
+		// Overwritten as the walk goes deeper, so the last one is the deepest.
+		mPickUp = widget;
+		mPickUpRect = where;
+	}
+
+	void Gui::offerDropTarget(Widget* widget, const Rect& where) {
+		// Not from a subtree that has been shown no pointer -- a screen on its way out, or
+		// everything behind an open menu. Both hide it by parking it far outside anything,
+		// which is the one thing a target can ask about without being told why.
+		if (mInput.pointer.x < -1.0e5f) return;
+		// Only the part of it that can be seen. A row scrolled half out of a list is a
+		// target where it shows and not over the header that hides the rest.
+		const Rect clip = currentClipRect();
+		const float x0 = (std::max)(where.x, clip.x), y0 = (std::max)(where.y, clip.y);
+		const float x1 = (std::min)(where.x + where.w, clip.x + clip.w);
+		const float y1 = (std::min)(where.y + where.h, clip.y + clip.h);
+		if (x1 <= x0 || y1 <= y0) return;
+		mDropTargets.emplace_back(widget, Rect{ x0, y0, x1 - x0, y1 - y0 });
+	}
+
+	void Gui::finishDrag(bool dropped) {
+		(void)dropped;
+		// Every target that is still drawn hears that nothing is over it any more.
+		for (const auto& one : mDropTargets) one.first->setDragOver(false);
+		mDrag = DragState{};
+		mAwake = true;
+	}
+
+	void Gui::drawDragFigure(const Rect& target, bool haveTarget) {
+		const FocusStyle& ring = mTheme.focus(kDefaultVariant);
+		const uint32_t edge = ring.color;
+		const float t = (std::max)(1.0f, ring.width);
+		auto outline = [&](const Rect& r) {
+			addRect({ r.x, r.y, r.w, t }, edge);
+			addRect({ r.x, r.y + r.h - t, r.w, t }, edge);
+			addRect({ r.x, r.y + t, t, (std::max)(0.0f, r.h - t * 2.0f) }, edge);
+			addRect({ r.x + r.w - t, r.y + t, t, (std::max)(0.0f, r.h - t * 2.0f) }, edge);
+		};
+
+		// Where it would land, in the focus ring's colour: the one colour every theme
+		// already has for "this is the one", and a drop target is exactly that.
+		if (haveTarget) {
+			addRect(target, fadeTo(edge, 0.12f));
+			outline(target);
+		}
+
+		// What is being carried, held where it was taken hold of -- a figure the size of
+		// what was picked up, with its words on it, rather than the widget itself drawn a
+		// second time. A widget painted twice in a frame asks for its animated values
+		// twice from two places, and the one left behind would start sliding after the
+		// one in the hand.
+		const Rect figure{ mInput.pointer.x - mDrag.grab.x, mInput.pointer.y - mDrag.grab.y,
+		                   mDrag.size.x, mDrag.size.y };
+		addRect(figure, fadeTo(edge, 0.22f));
+		outline(figure);
+		if (!mDrag.label.empty() && mFont) {
+			const LabelStyle& text = mTheme.label(kDefaultVariant);
+			pushClip(glm::vec4(figure.x, figure.y, figure.x + figure.w, figure.y + figure.h));
+			const float y = figure.y + (figure.h - lineHeight(text.font)) * 0.5f;
+			drawText(mDrag.label.c_str(), { figure.x + 8.0f, y }, text.color, text.font);
+			popClip();
+		}
+	}
+
 	void Gui::end() {
+		// Widgets died between the walk and here. The engine's loop walks every window,
+		// then calls onUpdate, then ends each frame -- and onUpdate is where a layout is
+		// reloaded and a route is swapped, which is to say where a whole tree can be
+		// replaced. Everything this frame noted by pointer may now point at a widget that
+		// is gone, so none of it is followed: no shortcut, no context menu, no drop and no
+		// tree for a screen reader this frame. Its requests wait for the next one, which is
+		// asked for now and walks the tree that is there.
+		//
+		// Found by a screen reader: a button pressed through UI Automation, then a hot
+		// reload, and the tree it was about to be told about was built from freed widgets.
+		if (Widget::destroyedCount() != mWalkDestroyed) {
+			mFileTarget = nullptr;
+			mPickUp = nullptr;
+			mDropTargets.clear();
+			mContext = nullptr;
+			mShortcuts.clear();
+			mA11yRecords.clear();
+			mA11ySeen.clear();
+			mA11yThisFrame = false;
+			mLayoutDirty = true;
+			mAwake = true;
+		}
+
+		// Hot is last-writer-wins, so once the walk is over it names whatever is on top
+		// under the pointer: one of the bars only if nothing drawn over it took the pointer.
+		if (mWalked) {
+			mCaptionHot = std::find(mGripIds.begin(), mGripIds.end(), mHot) != mGripIds.end();
+		}
+		// Files from outside, to the deepest element under them that asked. Called here
+		// for the reason a context menu is: the handler may change the tree.
+		if (!mInput.droppedFiles.empty() && mFileTarget && mFileTarget->onFiles) {
+			std::string paths;
+			for (const std::string& one : mInput.droppedFiles) {
+				if (!paths.empty()) paths += '\n';
+				paths += one;
+			}
+			mFileTarget->onFiles(paths);
+			mAwake = true;
+		}
+
+		// ---- a drag ------------------------------------------------------------------
+		//
+		// Picked up on the press, but nothing travels until the pointer has gone a few
+		// units with the button held: a press that stays put is a click, and a click on
+		// a draggable card has to go on being one.
+		if (mPickUp && mInput.lPressed && !mDrag.active) {
+			// Unless something took the press as a drag of its own. A button's press is a
+			// click waiting to happen, which a drag may cancel; a slider's is already
+			// moving the slider.
+			if (mActive == 0 || mActive == mClickPress) {
+				mDrag = DragState{};
+				mDrag.pending = true;
+				mDrag.payload = mPickUp->drag;
+				mDrag.kind = mPickUp->dragKind;
+				mDrag.label = mPickUp->dragLabel();
+				mDrag.size = { mPickUpRect.w, mPickUpRect.h };
+				mDrag.grab = mInput.pointer - glm::vec2(mPickUpRect.x, mPickUpRect.y);
+				mDrag.from = mInput.pointer;
+			}
+		}
+		if (mDrag.pending) {
+			constexpr float kDragSlop = 4.0f; // units the pointer may wander and still click
+			const glm::vec2 moved = mInput.pointer - mDrag.from;
+			if (!mInput.lDown) {
+				mDrag = DragState{};
+			} else if (moved.x * moved.x + moved.y * moved.y > kDragSlop * kDragSlop) {
+				mDrag.pending = false;
+				mDrag.active = true;
+				// The press is the drag's now. Whatever it landed on does not also click
+				// when the button comes up -- the card goes where it was carried and
+				// stays unopened.
+				mActive = 0;
+			}
+		}
+		if (mDrag.active) {
+			Widget* target = nullptr;
+			Rect targetRect{};
+			for (auto it = mDropTargets.rbegin(); it != mDropTargets.rend(); ++it) {
+				if (it->second.contains(mInput.pointer)) {
+					target = it->first;
+					targetRect = it->second;
+					break;
+				}
+			}
+			for (const auto& one : mDropTargets) one.first->setDragOver(one.first == target);
+
+			bool cancelled = false;
+			for (const GuiEditKey key : mInput.editKeys) {
+				if (key == GuiEditKey::Escape) cancelled = true;
+			}
+			if (cancelled) {
+				finishDrag(false);
+			} else if (!mInput.lDown) {
+				// Copied before the handler runs: it may write state that rebinds the very
+				// widget that offered itself, and finishDrag clears what is carried.
+				const std::string payload = mDrag.payload;
+				const bool landed = target && target->onDrop;
+				finishDrag(landed);
+				if (landed) target->onDrop(payload);
+			} else {
+				drawDragFigure(targetRect, target != nullptr);
+				mAwake = true;
+			}
+		}
+
 		// The ring first, and before the flush: it is geometry like everything else, and
 		// added after the last command is closed it would never reach one. Drawn last
 		// among the widgets, so it sits on top of whatever it surrounds.
@@ -305,6 +690,19 @@ namespace RDA {
 			// Whatever it did, the frame is worth looking at again -- a menu opening is
 			// a binding, and a binding is not input.
 			mAwake = true;
+		}
+
+		// Shortcuts, here for the same reason.
+		if (!mShortcuts.empty()) dispatchShortcuts();
+		mFocusPages = false;
+		mFocusSelects = false;
+
+		// The tree a screen reader reads, from what this walk found. Requests nothing
+		// answered -- a widget that was not drawn -- are dropped: acting on one later,
+		// once it happened to be drawn again, would be acting on something nobody saw.
+		if (mA11yThisFrame) {
+			buildAccessibleTree();
+			mA11yRequests.clear();
 		}
 
 		// A release anywhere ends the interaction if no widget consumed it.
@@ -433,8 +831,56 @@ namespace RDA {
 		return look;
 	}
 
+	void Gui::offerShortcut(Widget* widget) {
+		if (widget && widget->shortcut.valid() && wantsShortcuts()) mShortcuts.push_back(widget);
+	}
+
+	void Gui::offerShortcutsIn(Widget& subtree) {
+		if (wantsShortcuts()) subtree.offerShortcuts(mShortcuts);
+	}
+
+	void Gui::dispatchShortcuts() {
+		for (const Chord& chord : mInput.chords) {
+			// Whatever has the keyboard hears its own keys first: a field is being typed
+			// into, and a button or a list has Space, Enter, the arrows and Escape.
+			if (mTextFocus ? textFieldKeeps(chord) : (mFocused != 0 && focusedWidgetKeeps(chord)))
+				continue;
+			if (mFocusPages) {
+				const bool paging = chord.key == Key::Home || chord.key == Key::End ||
+				                    chord.key == Key::PageUp || chord.key == Key::PageDown;
+				const bool moving = paging || chord.key == Key::Up || chord.key == Key::Down;
+				const uint8_t held = chord.mods;
+				if (paging && held == 0) continue;
+				if (mFocusSelects) {
+					if (moving && held != 0 && (held & ~(Chord::Ctrl | Chord::Shift)) == 0) continue;
+					if (held == Chord::Ctrl && (chord.key == Key::A || chord.key == Key::Space)) continue;
+				}
+			}
+
+			// The pointers are this frame's: offered during the walk that just finished,
+			// and cleared at the top of the next one.
+			Widget* other = nullptr;
+			Widget* chosen = pickShortcut(mShortcuts, chord, &other);
+			if (!chosen) continue;
+
+			// Two widgets that could both be pressed with the same keys right now is a
+			// layout that has not decided what those keys mean. Said once per chord.
+			if (other && std::find(mShortcutClashes.begin(), mShortcutClashes.end(), chord)
+			             == mShortcutClashes.end()) {
+				mShortcutClashes.push_back(chord);
+				RDA_LOG_WARNING("shortcut " << chordName(chord) << " belongs to both '"
+				                << other->id() << "' and '" << chosen->id() << "'; the one "
+				                "drawn last, '" << chosen->id() << "', takes it");
+			}
+			chosen->pressShortcut();
+			// Whatever it did, it was not input the cache can see.
+			mAwake = true;
+		}
+	}
+
 	void Gui::pushInert() {
 		mInputStack.push_back(mInput);
+		++mInertDepth;
 		GuiInput quiet;
 		// What a frame still needs to know while nothing is being done to it: how big the
 		// window is, and how long the frame was. A pointer nowhere near anything is what
@@ -445,7 +891,24 @@ namespace RDA {
 		mInput = quiet;
 	}
 
+	void Gui::pushPointerAway() {
+		mInputStack.push_back(mInput);
+		mInput.pointer = glm::vec2(-1.0e6f);
+		mInput.lDown = mInput.lPressed = mInput.lReleased = false;
+		mInput.rDown = mInput.rPressed = mInput.rReleased = false;
+		mInput.mDown = mInput.mPressed = mInput.mReleased = false;
+		mInput.scroll = 0.0f;
+		mInput.droppedFiles.clear();
+	}
+
 	void Gui::popInert() {
+		if (mInputStack.empty()) return;
+		mInput = std::move(mInputStack.back());
+		mInputStack.pop_back();
+		if (mInertDepth > 0) --mInertDepth;
+	}
+
+	void Gui::popPointerAway() {
 		if (mInputStack.empty()) return;
 		mInput = std::move(mInputStack.back());
 		mInputStack.pop_back();
@@ -866,9 +1329,13 @@ namespace RDA {
 
 	bool Gui::windowGrip(const char* id, const Rect& rect) {
 		const uint32_t wid = scopedId(id);
+		mGripIds.push_back(wid);
 		if (rect.contains(mInput.pointer)) mHot = wid;
 		if (mHot == wid && mInput.lPressed) mActive = wid;
 		if (mActive == wid && mInput.lReleased) mActive = 0;
+		// The second press of a double click on the bar itself -- not on a button drawn
+		// over it, which runs later and takes hot from it, and so is never `wid` here.
+		if (mHot == wid && mInput.lPressed && mInput.clickCount == 2) mWindowToggle = true;
 
 		// Held is enough: there is no click to report and nothing to draw. A drag that
 		// began here goes on even once the pointer has left the bar, which is what makes
@@ -890,7 +1357,7 @@ namespace RDA {
 		uint32_t wid = scopedId(id);
 		bool inside = rect.contains(mInput.pointer);
 		if (inside) mHot = wid;
-		if (mHot == wid && mInput.lPressed) mActive = wid;
+		if (mHot == wid && mInput.lPressed) { mActive = wid; mClickPress = wid; }
 
 		bool clicked = false;
 		if (mActive == wid && mInput.lReleased) {

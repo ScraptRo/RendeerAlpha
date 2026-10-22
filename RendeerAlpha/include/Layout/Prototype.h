@@ -19,8 +19,9 @@
 // for a screenful, or generated when all you need is "fifty rows of something".
 //
 // It is not a mock framework and it does not pretend to be a backend. Nothing here
-// computes, validates or persists. It exists so that `rda prototype` can put a layout on
-// the screen with plausible things in it.
+// computes, validates or persists -- what state.ts computes and answers runs as it would
+// under any backend, because that is state.ts's, not a backend's. This exists so that
+// `rda prototype` can put a layout on the screen with plausible things in it.
 namespace RDA::Layout {
 
 	struct PrototypeResult {
@@ -37,10 +38,16 @@ namespace RDA::Layout {
 	// Signals take the value they were declared with, which is the same value the
 	// generated C++ would have given them -- a prototype starts where the real thing
 	// starts. Tables are created with their columns and no rows. Commands are bound to
-	// `onCommand`, if one is given, so a tool can report what an interface asked for
-	// rather than letting the press do nothing at all.
+	// `onCommand`, if one is given, with the arguments they were called with as a JSON
+	// array, so a tool can report what an interface asked for rather than letting the
+	// press do nothing at all. An action still runs: that binding only watches it.
+	//
+	// `onlyNew` leaves everything that already exists as it is -- for a declaration that
+	// changed while the interface was running, which should gain its new names without
+	// the old ones going back to where they started.
 	PrototypeResult definePrototypeState(const StateSchema& schema,
-	                                     void (*onCommand)(const char* name) = nullptr);
+	                                     void (*onCommand)(const char* name, const char* args) = nullptr,
+	                                     bool onlyNew = false);
 
 	// Placeholder contents from a JSON file. Keys are names the declaration already
 	// knows:

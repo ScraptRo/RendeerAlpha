@@ -181,8 +181,11 @@ namespace RDA {
 
 		// The faces, kept alive after the bake because on-demand needs them: a glyph that
 		// arrives in the third hour is rasterised from the same font the first one was.
-		// Behind a pointer so stb_truetype stays out of this header.
+		// Behind a pointer so stb_truetype stays out of this header. Named publicly, and
+		// still defined only in the .cpp, so its loading helper there can name it too.
+	public:
 		struct Faces;
+	private:
 		std::unique_ptr<Faces> mFaces;
 
 		// The atlas as the CPU knows it. A glyph is drawn into here and the rectangle it

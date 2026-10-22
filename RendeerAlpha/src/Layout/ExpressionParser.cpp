@@ -1,5 +1,6 @@
 ﻿#include <Layout/ExpressionParser.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <sstream>
@@ -37,8 +38,12 @@ namespace RDA::Layout {
 
 		class Parser {
 		public:
-			Parser(const std::string& source, bool isHandler, std::string rowParam)
-				: mSource(source), mIsHandler(isHandler), mRowParam(std::move(rowParam)) {}
+			Parser(const std::string& source, bool isHandler, std::string rowParam,
+			       const CallableName& callable)
+				: mSource(source), mIsHandler(isHandler), mRowParam(std::move(rowParam)),
+				  mCallable(callable) {}
+
+			const std::vector<std::string>& calls() const { return mCalls; }
 
 			Program parse() {
 				skipArrowPrefix();
@@ -408,9 +413,30 @@ namespace RDA::Layout {
 
 					skipSpace();
 					if (peek() == '(') {
+						// A function the layout defined: the arguments are ordinary
+						// expressions, evaluated here, and the call leaves the VM.
+						if (mCallable && mCallable(word)) {
+							++mAt; // the parenthesis
+							uint32_t argc = 0;
+							skipSpace();
+							if (!take(")")) {
+								for (;;) {
+									parseExpression();
+									++argc;
+									skipSpace();
+									if (take(")")) break;
+									if (!take(",")) fail("expected ',' or ')' in the call to " + word);
+								}
+							}
+							if (argc > 255) fail("a call takes at most 255 arguments");
+							if (std::find(mCalls.begin(), mCalls.end(), word) == mCalls.end())
+								mCalls.push_back(word);
+							emit(Op::CallScript, signalSlot("$" + word) | (argc << kScriptArgShift));
+							return;
+						}
 						mAt = start;
-						fail("calls are not compiled yet -- a binding is an expression over "
-						     "state, so move the work into the backend and bind to the result");
+						fail("'" + word + "' is not a function this layout defines, so there "
+						     "is nothing to call");
 					}
 					// The handler's parameter. Checked before state, so a handler that
 					// names its parameter `state` reads the parameter -- which is what the
@@ -452,12 +478,21 @@ namespace RDA::Layout {
 						const std::string name = readIdentifier();
 						skipSpace();
 						if (!take("(")) fail("a command has to be called: write commands." + name + "()");
+						// Its arguments: ordinary expressions, evaluated now and handed over
+						// with the call -- what this event means travels with it.
+						uint32_t argc = 0;
 						skipSpace();
 						if (!take(")")) {
-							fail("a command takes no arguments -- write what it needs into "
-							     "state first, and let it read that");
+							for (;;) {
+								parseExpression();
+								++argc;
+								skipSpace();
+								if (take(")")) break;
+								if (!take(",")) fail("expected ',' or ')' in the call to commands." + name);
+							}
 						}
-						emit(Op::CallCommand, signalSlot(kCommandMark + name));
+						if (argc > 255) fail("a command takes at most 255 arguments");
+						emit(Op::CallCommand, signalSlot(kCommandMark + name) | (argc << kScriptArgShift));
 						return;
 					}
 					if (word == kStateRoot && peek() == '.') {
@@ -589,15 +624,19 @@ namespace RDA::Layout {
 			std::string        mParameter;
 			// The row template's parameter, when this is one of its bindings.
 			const std::string  mRowParam;
+			// Which names are the layout's own functions, and which of them were called.
+			const CallableName& mCallable;
+			std::vector<std::string> mCalls;
 		};
 	}
 
 	ParseResult parseBinding(const std::string& source, bool isHandler,
-	                         const std::string& rowParam) {
+	                         const std::string& rowParam, const CallableName& callable) {
 		ParseResult result;
 		try {
-			Parser parser(source, isHandler, rowParam);
+			Parser parser(source, isHandler, rowParam, callable);
 			result.program = parser.parse();
+			result.calls = parser.calls();
 			result.ok = true;
 		} catch (const Failure& failure) {
 			result.error = failure.message;

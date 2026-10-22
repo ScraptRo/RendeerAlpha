@@ -1,7 +1,12 @@
 # Hot reload
 
 Debug builds only. `RDA_ENABLE_HOT_RELOAD` is what pulls the layout compiler into the
-binary at all — a Release build contains neither it nor QuickJS.
+binary at all — a Release build does not contain it. It does contain QuickJS, as the runtime
+a layout's functions run on, started only when a layout has some.
+
+A layout's functions reload with it. They hold no state of their own -- what they read and
+write is signals and tables -- so a reload swaps the code and keeps everything the reader
+did.
 
 ```mermaid
 flowchart TD

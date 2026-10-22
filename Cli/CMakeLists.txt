@@ -5,6 +5,11 @@
 # The intent is that a build invokes it rather than a person doing so by hand, the way
 # shaders are compiled without anyone thinking about it.
 add_executable(rda rda.cpp)
+# UTF-8 as the process code page, so a non-Latin argument reaches the tool intact. MSVC
+# embeds a .manifest listed among the sources; elsewhere there is nothing to do.
+if(WIN32)
+	target_sources(rda PRIVATE rda.manifest)
+endif()
 target_link_libraries(rda PRIVATE rendeer)
 
 # Its own directory, apart from the one runtime outputs share. A directory that holds

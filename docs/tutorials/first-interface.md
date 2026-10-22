@@ -83,7 +83,7 @@ Three kinds of value, and this file has all of them. `text="Reset"` is a **const
     "moduleResolution": "bundler", "jsx": "react", "jsxFactory": "h",
     "types": [], "skipLibCheck": true
   },
-  "include": ["rda.d.ts", "*.tsx", "../themes/*.ts"]
+  "include": ["rda.d.ts", "*.tsx", "../themes/*.ts", "../state.ts"]
 }
 ```
 

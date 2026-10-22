@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <string_view>
 #include <GraphicalObjects/GuiTypes.h>
+#include <GraphicalObjects/Accessible.h>
 #include <GraphicalObjects/GuiTheme.h>
 #include <GraphicalObjects/Texture.h>
 #include <string>
@@ -296,7 +297,13 @@ namespace RDA {
 	class Widget {
 	public:
 		explicit Widget(std::string id) : mId(std::move(id)) {}
-		virtual ~Widget() = default;
+		virtual ~Widget();
+
+		// How many widgets have been destroyed since the process started. The GUI reads it
+		// before a walk and again when the frame ends: anything the walk noted down by
+		// pointer -- a shortcut offered, a node for a screen reader, a drop target -- is
+		// only safe to follow if nothing has died in between.
+		static uint64_t destroyedCount();
 
 		Widget(const Widget&) = delete;
 		Widget& operator=(const Widget&) = delete;
@@ -356,6 +363,98 @@ namespace RDA {
 		// A button inside it still takes its own press: this is declared before the
 		// children draw, and the one under the pointer last is the one that gets it.
 		bool dragWindow = false;
+		// This is the window's maximise button. Nothing changes about how it draws or
+		// clicks; the platform frame is told where it is, which on Windows 11 is what
+		// offers snap layouts when the pointer rests on it.
+		bool maximizeButton = false;
+
+		// ---- what a screen reader is told ------------------------------------------------
+		//
+		// What this is called, for somebody who cannot see it. Most widgets already say:
+		// a button by its text, a checkbox by its label. This is for the ones that do not
+		// -- a slider, an icon, a button holding only a picture -- and for a container that
+		// is worth naming as a group.
+		std::string alt;
+		// Read out by a screen reader when what this says changes -- or when it appears
+		// saying something -- without the reader having to go and look: 1 politely, after
+		// whatever is being read, 2 at once. On a label, its text; on anything holding
+		// several, all the text inside it, as one sentence.
+		uint8_t live = 0;
+		// What this is, for the accessibility tree: false when it is not a node of its own,
+		// and its children hang off whatever is above it. The default is a group when it has
+		// an `alt` and nothing otherwise, which is right for every container.
+		virtual bool describe(AccessibleInfo& out) const;
+		// Something outside asked this to be pressed, toggled, set. Run during the walk, the
+		// way a click is, through the same path a click takes.
+		virtual void accessibleAction(AccessibleAction action, const std::string& value) {
+			(void)action; (void)value;
+		}
+		// The same, for one of the items a widget describes on its own behalf -- a tab
+		// title, a tree row -- named by whatever `item` it gave when it described it.
+		virtual void accessibleItemAction(int item, AccessibleAction action, const std::string& value) {
+			(void)item; (void)action; (void)value;
+		}
+
+		// ---- dragging and dropping -----------------------------------------------------
+		//
+		// What this carries when it is picked up and dragged, as a string. Empty is not
+		// draggable, which is everything unless a layout says otherwise. A string rather
+		// than a widget or a row, because what lands on the other end is a handler, and a
+		// handler is handed a value: an id, a path, whatever the backend can look up. In a
+		// <list> row it is a binding like any other, so each row carries its own.
+		std::string drag;
+		// What sort of thing it is, so a target can take some and refuse others: a task
+		// cannot be dropped on a tag. Empty is "no sort in particular".
+		std::string dragKind;
+		// The kinds this takes as a drop target, separated by '|'. Empty takes any kind.
+		std::string accepts;
+		// Something was let go of over this, and this accepts its kind. The deepest target
+		// under the pointer hears it, the way a right-click works.
+		std::function<void(const std::string&)> onDrop;
+		// A drag this would take arrived over it, or left. Reported on the change, like
+		// onHover, so a layout can light the target up its own way.
+		std::function<void(bool)> onDragOver;
+		// Files dragged in from outside the application and let go over this: their paths,
+		// one per line. The deepest element under the drop that asked hears it.
+		std::function<void(const std::string&)> onFiles;
+		bool acceptsKind(std::string_view kind) const;
+		// What a picked-up widget shows of itself while it travels: its text, or for a
+		// row of several things, the first text inside it. Empty draws the figure alone.
+		virtual std::string dragLabel() const;
+		// Told by the GUI, which knows when the pointer arrives and leaves during a drag.
+		void setDragOver(bool over) {
+			if (over == mDragOver) return;
+			mDragOver = over;
+			if (onDragOver) onDragOver(over);
+		}
+
+		// A key chord that does what pressing this does: Ctrl+S on a Save button runs the
+		// same onClick a click runs, the way Space does when it has the focus. Nothing is
+		// declared twice -- a menu entry and its shortcut are one widget, so they cannot
+		// drift apart.
+		//
+		// Live while this widget could be reached: drawn, or in a closed <popup> -- a menu
+		// entry's shortcut has to work with the menu shut, which is the whole point of
+		// having one -- or scrolled out of view. Not when it is hidden, on a tab that is
+		// not showing, inside a screen on its way out, or behind a menu that is open.
+		// Only the widgets that do something when pressed answer it; see pressShortcut.
+		Chord shortcut;
+		// Parses `text` into `shortcut`, or clears it when empty. A chord that does not
+		// parse is reported, naming this widget, and leaves no shortcut rather than a
+		// wrong one.
+		void setShortcut(std::string_view text);
+
+		// What the shortcut does. Nothing, unless a widget has something to do: a button
+		// clicks, a checkbox toggles, a <shortcut> runs its handler.
+		virtual void pressShortcut() {}
+
+		// Adds this widget, if it has a shortcut, and everything below it that could be
+		// reached, without painting any of it. For a subtree that is not being drawn this
+		// frame but whose shortcuts still count -- a closed popup, a child scrolled out of
+		// view -- and for the Probe, which draws nothing at all. Overridden where "below
+		// it" is not simply every visible child: a tab strip offers only the page that is
+		// showing.
+		virtual void offerShortcuts(std::vector<Widget*>& out);
 
 		// This child's own answer to the container's hAlign and vAlign. Whichever of the
 		// two lies across the stacking axis is the one a container reads; the other is
@@ -508,7 +607,15 @@ namespace RDA {
 		Rect mArranged{};
 		bool mArrangedValid = false;
 		bool mHovered = false;      // what onHover last reported
+		bool mDragOver = false;     // what onDragOver last reported
 	};
+
+	// Which of the widgets offering a shortcut takes `chord`: the last one offered, which is
+	// the one drawn last and so the one in front. Null when none of them has it.
+	// `alsoOffered`, when given, is set to a second widget with the same chord -- two live
+	// widgets sharing one is a layout that has not decided what those keys mean.
+	Widget* pickShortcut(const std::vector<Widget*>& offered, const Chord& chord,
+	                     Widget** alsoOffered = nullptr);
 
 	// Marks the span in which a widget tree is being walked and painted.
 	//
@@ -524,6 +631,22 @@ namespace RDA {
 		WidgetWalkGuard(const WidgetWalkGuard&) = delete;
 		WidgetWalkGuard& operator=(const WidgetWalkGuard&) = delete;
 		static bool active();
+	};
+
+	// Edits made inside one of these are known not to disturb the walk, and are not warned
+	// about.
+	//
+	// For one case: a list building a row because its view grew, in the middle of drawing
+	// itself. What the guard protects is a loop over some widget's children, and nothing
+	// loops over a list's: the list draws from its pool, and the walk above it is iterating
+	// the list's parent. The row's own widgets are a subtree nobody is walking yet. Anything
+	// else that wants this should be as sure of the same thing.
+	class WidgetBuildScope {
+	public:
+		WidgetBuildScope();
+		~WidgetBuildScope();
+		WidgetBuildScope(const WidgetBuildScope&) = delete;
+		WidgetBuildScope& operator=(const WidgetBuildScope&) = delete;
 	};
 
 	// Structural edits queued now and applied at a safe point.
@@ -741,6 +864,7 @@ namespace RDA {
 
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
 		void paintAbove(Gui& gui, glm::vec2 origin) override;
 
 	private:
@@ -784,6 +908,8 @@ namespace RDA {
 
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleAction(AccessibleAction action, const std::string& value) override;
 
 	private:
 		// Dragging, and where from -- so the value moves by the whole distance travelled
@@ -804,6 +930,7 @@ namespace RDA {
 	public:
 		Label(std::string id, std::string text) : Widget(std::move(id)), text(std::move(text)) {}
 		std::string text;
+		std::string dragLabel() const override { return text; }
 		uint32_t    color = rgba(230, 230, 235); // used when variant == "default"
 		Variant     variant = kDefaultVariant;   // a named variant's color wins over `color`
 		// Break the text to the width it is given rather than letting it run off the
@@ -843,6 +970,7 @@ namespace RDA {
 		// like it means.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
 
 	private:
 		// What runs() built, and what it built them from. Two keys rather than one: the
@@ -884,9 +1012,16 @@ namespace RDA {
 		// follows.
 		bool                  selected = false;
 		std::function<void()> onClick;
+		void pressShortcut() override { if (onClick) onClick(); }
+		std::string dragLabel() const override { return text; }
+		// Its children are drawn but take no input, so nothing in them has a shortcut
+		// that could run either.
+		void offerShortcuts(std::vector<Widget*>& out) override;
 		// Its text plus room to breathe around it.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleAction(AccessibleAction action, const std::string& value) override;
 	};
 
 	// A labelled boolean toggle. onChange fires with the new value when toggled.
@@ -897,9 +1032,16 @@ namespace RDA {
 		bool                      value = false;
 		Variant                   variant = kDefaultVariant; // theme variant (see Gui::theme())
 		std::function<void(bool)> onChange;
+		// The same toggle a click makes.
+		void pressShortcut() override {
+			value = !value;
+			if (onChange) onChange(value);
+		}
 		// The box is square and as tall as a line; the label follows it.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleAction(AccessibleAction action, const std::string& value) override;
 	};
 
 	// A draggable float in [minValue, maxValue]. onChange fires while dragging.
@@ -915,6 +1057,8 @@ namespace RDA {
 		// thickness rather than nothing at all.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleAction(AccessibleAction action, const std::string& value) override;
 	};
 
 
@@ -955,6 +1099,7 @@ namespace RDA {
 		// The picture's own size in pixels, so width="content" means what it looks like.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
 
 	private:
 		void ensureLoaded() const;
@@ -1058,6 +1203,11 @@ namespace RDA {
 
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleItemAction(int item, AccessibleAction action, const std::string& value) override;
+		// Only the page that is showing. A shortcut on a page nobody can see would act on
+		// something the reader has no way to know is there.
+		void offerShortcuts(std::vector<Widget*>& out) override;
 
 	private:
 		float barSize(Gui& gui) const;
@@ -1082,6 +1232,24 @@ namespace RDA {
 		std::string text;
 		std::string value;
 		void paint(Gui&, glm::vec2) override {} // drawn by the Select that owns it
+	};
+
+	// A key chord and what it does, with nothing on screen.
+	//
+	// For the shortcut that belongs to no button: Ctrl+K opening a palette, F5 refreshing,
+	// Escape closing a panel the reader got to by other means. Where a button does the same
+	// thing, its own `shortcut` is the better place, because then the two cannot drift.
+	//
+	// Lives where it is written, and that is its scope: one inside a screen works while the
+	// screen is showing, one inside a <tab> while that page is. Takes no room.
+	class ShortcutKey : public Widget {
+	public:
+		explicit ShortcutKey(std::string id) : Widget(std::move(id)) {}
+		std::function<void()> onPress;
+
+		bool inFlow() const override { return false; }
+		void pressShortcut() override { if (onPress) onPress(); }
+		void paint(Gui& gui, glm::vec2 origin) override;
 	};
 
 	// A closed box showing the chosen option, and a list when it is open.
@@ -1120,7 +1288,10 @@ namespace RDA {
 
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleAction(AccessibleAction action, const std::string& value) override;
 		void paintAbove(Gui& gui, glm::vec2 origin) override;
+		void accessibleItemAction(int item, AccessibleAction action, const std::string& value) override;
 
 	protected:
 		// Which row the keyboard is on while the list is open. -1 is "none yet", which is
@@ -1128,6 +1299,13 @@ namespace RDA {
 		// until an arrow key says where to start.
 		int mHighlight = -1;
 		void chooseHighlighted();
+
+		// Type-to-find: the letters typed so far, and how long since the last one. A pause
+		// starts a new search, which is what lets "s" then, a second later, "t" find the
+		// first S and then the first T rather than looking for "st".
+		std::string mFind;
+		float       mFindAge = 0.0f;
+		void findTyped(const std::string& typed);
 
 	private:
 		// The choices are the Option children, read where they are rather than copied
@@ -1169,6 +1347,7 @@ namespace RDA {
 			++mTextVersion;
 		}
 
+		const std::string& placeholder() const { return mPlaceholder; }
 		void setPlaceholder(std::string value) {
 			if (value == mPlaceholder) return;
 			mPlaceholder = std::move(value);
@@ -1216,6 +1395,8 @@ namespace RDA {
 		// runaway paste from swallowing the panel.
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+		void accessibleAction(AccessibleAction action, const std::string& value) override;
 
 	private:
 		std::string mText;
@@ -1256,6 +1437,14 @@ namespace RDA {
 		std::string name = "main";
 
 		void paint(Gui& gui, glm::vec2 origin) override;
+
+	private:
+		// Only once a backend listens to `name`; see Viewports::listen.
+		void trackPointer(Gui& gui, const Rect& area);
+
+		glm::vec2 mLastPointer{ 0.0f };
+		uint32_t  mButtons = 0;      // down now, having gone down over this
+		bool      mWasInside = false;
 	};
 }
 

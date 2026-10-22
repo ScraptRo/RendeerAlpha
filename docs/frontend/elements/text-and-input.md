@@ -57,6 +57,7 @@ resolved in favour of whichever starts first.
 | `hAlign` | `start` / `center` (default) / `end` |
 | `padding` | inset around its children, when it has any. 6 by default |
 | `selected` | chosen, and staying chosen — see below |
+| `shortcut` | a key chord that clicks it, `"Ctrl+S"` — see [the keyboard](../keyboard.md#shortcuts-of-your-own) |
 | `variant` | which button style |
 | `onClick` | runs on each completed click |
 
@@ -114,6 +115,7 @@ answer HTML gives, and the only one that makes "the whole thing is one control" 
 | --- | --- |
 | `label` | the text beside the box |
 | `value` | ticked when true |
+| `shortcut` | a key chord that toggles it — see [the keyboard](../keyboard.md#shortcuts-of-your-own) |
 | `onChange(boolean)` | with the new state |
 
 ## `<slider>`

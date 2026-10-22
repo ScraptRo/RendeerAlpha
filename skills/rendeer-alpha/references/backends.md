@@ -158,6 +158,12 @@ an engine at 1.7. Each binding checks at load and refuses with a sentence saying
 half is behind. If you see that, rebuild the engine (the bring-up script) or reinstall the
 package from the same checkout.
 
+**Commands carry arguments.** A command declared with `params` hands them to its handler,
+typed, in order. One state.ts answers (an action) runs in the engine; a backend may still
+bind it, to hear of it afterwards, and can run any command and get its result:
+`rda.call("validate", code)` in Python, `rda.call(...)` in Node, `Rda.Call(...)` in C#,
+`RDA::State::call(...)` in C++. A computed field has no setter on any side.
+
 **Read `RDA_DEBUG.txt`** after a run. A layout that silently shows nothing has a reason
 written there.
 
@@ -187,6 +193,16 @@ Node is `new rda.Drawing()` / `rda.draw(name, d)` / `rda.viewportSize(name)`; C#
 `new Drawing()` / `Rda.Draw(name, d)` / `Rda.ViewportSize(name)`. Colours are what a theme
 takes. Coordinates are the viewport's own, `0, 0` at its top-left, and anything past its
 edge is clipped.
+
+**Resizes and the pointer** (Python, ABI 1.7). A thread sleeps in
+`rda.wait_viewport(timeout)` until something happens to a viewport and reads
+`rda.viewport_event(name)` -- summed since the last look: `resized` with `width`/`height`
+(every viewport reports its size, from the first frame that places it), and for one made
+to take the pointer with `rda.listen_viewport("chart")`: `dx`/`dy` while held, `wheel`
+notches, `pressed`/`released`/`held` bits (`LEFT`, `RIGHT`, `MIDDLE`), `clicks` (2 =
+double), `x`/`y`, `inside`. Neither call crosses to the loop, so waiting costs nothing.
+Not listened to, a viewport lets the pointer through as before.
+Node and C# do not have it yet.
 
 ## Files, and where the keyboard is
 

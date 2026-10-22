@@ -83,6 +83,10 @@ namespace RDA::Layout {
 		// Writes one JSON value into whatever `name` turned out to be.
 		bool applySignal(JSContext* ctx, uint32_t signal, JSValueConst value,
 		                 const std::string& name, std::string& error) {
+			if (signals().computed(signal)) {
+				error = "`" + name + "` is computed by state.ts -- set what it is computed from";
+				return false;
+			}
 			switch (signals().type(signal)) {
 			case SignalType::Bool:
 				signals().set(signal, JS_ToBool(ctx, value) != 0);
@@ -161,7 +165,7 @@ namespace RDA::Layout {
 	}
 
 	PrototypeResult definePrototypeState(const StateSchema& schema,
-	                                     void (*onCommand)(const char*)) {
+	                                     void (*onCommand)(const char*, const char*), bool onlyNew) {
 		PrototypeResult result;
 		if (!schema.ok) {
 			result.error = schema.error.empty() ? "the declaration did not load" : schema.error;
@@ -169,6 +173,7 @@ namespace RDA::Layout {
 		}
 
 		for (const StateField& field : schema.fields) {
+			if (onlyNew && signals().find(field.name) != kNoSignal) continue;
 			defineFrom(field);
 			++result.signals;
 		}
@@ -177,7 +182,7 @@ namespace RDA::Layout {
 		// go with it, and the Router expects to find them. The generated C++ does this
 		// too; a prototype needs it for the same reason -- without `route` there is no
 		// screen to be on.
-		if (!schema.routes.empty()) {
+		if (!schema.routes.empty() && !(onlyNew && signals().find("route") != kNoSignal)) {
 			signals().define("route", std::string_view(schema.routes.front().name));
 			++result.signals;
 			commands().define("back");
@@ -186,6 +191,7 @@ namespace RDA::Layout {
 		}
 
 		for (const StateTable& declared : schema.tables) {
+			if (onlyNew && tables().find(declared.name) != kNoTable) continue;
 			const uint32_t id = tables().define(declared.name);
 			Table& table = tables().at(id);
 			for (const StateField& column : declared.columns) {
@@ -195,12 +201,15 @@ namespace RDA::Layout {
 		}
 
 		for (const StateCommand& declared : schema.commands) {
+			if (onlyNew && commands().find(declared.name) != kNoCommand) continue;
 			const uint32_t id = commands().define(declared.name);
 			if (onCommand) {
 				// Copied into the closure: the schema is the caller's and may not outlive
 				// the run.
 				const std::string name = declared.name;
-				commands().bind(id, [onCommand, name] { onCommand(name.c_str()); });
+				commands().bind(id, CommandWork([onCommand, name](const CommandArgs& args) {
+					onCommand(name.c_str(), args.json().c_str());
+				}));
 			}
 			++result.commands;
 		}
@@ -289,6 +298,10 @@ namespace RDA::Layout {
 		const uint32_t signal = signals().find(name);
 		if (signal == kNoSignal) {
 			error = "nothing is called `" + name + "`";
+			return false;
+		}
+		if (signals().computed(signal)) {
+			error = "`" + name + "` is computed by state.ts -- set what it is computed from";
 			return false;
 		}
 		switch (signals().type(signal)) {

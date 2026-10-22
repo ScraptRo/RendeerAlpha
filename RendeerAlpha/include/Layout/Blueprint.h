@@ -28,6 +28,14 @@ namespace RDA::Layout {
 	// match is refused rather than reinterpreted: it was produced by a different
 	// compiler than the one this binary agrees with.
 	inline constexpr uint32_t kBlueprintVersion = 2u;
+	// A blueprint that carries a layout's functions as bytecode. The same sections as
+	// version 2, followed by a script section; a layout with no functions is still
+	// written as version 2, byte for byte what it was, and an engine from before the
+	// section existed refuses this one by its version rather than by a size it cannot
+	// account for.
+	inline constexpr uint32_t kBlueprintScriptVersion = 3u;
+	// 'RDAS'
+	inline constexpr uint32_t kBlueprintScriptMagic = 0x53414452u;
 
 	enum class PropKind : uint32_t {
 		String = 0,
@@ -104,6 +112,31 @@ namespace RDA::Layout {
 		uint32_t operand;
 	};
 
+	// After everything else, in a version-3 blueprint: the layout's run-time functions.
+	// Followed by `engineBytes` of the QuickJS version that wrote the bytecode, then the
+	// bytecode, then the line map that turns a line of it back into a line of the .tsx.
+	struct BlueprintScriptHeader {
+		uint32_t magic;        // kBlueprintScriptMagic
+		uint32_t engineBytes;
+		uint32_t codeBytes;
+		uint32_t mapBytes;
+	};
+
+	// What a script section holds, read out of a blueprint or handed to the builder.
+	struct BlueprintScript {
+		std::string          engine;   // the QuickJS version, for refusing a mismatch
+		std::vector<uint8_t> code;     // JS_WriteObject's bytecode
+		std::string          lineMap;  // one "file:line" per line of the module, '\n'-separated
+		bool empty() const { return code.empty(); }
+	};
+
+	// The same section standing alone -- header, version, bytecode, line map -- which is how
+	// state.ts's code travels: inside the generated state module, with no blueprint around
+	// it. Reading checks that the bytes are exactly one section and nothing more.
+	std::vector<uint8_t> writeScriptSection(const BlueprintScript& script);
+	bool readScriptSection(const uint8_t* bytes, size_t size, BlueprintScript& out,
+	                       std::string& error);
+
 	// A blueprint held in memory, with the arrays pointing into the buffer it owns.
 	//
 	// parse() validates every offset and index before any of the accessors below can be
@@ -121,6 +154,13 @@ namespace RDA::Layout {
 		size_t nodeCount() const { return mHeader ? mHeader->nodeCount : 0; }
 		size_t propCount() const { return mHeader ? mHeader->propCount : 0; }
 		size_t byteSize()  const { return mBytes.size(); }
+		// A second blueprint over a copy of the same bytes. Not a copy constructor: a
+		// blueprint points into its own buffer, and a member-wise copy would point into
+		// somebody else's.
+		bool cloneInto(Blueprint& out) const {
+			std::string error;
+			return out.parse(mBytes, error);
+		}
 
 		const BlueprintNode& node(size_t index) const { return mNodes[index]; }
 		const BlueprintProp& prop(size_t index) const { return mProps[index]; }
@@ -131,6 +171,10 @@ namespace RDA::Layout {
 		// Rebuilds the runnable program for a binding. Called once per binding when a
 		// layout is instantiated, never while it is running.
 		Program programFor(const BlueprintBinding& binding) const;
+
+		// The layout's functions, when it has any. Empty for a version-2 blueprint.
+		bool hasScript() const { return !mScript.empty(); }
+		const BlueprintScript& script() const { return mScript; }
 
 		// The text behind a string index. Always valid on a parsed blueprint.
 		std::string_view string(uint32_t index) const;
@@ -156,6 +200,7 @@ namespace RDA::Layout {
 		const uint8_t*              mNumbers      = nullptr; // read with memcpy: not aligned
 		const BlueprintString*      mStrings      = nullptr;
 		const char*                 mText         = nullptr;
+		BlueprintScript             mScript;
 	};
 
 	// Builds the buffer the class above reads.
@@ -182,6 +227,10 @@ namespace RDA::Layout {
 		void addBinding(uint32_t node, uint32_t keyString, BindingKind kind,
 		                const Program& program);
 
+		// The layout's functions. Set once, after the tree; a builder with none writes a
+		// version-2 blueprint.
+		void setScript(BlueprintScript script) { mScript = std::move(script); }
+
 		std::vector<uint8_t> finish() const;
 
 		size_t nodeCount() const { return mNodes.size(); }
@@ -197,6 +246,7 @@ namespace RDA::Layout {
 		std::vector<BlueprintString>      mStrings;
 		std::vector<char>                 mText;
 		std::vector<std::string>          mInterned; // parallel to mStrings, for lookup
+		BlueprintScript                   mScript;
 	};
 
 	// Convenience: read a whole file, then parse it.

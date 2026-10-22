@@ -28,6 +28,13 @@ rda shot . --out home.png --size 1100x700 --scale 1
 | `--scale` | units to pixels: `1` is a plain display, `1.5` is one at 150%. The display's own, unsaid |
 | `--settle <ms>` | how long to let it run first. 250 by default |
 | `--scroll <n>` | turn the wheel, negative downward. Held until the picture, so a big number means "to the end" |
+| `--key <chord>` | press a key chord first, `Ctrl+S`, `Tab`. Repeatable, sent in order, one a frame |
+| `--drag X1,Y1,X2,Y2` | press at the first point, carry across, let go at the second. `--hold` takes the picture before letting go |
+| `--click [Ctrl+][Shift+]X,Y` | a click with those held through it, which `--key` cannot do: `--click 100,92 --click Shift+100,212` chooses a run of rows. Repeatable, in order with `--key` |
+| `--files <a;b>` | let files go where the pointer is, as though dragged in from outside. Put the pointer there with `--hover` |
+| `--a11y <file>` | write the accessibility tree of the same frame — see [screen readers](../frontend/accessibility.md#seeing-it) |
+| `--compose <text>` | an input method part way through a word, drawn at the focused field's caret |
+| `--type <text>` | type text first, into whatever has the keyboard. In order with `--key`, so `--key Tab --type bud` reaches a dropdown and finds Budapest |
 
 A still waits for the interface to arrive before it takes the picture: transitions ease over
 a theme's `transitionMs`, and a window nobody presents runs the loop as fast as the machine
@@ -99,7 +106,9 @@ Call it from `onFrameEnd`, not `onUpdate`. A frame is not finished when `onUpdat
 the walk is over but `Gui::end()` has not added what it adds afterwards, the focus ring
 among it -- so a capture taken there is the frame minus those things.
 `rendeerSetSyntheticPointer(x, y, down)` puts the pointer somewhere for the frames that
-follow, and `rendeerClearSyntheticPointer()` gives the mouse its place back.
+follow, `rendeerSetSyntheticModifiers(ctrl, shift)` holds those down until it is told
+otherwise, and `rendeerClearSyntheticPointer()` gives the mouse its place back and lets go
+of both.
 
 `config.offscreen` is not `hiddenMainWindow`: that one says the window is a device anchor and
 runs no interface in it at all.

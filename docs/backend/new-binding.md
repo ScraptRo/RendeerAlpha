@@ -16,7 +16,13 @@ The path is the one Python, Node and C# all took:
    whole value of one declaration is that a typo is an error in the language that made it.
 5. Wrap `rda_table_set_*` so an application hands over rows and the binding transposes
    them into columns.
-6. **Copy the checklist.** `bindings/tests/check.py`, `check.mjs` and `check.cs` ask the
+6. **Hand a handler its arguments.** Read `rda_command_args()` -- a JSON array -- inside the
+   callback, or right after `rda_poll_command` returns, and call the handler with them; a
+   command declared with `params` gets a handler typed from them in the generated module.
+   Wrap `rda_call`, which returns a command's result as JSON, and have the generated
+   `define()` pass the state code it carries to `rda_load_state_code` -- base64 in the
+   generated file is the easy way to carry bytes in a language's source.
+7. **Copy the checklist.** `bindings/tests/check.py`, `check.mjs` and `check.cs` ask the
    same questions in the same order; a fourth one asks them again. That is the cheapest way to
    find out what your binding does not do yet, and it is how both of these were finished
    rather than merely written.

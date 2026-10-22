@@ -11,13 +11,21 @@ half its bindings read a signal nobody declared.
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| `'Math' is not in scope` | a call in a binding | compute in the backend, put the answer in a signal |
-| `'step' is not in scope` | a binding read a variable from around it | inline the literal, or make it a signal |
+| `'step' is not in scope` | a binding read a local of the code around it | move it to the file's top level, inline it, or make it a signal |
 | `'item' is not in scope` | `item.x` outside a `<list>` row template | only the `row={(item) => ...}` function has it |
 | `'props' is not in scope` | see the props row below | |
-| `only a single level of state is readable: state.<name>` | `state.a.b`, or a method call like `state.kb.toFixed(1)` | state is flat; format in the backend |
+| `a value binding cannot write state` | `state.x = ...` in a `text={() => ...}` | write from an event handler |
+| `JSX builds the layout, which happens once` | a function a binding calls returns JSX | keep JSX in components; a function returns values |
+| `... is a function made while the layout was built` | `const f = make()` used at run time | write `function f(...) {}` at the top level |
+| `... is a <Class>, and only plain data ... can be written out` | a class instance built at the top level, read at run time | build it inside the function, or keep plain data at the top level |
+| `took longer than 50 ms and was stopped` (in the log) | a loop that does not end in run-time code | fix the loop; heavy work belongs in the backend |
 | `a value binding cannot call a command` | `commands.x()` in a value binding | call it from an event handler |
-| `arrays and objects are not compiled yet` | `[1,2,3]` or `{a:1}` in a thunk | use a table for rows, signals for values |
+| `state.x is computed, and it writes state` / `it calls a command` | a `compute` with an effect | do it in an action (`run`) instead |
+| `state.x is computed, and running it once while state.ts was built failed` | the computed value needs data that is not there at build | add `value: 0` beside `compute`; that is its type and starting value |
+| `a value binding cannot start a timer` / `it starts a timer` | `setTimeout` in a value binding or a `compute` | start it from a handler or an action |
+| `a timer goes off while the application runs, and the top level of a file runs once` | `setTimeout` at a file's top level | start it from a handler or an action |
+| `command 'x' has both run and params` | an action declared params | drop `params`; an action's parameters are its function's |
+| `state.x is computed by state.ts, and nothing else writes it` (at run time) | a handler, a script or a backend wrote a computed signal | write what it is computed from |
 | `props are resolved when the layout is compiled, so they cannot be read from a binding` | `text={() => props.label}` in a component | `text={props.label}`, or have the caller pass a thunk |
 | `the layout has no default export, or it is not a function` | `export function Home()` | `export default function Home()` |
 
@@ -57,7 +65,7 @@ These all **build cleanly**. The log is the only place they appear.
 | `layout: nothing answers 'onClick' on 'x'` | the handler never runs | that element has no such event — a `<label>` is not clickable |
 | `binding: nothing named 'text' on this widget to drive` | the binding is dropped | that element has no such property |
 | `Router: nothing routes to 'x'; opening 'home'` | the wrong screen | `state.route` was set to a name not in `routes` |
-| `list 'rows': 40 rows fit but only 32 were built; raise poolSize` | the bottom of the list is blank | raise `poolSize` on the `<list>` |
+| `list 'rows': 900 rows fit but a list builds at most 512; is rowHeight what was meant?` | the bottom of the list is blank | `rowHeight` is far smaller than intended |
 | `Validation layer … is not installed; running without it` | nothing; it still runs | Linux: `sudo apt install vulkan-validationlayers` |
 
 ## Starting up

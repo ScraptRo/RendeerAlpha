@@ -27,7 +27,7 @@ flowchart LR
         dts -.->|"type-checks"| srcLayout
     end
 
-    subgraph runtime["Run time — no compiler, no JS engine"]
+    subgraph runtime["Run time — no compiler; QuickJS only for a layout's functions"]
         hdr --> app["myapp"]
         rdth --> app
         rdab --> app
@@ -49,7 +49,9 @@ Three steps, in `src/Layout/LayoutCompiler.cpp`:
    to `h(type, props, ...children)`. Types are erased here; they were never for the
    runtime.
 2. **Evaluate** — QuickJS runs that JS once and calls the module's default export. The
-   result is a tree of plain objects. This is the only time JavaScript ever executes.
+   result is a tree of plain objects. This is the only time the layout's *structure* is
+   JavaScript; the functions its bindings call are compiled now and run later, as bytecode
+   -- see [code that runs](runtime-code.md).
 3. **Flatten** — the tree becomes a blueprint: nodes breadth-first with contiguous
    children, properties as POD, one string table, and every `{() => ...}` expression
    compiled to stack bytecode.

@@ -3,7 +3,7 @@
 **Live and load-bearing.** The blueprint format and its compiler; the widget and theme
 schemas and the types generated from them; components, expanded at compile time; signals,
 bindings and compiled event handlers; routing, with history and restored params; the theme
-compiler, including the type scale and transitions; the twenty-three elements, the overlay
+compiler, including the type scale and transitions; the twenty-seven elements, the overlay
 layer and `<popup>` among them; the headless probe; hot reload -- of a layout, and of the
 theme and meshes it is drawn with; the display scale, so a unit is a unit on a display at
 150%; the CMake build with per-platform scripts.
@@ -23,10 +23,9 @@ from one language having designed it.
   application records its own Vulkan there, so a scene renderer outside the engine is a
   callback rather than a fork.
 - *Run-time scripting* — `src/Scripting/`, behind `RDA_ENABLE_SCRIPTING`, **off by
-  default**. An embedded QuickJS host: a sandbox with no file, process or network access,
-  and bindings for the 3D scene that predate the interface layer. It was compiled into
-  every build and called by nothing. Off because *a shipped binary evaluates no
-  JavaScript* is a promise this engine makes, and this is the switch that qualifies it.
+  default**. An embedded QuickJS host with bindings for the 3D scene that predate the
+  interface layer. Not to be confused with a layout's functions, which run on their own
+  host -- `Layout/ScriptHost` -- and are on unless `RDA_RUNTIME_CODE` is off.
 
 **A hole in the interface.** A `<viewport>` is the one place the application draws
 rather than the engine. C++ gets the command buffer inside the render pass, with the
@@ -63,6 +62,24 @@ And the C ABI's `major.minor`: same major in both directions, engine minor at or
 the package's. A package built against 1.0 keeps working against every 1.x engine after it.
 That was designed before this release and is now a commitment rather than an intention.
 
+**Screen readers, on Windows and Linux.** Every widget describes itself into a
+platform-neutral tree, built only once something asks and published as a snapshot. A UI
+Automation provider speaks it on Windows and an AT-SPI one, over a libdbus loaded at run
+time, on Linux -- see [screen readers](../frontend/accessibility.md). macOS has the tree and
+nothing to speak it, because the engine does not run there. A text field is read caret by
+caret on both, through UI Automation's text pattern and AT-SPI's Text, and an open
+dropdown's options are items a reader can move through and choose. A list's rows are all
+in the tree, those out of view described from the table alone, up to two thousand around
+the view.
+
+**Chinese, Japanese and Korean.** Drawn from the system's own faces when the named ones do
+not have them, loaded one at a time, the first time a character needs one, in the order the
+system's language suggests. Typed through the input method on Windows, composed at the
+caret with the method off everywhere but a text field. Linux has the faces and, under X11,
+finished text through GLFW; it has no composition at the caret, and Wayland has no input
+method at all until GLFW speaks its text input. The atlas holds about two thousand CJK
+characters per size and does not grow.
+
 **Known loose ends.** None of them needs something to change shape to be fixed, which is
 what makes them loose ends rather than reasons to wait.
 
@@ -75,10 +92,11 @@ what makes them loose ends rather than reasons to wait.
   for several frames, so "has it stopped" is true almost as often as not. Drawing at the
   size the picture is given rather than the size of the box around it is the lever that
   would work.
-- A window with no OS frame cannot be resized by dragging its edges. There is no
-  non-client area to drag, and the engine does not synthesise one -- so a frameless
-  window is moved with `dragWindow` and resized by `state.rda.maximized`, or not at all.
-  A grip in the corner of the layout would be the fix and is a layout's to write.
+- A frameless window's frame is the platform's own on Windows (snapping, snap layouts on
+  the button marked `maximizeButton`, native resize) and the engine's GLFW approximation
+  elsewhere -- moved, resized from every edge, double-clicked to maximise and dragged out
+  of maximised, but never snapped. A Linux equivalent would go through the compositor
+  (`_NET_WM_MOVERESIZE` on X11, xdg-toplevel's move and resize on Wayland).
 - A `tiles` dock space does not scroll. Rows past the bottom of the space are clipped.
   Compaction pulls everything up, so it takes genuinely more tiles than fit -- but a
   dashboard that grows past the window has nowhere to put the rest.
@@ -102,12 +120,6 @@ what makes them loose ends rather than reasons to wait.
 - Scroll bars do not fade out when nothing is scrolling, the way a phone's do. The width is
   reserved either way, so it would cost nothing to draw — but a bar that is not there when
   you look for it is a different decision from an animation, and nobody has asked for it.
-- Floating panels are drawn, and take input, in the order they were created. Clicking one
-  does not bring it to the front, so two that overlap keep whichever order they had.
-- A dropdown has no type-to-find. Tab reaches it, Enter opens it on whatever is already
-  chosen, the arrows move the highlight, Enter takes it and Escape leaves without changing
-  anything — for choices written as `<option>` and for choices that came from a table
-  alike. Typing the first letters of one is what is missing.
 - Routing has no deep links or URLs, and history is not persisted -- it starts empty
   every run. A screen is named, not addressed, which is enough for an application
   and not enough for anything that wants to be linked to from outside.
@@ -116,11 +128,9 @@ what makes them loose ends rather than reasons to wait.
   arithmetic is its own job and has not been done.
 - No real bold face — `weight` is synthesised, and says so. A second *family* is no longer
   the limit it was: `rda_config_set_font` takes several paths separated by `;`, the first
-  is the body font and the rest are fallbacks, and a codepoint outside the preloaded Latin
-  ranges is baked into the atlas the first time something asks to draw it. So emoji and
-  scripts the body font has no glyph for arrive as long as a face that has them is named.
-  With no fallback named, they still draw as a box, visibly, and the log says which
-  codepoints and what to do about it.
+  is the body font and the rest are fallbacks, and after those the system's own faces are
+  tried, one at a time, for anything none of them has. A codepoint no face on the machine
+  has still draws as a box, visibly, and the log says which.
 - The syntax highlighter tokenises in ASCII, so `café` in a code field is highlighted as
   the identifier `caf` followed by plain text. It renders correctly — a token boundary is
   always at an ASCII byte, so a run never splits a character — it is only coloured

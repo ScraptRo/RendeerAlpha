@@ -71,8 +71,20 @@ Commands.ping(async () => {
 ```
 
 That is not a workaround made to look like a feature — an `await` inside a C++ command
-handler would be holding up the frame the interface asked in. It is the same reason
-commands never return a value: a command is a request, not a question.
+handler would be holding up the frame the interface asked in. It is the same reason a
+command the backend answers returns nothing to the interface: a command is a request, not
+a question.
+
+A command declared with `params` hands them to its handler, in order -- the poll reads them
+with the name, so they are what the event meant when it happened:
+
+```js
+Commands.rename((id, name) => { /* ... */ })
+```
+
+An action -- a command state.ts answers -- runs inside the engine, and `rda.call` runs any
+command and returns what it returned: `rda.call('validate', 'ABC-1234')`. A watched handler
+still runs at the next poll; `call` returns as soon as the engine has queued it.
 
 The queue is bounded. A backend that stops polling loses the oldest waiting command and
 the log says so once, rather than turning a held-down button into unbounded memory.
@@ -87,7 +99,8 @@ State.notAThing = 1      // TypeError, where it is written
 
 A real object of accessors rather than a Proxy: an editor completes the names and infers
 each one's type from its getter, and the object is made non-extensible — ES modules are
-strict, so assigning an undeclared name throws. Reading one is `undefined` at run time and
+strict, so assigning an undeclared name throws. A computed signal has a getter and no
+setter, so assigning one throws too. Reading one is `undefined` at run time and
 an error in the editor, which is the same guarantee TypeScript gives the frontend.
 
 ## Tables

@@ -6,7 +6,7 @@ The compiler's expression grammar, in full.
 | --- | --- |
 | **Literals** | numbers, `"strings"`, `` `templates ${…}` ``, `true`, `false` |
 | **Signals** | `state.name` — read, and in a handler, written |
-| **The engine's own** | `state.rda.width`, `state.rda.height` — read only |
+| **The engine's own** | `state.rda.width`, `state.rda.height`, `state.rda.dragging` and the rest — see below |
 | **Row fields** | `item.column` — only inside a `<list>` row template |
 | **Event value** | the handler's parameter, wherever it is named |
 | **Arithmetic** | `+` `-` `*` `/`, unary `-` |
@@ -16,17 +16,22 @@ The compiler's expression grammar, in full.
 | **Concatenation** | `+` on text, and template literals |
 | **Assignment** | `=` `+=` `-=` `*=` `/=` `++` `--` — handlers only |
 | **Commands** | `commands.name()` — handlers only |
+| **Your functions** | `formatSize(state.size)` — a function this file or one it imports defines at its top level |
 | **Sequence** | `;` between statements in a handler |
 
-That is the list. There is no function call other than a command, no property access other
-than `state.` and a row's, no array, no object, no loop. Each of those would need
-something at run time to interpret it, and there is nothing at run time to interpret it
-with.
+That is the grammar. A binding written in it runs as a few stack operations, with no
+engine behind it and with every dependency known when it is built.
+
+A binding that goes past it -- a method call, a property, an array, a loop, a local -- is
+not an error: it is compiled to JavaScript instead and runs as QuickJS bytecode, watched
+while it runs for what it reads. See [functions](functions.md). What is still refused is
+what is wrong rather than bigger: a name that is nothing, `props`, a value binding that
+writes state or calls a command.
 
 ## `state.rda` — what the engine knows about itself
 
 The one place a binding reads two levels deep. `state.rda.width` and `state.rda.height`
-are the window's size in pixels, the same ones a widget is laid out in, rewritten from the
+are the window's size in layout units, the same ones a widget is laid out in, rewritten from the
 window every frame — so a layout follows a resize without the application being involved:
 
 ```tsx

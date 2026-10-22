@@ -1,7 +1,9 @@
 ﻿#pragma once
 #include <cstdint>
+#include <Core/Signals.h>
 #include <GraphicalObjects/Widget.h>
 #include <Layout/Expression.h>
+#include <Layout/TableOrder.h>
 #include <string>
 #include <vector>
 
@@ -62,6 +64,13 @@ namespace RDA {
 		int   revealRow = -1;
 		Variant variant = kDefaultVariant;
 
+		// The table seen sorted or filtered, without the table changing: see TableOrder.h.
+		// A <list> only -- a tree's order is its hierarchy, and these leave a tree alone.
+		std::string sortBy;
+		bool        sortDescending = false;
+		std::string filter;
+		std::string filterColumns;
+
 		// One compiled binding belonging to a pooled row. Held here rather than in the
 		// global binding runtime because a signal write cannot say which row is meant:
 		// these are applied when the list rebinds a row, and at no other time.
@@ -73,8 +82,19 @@ namespace RDA {
 			bool                  warned = false; // said once, not once per rebind
 		};
 
+		// An observer the list grows as its rows' JavaScript bindings read signals: those
+		// cannot be listed when the layout loads, only seen while they run. Set by the
+		// loader when the template has any.
+		ObserverId scriptRefresh() const { return mScriptRefresh; }
+		void setScriptRefresh(ObserverId observer) { mScriptRefresh = observer; }
+
 		// Filled by the loader as it instantiates the template.
 		void beginRow(Widget* root) { mPool.push_back(PooledRow{ root, {}, kNoRow }); }
+		// How many rows exist, built so far.
+		size_t poolCount() const { return mPool.size(); }
+		// Builds one more row. Set by the loader, which is what knows how; called by the list
+		// when its view needs more rows than it has.
+		void setRowFactory(std::function<void()> build) { mRowFactory = std::move(build); }
 		// The slot the row just begun occupies, for a handler that needs to find its way
 		// back here when it fires.
 		size_t currentSlot() const { return mPool.empty() ? 0 : mPool.size() - 1; }
@@ -98,7 +118,7 @@ namespace RDA {
 		// `state.y` following the first and ignoring the second, silently. The list now
 		// observes those signals on its rows' behalf and re-binds all of them, which is
 		// the same answer at the only granularity available.
-		void invalidateRows() { mRowsDirty = true; }
+		void invalidateRows() { mRowsDirty = true; ++mNamesEpoch; }
 		void addRowBinding(RowBinding binding) {
 			if (!mPool.empty()) mPool.back().bindings.push_back(std::move(binding));
 		}
@@ -113,18 +133,81 @@ namespace RDA {
 		// that is not a slide, it is a smear. Children stop looking for a duration here.
 		bool inheritsMotion() const override { return false; }
 
+		// Not its rows. A row is a pooled copy showing whichever row of the table scrolled
+		// into it, so a shortcut in one would act on a row nobody chose -- and with the
+		// list out of sight, on one nobody can see.
+		void offerShortcuts(std::vector<Widget*>& out) override { (void)out; }
+
 		glm::vec2 measureContent(Gui& gui, glm::vec2 available) const override;
 		void paint(Gui& gui, glm::vec2 origin) override;
+		bool describe(AccessibleInfo& out) const override;
+
+	protected:
+		static constexpr size_t kNoRow = static_cast<size_t>(-1);
+
+		// ---- for a list that does not show every row ---------------------------------
+		//
+		// A list shows its table's rows in order, all of them. A tree shows some of them --
+		// the ones whose parents are open -- and these are the three questions that makes
+		// different. "Shown" counts what is on the list, in order; the table index is
+		// which row of the table that is. For a list they are the same number, which is
+		// what the defaults say, and the list pays nothing for the tree existing.
+		virtual size_t shownRows(const Table& table) const;
+		virtual size_t tableRow(size_t shown) const {
+			if (!mViewOn) return shown;
+			return shown < mView.size() ? mView[shown] : kNoRow;
+		}
+		// Where a table row is on the list, or kNoRow when it is not shown.
+		virtual size_t shownIndexOf(size_t row) const {
+			if (!mViewOn) return row;
+			return row < mViewAt.size() ? mViewAt[row] : kNoRow;
+		}
+		// Called once a frame, after the table is found and before anything is placed.
+		virtual void prepare(Gui& gui, const Rect& view, Table& table) {
+			(void)gui; (void)view; (void)table;
+		}
+		// The rect a row's widgets are laid out in, given the one the list gave it. A tree
+		// draws its disclosure arrow and selection here and returns what is left.
+		virtual Rect arrangeRow(Gui& gui, const Rect& placed, size_t row) {
+			(void)gui; (void)row;
+			return placed;
+		}
+		// A row, as a screen reader is told about it: an item of this list, named by the
+		// first text in it, standing for the row's widgets so what is in the row hangs
+		// off it. Only the rows on screen -- the same ones that have widgets.
+		//
+		// `root` is null for a row scrolled out of view: it is described from the table
+		// alone, so a screen reader can count the whole list and read any row of it.
+		virtual void describeRow(Gui& gui, size_t row, Widget* root, const Rect& placed);
+		// What a row is called: the first text its template's bindings give it, worked out
+		// from the table without any widget, and remembered until the table or what the
+		// bindings read changes. The same for a row on screen and off, so a row reads the
+		// same wherever it is.
+		std::string rowName(size_t row, Widget* root);
+		// Scroll a row into view, from outside. A tree adds its own actions on top.
+		void accessibleItemAction(int item, AccessibleAction action, const std::string& value) override;
+		// Scroll until this shown row is in view, the way revealRow does for a table row.
+		void revealShown(size_t shown) { mRevealShown = shown; }
+		Rect lastView() const { return mLastView; }
 
 	private:
-		static constexpr size_t kNoRow = static_cast<size_t>(-1);
 		// What `follow` compares against: how far it could scroll last frame, and whether
 		// it was there. Both are answers about the previous frame on purpose -- by the
 		// time this frame's maxOffset is known, the content has already grown.
 		bool  mRowsDirty = false;
+		ObserverId mScriptRefresh = kNoObserver;
+		std::function<void()> mRowFactory;
+		// Row names for a screen reader, by table row, and what they were worked out from.
+		std::vector<std::string> mNames;
+		std::vector<bool>        mNamed;
+		uint64_t                 mNamesVersion = 0;
+		uint64_t                 mNamesEpoch = 0;
+		uint64_t                 mNamesBuiltEpoch = static_cast<uint64_t>(-1);
 		int   mRevealed = -1;   // the request that has already been honoured
 		float mLastMaxOffset = 0.0f;
 		bool  mWasAtEnd = true;   // a list that has never scrolled is at its end
+		size_t mRevealShown = static_cast<size_t>(-1);
+		Rect   mLastView{};
 
 		struct PooledRow {
 			Widget*                 root = nullptr;
@@ -133,6 +216,15 @@ namespace RDA {
 		};
 
 		void rebind(PooledRow& row, size_t index);
+
+		// The sorted or filtered view, when one is asked for: which table rows, in order, and
+		// where each table row landed. Off, a list is its table in order and pays nothing.
+		bool                mViewOn = false;
+		std::vector<size_t> mView;
+		std::vector<size_t> mViewAt;
+		TableViewSpec       mViewSpec;
+		uint64_t            mViewVersion = 0;
+		void updateView(const Table& table);
 
 		std::vector<PooledRow> mPool;
 		uint32_t mTable = 0xFFFFFFFFu;
@@ -156,6 +248,7 @@ namespace RDA {
 		bool     mWarnedHeightColumn = false;
 		std::vector<float> mRowTop;
 		uint64_t mBuiltVersion = 0;
+		uint64_t mBuiltEpoch = static_cast<uint64_t>(-1);
 		size_t   mBuiltRows = static_cast<size_t>(-1);
 		float    mBuiltRowHeight = -1.0f;
 		float    mBuiltSpacing = -1.0f;

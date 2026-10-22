@@ -33,8 +33,9 @@ having here rather than merely possible.
 **A binding written inside a component still closes over nothing** — `props` included.
 `text={props.label}` works, because it is substituted before there is an expression to
 parse. `text={() => props.label}` does not, for exactly the reason `() => state.count +
-step` does not: a binding is compiled from its own source text, and nothing from the
-surrounding scope comes along.
+step` does not when `step` is a local: a binding is compiled from its own source text, and
+nothing from the surrounding scope comes along. What it can name is the module's top level
+-- which is how it calls a function the file defines; see [code that runs](runtime-code.md).
 
 **An id at the call site wins** over the one the component gave its own root. Two `<Field>`
 siblings have to be two distinguishable widgets — hover and focus are keyed on that path —

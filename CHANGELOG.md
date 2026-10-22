@@ -8,6 +8,437 @@ is built against: its major says whether a package built against an older engine
 runs, and a minor means functions were added while nothing already there changed meaning.
 See [the C ABI](docs/backend/c-abi.md).
 
+## Unreleased
+
+C ABI **1.8**: three calls added for what happens to a viewport (1.7), and three for what a
+command carries, running one for its result, and loading state.ts's code (1.8); nothing
+already there changed meaning. A layout gets the rest by being rebuilt; a backend gets
+state.ts's code by regenerating its state module.
+
+### Formatting and timers
+
+What an interface needs that QuickJS lacks. **`format`** -- `number`, `percent`, `bytes`,
+`duration`, `date` by pattern, `relative` -- because there is no `Intl` and
+`toLocaleString` gives none of grouped digits, sizes, dates or "5 minutes ago". It is
+JavaScript compiled into a module only when the module names it, like the colour helpers,
+and defined while a file is built as well, so a top-level `format.bytes(2048)` gives at build
+what it gives later.
+
+**`setTimeout` and `setInterval`**, on the frame clock: a callback goes off on the loop
+thread at the first frame at or after its time and runs as a handler does, writing state
+and calling commands. An idle window waits no longer than the next timer, so one goes off on
+time -- measured at 400 to 412 ms for 400 ms. A timer belongs to the layout or state.ts that
+started it and goes when that is unloaded or reloaded. A value binding, a computed value and
+a file's top level cannot start one, each refused with why. Not `std::async`: QuickJS and the
+state it touches live on one thread, so a callback anywhere else could only queue itself
+back to the loop.
+
+Two things found on the way. The helpers a file is built with were evaluated in front of its
+source, so an error inside one named a line of the file -- `main.tsx:239` of a file three
+lines long; they are a script of their own now. And the frame's clock for run-time code ran
+inside its GUI part, so an application with state and no window had no timers and no table
+checks; it runs first now. See [functions](docs/frontend/functions.md#formatting).
+
+### Logic in the state, and commands that carry their data
+
+`res/state.ts` may hold code now, and none of it is a new kind of thing. A field with
+`compute` is a signal state.ts works out; a command with `run` is one state.ts answers; and
+every command carries its arguments.
+
+```ts
+export const state = defineState({
+  price: 0,
+  total: { compute: () => state.price * state.qty, doc: "what the cart costs" },
+})
+export const commands = defineCommands({
+  rename: { doc: "rename a line", params: { id: 0, name: "" } },
+  add:    { run: (n: number) => { state.qty += n; return state.qty } },
+})
+```
+
+**A command carries what the event meant.** `commands.rename(item.id, state.draft)` from a
+handler, in the grammar or in JavaScript; the backend's handler receives `(id, name)` typed
+in its own language, from the declaration's `params`. Underneath it is one JSON array,
+which the C ABI hands out with `rda_command_args()`. It replaces writing a signal first and
+asking second -- two steps for one intent, a signal declared only to carry a value, and a
+race when two rows were clicked before the backend looked.
+
+**A computed signal** is read like any other, by a binding or a backend, and written by
+nothing but the engine: a handler, run-time code and `rda_signal_set_*` are refused, and no
+setter is generated. It is recomputed inside the write that changed what it read, before
+that write returns, so a backend that sets `price` and reads `total` on the next line reads
+the new total. What it reads is recorded as it runs; a table it read is checked once a
+frame. Its type is what it returned when the build ran it once on the starting values.
+
+**An action** is a command state.ts answers. A layout calls it as it calls any other and
+cannot tell; `rda prototype` runs it with no backend at all; a backend that binds it hears
+of it afterwards; and `rda_call(name, args_json)` runs any command and returns what it
+returned -- which is how a rule written once in state.ts is the backend's rule too.
+
+The code is compiled by `rda build` the way a layout's is and embedded in every generated
+module -- `RdaState.h`, `state.py`, `state.mjs`, `state.cs` -- whose `define()` loads it
+(`rda_load_state_code`), so it runs before any interface is loaded. `defineState`,
+`defineTables` and `defineCommands` change nothing that is built; they type `state` in the
+file as it is when the code runs. `rda prototype` reloads state.ts's code on save and keeps
+every value. `rda build` checks it whenever it writes the types. See
+[functions](docs/frontend/functions.md#in-statets-computed-values-and-actions) and
+[the declaration](docs/backend/declaration.md#code-in-the-declaration).
+
+### Functions in a layout
+
+A binding is no longer limited to the expression grammar. It may call a function the file
+or one of its imports defines, and anything past the grammar -- `.toFixed()`, `.split()`,
+an array, a loop, `tables.files.reduce(...)` -- is compiled to JavaScript instead of
+refused. So a formatter, a validator or a sum over a table is written once, in the layout,
+and works the same under a backend in any language, rather than being written in each
+backend as a signal it keeps up to date.
+
+Nothing is parsed at run time. Code reached from a binding or a handler is compiled to
+QuickJS bytecode when the layout is built and carried in the blueprint; everything else --
+the file's top level, every component -- runs at build time as before. A top-level value
+whose initializer calls nothing ships as code; one a call made ships as the value it made,
+which must be plain data. A binding the grammar covers still runs as a few stack operations
+with no engine behind it, and a layout with no functions starts no runtime at all.
+
+What it reads is recorded as it runs, so a binding that calls a function re-runs when
+exactly what it read changes, tables included. A value binding cannot write state or call
+a command; a handler can. An error is logged once with the `.tsx` line and the binding keeps
+its last value; a call that runs past 50 ms is stopped. Hot reload swaps the code and keeps
+the state, because the state was never in it.
+
+Measured on a Release build: a grammar binding 0.07 µs, one calling a function 0.13 µs, a
+whole binding in JavaScript 0.4 µs; the runtime 0.1 ms and 91 KB, once.
+
+`rda build --no-runtime-code`, or `-DRDA_RUNTIME_CODE=OFF`, refuses all of it. `tables` is
+typed in `rda.d.ts`. See [functions](docs/frontend/functions.md) and
+[the design](docs/architecture/runtime-code.md).
+
+A blueprint with functions is version 3; one without is version 2, byte for byte what it
+was. A blueprint with functions in it is code, and is to be trusted only as far as the
+executable that loads it is.
+
+### A reload could follow freed widgets
+
+The loop walks each window, calls `onUpdate`, then ends the frame -- and `onUpdate` is where
+a layout reloads and a route swaps. What the walk noted by pointer for the end of the frame,
+the tree a screen reader is told about among it, could point at widgets the reload had just
+destroyed. It took a screen-reader client and a press to show. The GUI counts widgets
+destroyed since its walk began, and follows none of those pointers on a frame where any
+were.
+
+### What happens to a viewport: resized, or the pointer
+
+A drawing could be shown and neither touched nor kept the right size. A graph could not be
+panned, a plot not zoomed, a model not orbited, because nothing about the pointer reached a
+backend; and when a splitter moved or a panel beside it closed, the drawing stayed made for
+the old size -- stretched, or cropped -- because nothing said the size had changed, and the
+only way to find out was asking the loop every frame.
+
+Now a viewport reports what happens to it. **Every** viewport reports its size, from the
+first frame that places it, which is also when a backend can make its first drawing at the
+right size. And a viewport a backend listens to -- `rda_viewport_listen(name, 1)`,
+`rda.listen_viewport(name)` -- reports the pointer: a press over it is its own until the
+button comes up, wherever the pointer goes meanwhile, and the wheel stops there instead of
+scrolling what is around it. One nobody listens to lets the pointer through, as before.
+
+What happened is *summed* rather than queued -- movement and the wheel add up, a button
+that went down or up and a size that changed stay recorded, the position and the size are
+the latest -- because a pan wants how far the pointer travelled since the drawing was last
+made, a redraw wants the size now, and a backend that was busy drawing must not come back
+to a backlog. `rda_viewport_take` takes it; `rda_viewport_wait` sleeps until there is
+something to take. Neither crosses to the loop thread, so a thread can wait for the life of
+the window and an idle window stays idle. Two busy viewports are answered in turn.
+
+Only the visible part takes the pointer, so a viewport half scrolled out of view does not
+steal presses from what is drawn over the rest. And a viewport drawn with an empty list is
+transparent, so one laid over a `<stream>` is the way to make a picture the GPU drew
+draggable. Python has it (`listen_viewport`, `viewport_event`, `wait_viewport`,
+`ViewportEvent`); Node and C# do not yet. C++ uses `RDA::viewports().events()`. Ten new test
+cases cover the summing, the waiting, the shutdown that lets a waiter go, and a resize that
+is neither lost nor allowed to move the pointer.
+
+### A frameless window's frame
+
+A window with no OS frame could be moved by its bar and nothing else: its edges did not
+resize it, a double click on the bar did nothing, and a maximised one could not be dragged
+at all. All three are the engine's now, so a layout that draws its own title bar gets the
+frame's behaviour without writing any of it.
+
+The edges are a band five units deep inside the window, longer at the corners. Over it the
+pointer shows which way it would resize -- GLFW 3.3 has no diagonal resize cursor, so those
+two are drawn -- and a press there resizes until the button comes up, from where the button
+went *down* rather than where the pointer had got to by the frame that heard of it, so a
+quick drag does not leave the edge trailing the hand. The interface hears nothing of the
+pointer while it is on the band, so the close button in a corner does not light up under a
+resize; a drag that began in the interface keeps going if it wanders over the band. The far
+edge holds, minimums and maximums hold, and a window with no minimum still stops at 160 by
+100. A double click on a `dragWindow` region maximises or puts back, through the same path
+the OS button takes, so `state.rda.maximized` hears of it. Dragging the bar of a maximised
+window restores it under the pointer -- at the same fraction of its width, the same depth
+into the bar -- and carries on dragging.
+
+On Windows the platform does all of that itself, and snaps. A frameless, resizable window
+is given a frame's styles (sizing border, caption, maximise box) with WM_NCCALCSIZE taking
+the whole window as client area, so nothing of a frame is drawn; and WM_NCHITTEST answers
+what a frame would -- the resize edges, HTCAPTION wherever the pointer is on a
+`dragWindow` region with nothing drawn over it, HTMAXBUTTON over the button a layout marks
+`maximizeButton`. A press on the bar is then Windows' own caption press from the first
+moment: dragging to a screen edge snaps to half the screen, to the top maximises, a snapped
+or maximised window dragged away restores under the pointer, a double click maximises, a
+right click opens the system menu, and on Windows 11 resting on the maximise button offers
+the snap layouts. The pointer over the bar and the button is handed back to the interface
+as the ordinary pointer it is, so the button still lights up and clicks and the interface
+keeps knowing whether the pointer is on bare bar. Maximised, the client area is inset by
+the frame Windows hangs off the screen. Elsewhere the GLFW paths above are what there is.
+Ten test cases cover which edge a point is on, what a drag makes of the rectangle, and the
+drawn cursors; the Windows half was checked against the window's own rectangle while
+dragging it into each edge.
+
+A stream that changed size, or was closed, destroyed its surface on the spot -- while the
+frame in flight could still be drawing it and the GUI still held a descriptor set for its
+sampler (VUID-vkDestroySampler-sampler-01082, every time a window was resized with a
+stream in it). Such a surface is retired now, as a replaced `<image>` already was, and
+destroyed once the GPU is done with it.
+
+### What is under a floating panel is under it
+
+A press on a floating panel was also a press on whatever docked widget lay beneath it.
+Docked panes are painted first and floating panels over them, and a widget decides about a
+press while it paints -- so a button, a list row or a listening viewport under a floating
+panel took the click as well. While the pointer is over a floating panel the docked panes
+now paint with the pointer elsewhere (`Gui::pushPointerAway`), the keyboard untouched, so a
+field with the caret goes on taking keys. Not while something is already held: a drag that
+began in a pane keeps going when it passes under a floating panel. `inert()` counts only
+`pushInert`, so those panes are still described to a screen reader.
+
+### A click on a floating panel's bar is a click
+
+Two ways a floating panel docked itself without being dragged. A floating panel wearing a
+`<header>` gave a press on its bar to the drag before the header's own buttons could take
+it -- tiles already deferred to the header and floating panels did not -- so a close button
+on the header carried the panel instead of closing it. And a drag that had not moved still
+dropped on release, into whatever pane was under the pointer, so clicking a floating
+panel's bar to bring it forward could dock it. A floating drag now has the 6-unit slop a
+tab already had before anything travels.
+
+### Shortcuts
+
+A layout can declare its own key chords, which until now every application had to read from
+its backend. `shortcut="Ctrl+S"` on a `<button>` presses it -- the same `onClick` a click
+runs, so a menu entry and its shortcut are one widget and cannot drift apart -- and on a
+`<checkbox>` toggles it. `<shortcut keys="F5" onPress={...}/>` is a chord with no button,
+drawing nothing and taking no room.
+
+A shortcut is live while its widget could be reached: drawn, scrolled out of view, or
+inside a `<popup>` that is shut, because a menu entry's shortcut has to work with the menu
+closed. It is not live when hidden, on a tab that is not showing, in a `<list>` row, in a
+screen on its way out, or behind an open blocking popup -- the interface behind a dialog is
+behind it for the keyboard too. A focused text field keeps plain keys and its own Ctrl
+editing chords; Ctrl+S, F5 and the rest go past it. Two live widgets with one chord: the one
+drawn last wins, and the log names both, once.
+
+The generated `rda.d.ts` types a chord, so `"Ctrl+Shfit+S"` is an error in the editor that
+suggests `"Ctrl+Shift+S"`. A chord may be a binding, for a keymap kept in state; one that
+does not parse is reported with the widget it was on.
+
+`rda shot --key <chord>` presses a chord before the picture, repeatable, and
+`rendeerSyntheticChord` is the same thing for C++. `Probe::press` does it without a window.
+
+### A list builds the rows it shows
+
+A `<list>` or `<tree>` builds as many row widgets as its view shows, when it is first drawn,
+and more on the frame its view grows -- where it used to build forty when the layout loaded,
+which was too many for a short list and too few for a tall window, which then said so in
+the log. Built mid-frame and drawn the same frame, so a row never arrives late. `poolSize`
+still builds a number ahead of time for a list that would rather. A binding in a row that
+reads only state, not the row, is applied the moment its row is built.
+
+### Chinese, Japanese and Korean
+
+An interface can show and take CJK text without naming a font or doing anything else. A
+character none of the named faces has is looked for in the system's own -- Microsoft YaHei,
+Yu Gothic, Malgun Gothic and JhengHei on Windows, Noto CJK or WenQuanYi on Linux -- loaded
+one at a time, the first time a character needs one, in the order the system's language
+says, because the same Han character is drawn differently in each. A named face is always
+asked first; `RDA_SYSTEM_FONTS=0` leaves the system's alone.
+
+On Windows the input method composes at the caret: the word in progress is drawn there,
+underlined, with the method's cursor in it, and its candidates open under it. The method is
+on only while a text field has the keyboard, so over anything else a letter is a shortcut
+again, and while it composes, the keys it is using never reach the interface. On Linux,
+X11's input methods hand over finished text through their own window; Wayland's do not
+reach GLFW yet.
+
+`rda.exe` now runs with UTF-8 as its code page, so a non-Latin argument -- `--set
+note=北京`, a path with Japanese in it -- arrives intact instead of as question marks. `rda
+shot --compose <text>` pictures a field mid-word.
+
+### Screen readers
+
+An interface drawn by this engine is pixels to the operating system, so a screen reader
+found one blank window. It now finds a tree. Every widget describes itself -- a button by
+its text, a checkbox by its label and whether it is ticked, a slider by its value and range,
+a tree row by its text and whether it is open -- and on Windows a UI Automation provider
+speaks that tree to Narrator, NVDA, JAWS and the inspection tools. A screen reader's user
+can press, toggle, set, open, shut and choose, and each of those goes through the path a
+hand would take: pressing Save from a screen reader runs its `onClick`.
+
+On Linux the same tree is spoken to AT-SPI -- what Orca reads -- over D-Bus, by the engine
+itself rather than through ATK and GLib. libdbus is loaded when a window opens, not linked,
+so nothing new is needed to build and a machine without it runs as before. It registers
+with the desktop's registry only while assistive technology is on, and builds nothing
+until a client other than the registry asks. Checked against a real registry and bus:
+the tree, every action, and the events. A tree row reports its depth as a level on both
+systems. macOS is not done: the engine does not run there.
+
+`live="polite"` or `"assertive"` on any element has a screen reader read it out when what it
+says changes, or when it appears saying something, without the focus going there: a status
+line, a count, an error under a form. On a container it is everything inside it as one
+sentence. UI Automation's LiveSetting and LiveRegionChanged on Windows, AT-SPI's
+Announcement on Linux.
+
+A list's rows are all in the tree, not only the ones it has widgets for: a row scrolled out
+of view is described from the table -- named by the first text its template gives it, the
+same name it has on screen -- marked off-screen, and scrolled into view by a screen reader's
+ordinary command. Up to two thousand rows of one list, around the view, so a screen reader
+can count it and read it from the top.
+
+An open dropdown's options are items under it: the chosen one selected, the highlighted
+one where the reader is, so each arrow is read out as it moves, and any of them can be
+chosen from the screen reader.
+
+Text fields are read caret by caret. A field tells the screen reader where its caret and
+selection are, where its lines start and where each character on screen is, and the screen
+reader walks it by character, word and line, reads what is typed as it is typed, and can
+move the caret and select. UI Automation's text pattern on Windows, AT-SPI's Text on Linux,
+with what a word is decided once, in shared code both use, and tested on its own.
+
+`alt` names what has no words of its own -- a slider, an icon, a button holding only a
+picture -- and makes a container a named group. Nothing else needs writing.
+
+It costs nothing until something asks: the tree is built only once a client has asked the
+window for it, and is handed over as a snapshot at the end of a frame, so a screen reader
+reads on its own threads and the frame never waits. Actions come back as a queue applied
+during the next walk, where the widget is known to exist. Focus, toggles, values, opening
+and shutting, selection and structure are all raised as events. `rda shot --a11y tree.txt`
+writes the tree as text, which is also how to read it on Linux and macOS, where nothing
+speaks it yet.
+
+### A tree
+
+`<tree>` is a `<list>` that shows some of its rows. The table holds every node in reading
+order -- each one, then everything under it -- with a `depth` column, so nothing is nested
+and fifty thousand nodes are fifty thousand rows and about thirty widgets. It takes the same
+`row={(node) => ...}` template and is built on the same pool, scrolling and bar; what it
+adds is which rows are shown, an indent and a disclosure arrow, a chosen node, and the
+keyboard.
+
+What is open is the tree's, remembered by each node's key so it survives the table being
+refilled; `openDepth` says how far it starts open. `onSelect`, `onActivate` (double-click or
+Enter), `onExpand` and `onCollapse` hand over the key. A row with `hasChildren: true` and
+nothing under it has an arrow and starts shut, and opening it is the backend's cue to insert
+its children -- which is lazy loading with no new mechanism. Up, Down, Home, End; Right
+opens and then steps in, Left shuts and then steps out; Space toggles.
+
+`<list>` gained the three questions a tree needed answered differently -- how many rows are
+shown, which table row a shown row is, and where a row's widgets go -- with defaults that
+are exactly what it did before.
+
+### A data grid
+
+`<grid of="files">` with `<column field="size" title="Size" width={90} hAlign="end"/>`
+children shows a table as a table: columns under titles, a click on a title sorts by it and
+a second click turns it round, the line between two titles drags to resize, and a column
+written `width="fill"` takes what the others leave. It builds no widget per cell -- a cell
+is the table's value drawn as text, a number without trailing zeros or to `decimals`
+places, a bool as a tick -- so a hundred thousand rows by ten columns is one widget, and a
+row that needs a button in it is still a `<list>`. `selected`, `onSelect`, `onActivate`
+(double-click or Enter) and `onSort` (`"size"`, or `"-size"` descending); Up, Down, Page Up,
+Page Down, Home and End move the choice. Wider than the grid, the columns scroll sideways,
+with a second bar and Shift on the wheel. A screen reader reads a row as one sentence with
+every column titled. That makes 27 elements.
+
+Sorting and filtering are a view rather than a copy, and `<list>` has them too: `sortBy`,
+`sortDescending`, `filter` and `filterColumns`. The backend keeps one table in its own order;
+what is shown is a list of row numbers, worked out again when the table or one of those
+changes. Text sorts naturally -- `file2` before `file10` -- and ignoring case, numbers by
+value, bools false first, and ties keep the table's order. The filter ignores case and
+looks in every text column, or the ones named; a number column named is searched as it is
+shown.
+
+A focused `<grid>` or `<tree>` keeps Home, End, Page Up and Page Down from the shortcuts, the
+way a focused button keeps Space.
+
+### Choosing several
+
+`multiSelect` on a `<grid>` or a `<tree>` lets the reader choose more than one row. Ctrl+click
+toggles one, Shift+click reaches from the last one clicked, Ctrl+Shift+click adds the reach;
+Shift with the arrows, the page keys, Home or End reaches from the keyboard, Ctrl with them
+moves without choosing, Ctrl+Space toggles and Ctrl+A chooses every row shown. The chosen
+keys are `selectedKeys`, one per line, reported by `onSelectionChange` -- a signal holds one
+value, and a line is what a key never contains. `selected` stays one row, the one the
+keyboard is on, outlined so it shows whether or not it is chosen. Rows are chosen by key, so
+a sort or a node opening keeps them, and a reach is worked out from where the rows are now.
+
+A screen reader is told the list is multi-selectable and can add a row, take one out, choose
+all or none: UI Automation's Selection pattern -- which a list, a tree and a tab strip now
+have, multi-selectable or not -- and its added and removed events on Windows, and AT-SPI's
+Selection with the MULTISELECTABLE state on Linux.
+
+`rda shot --click Ctrl+X,Y` clicks with Ctrl or Shift held through the click, which a chord
+cannot do; `rendeerSetSyntheticModifiers` is the same for C++.
+
+### Dragging and dropping
+
+Any element can be picked up and any element can be a place to put it. `drag="task-17"`
+says what it carries -- a string, because what lands on the other end is a handler and a
+handler is handed a value -- and in a `<list>` row it is a binding, so each row carries its
+own. `onDrop={(id) => ...}` on a target receives it. `dragKind` and `accepts="task|note"`
+keep a task off a tag. `onDragOver(boolean)` reports the arrival and leaving the way
+`onHover` does, and `state.rda.dragging` and `state.rda.dragKind` say what is travelling,
+so every place it could go can light up before the pointer gets there.
+
+Nothing travels until the pointer has moved a few units with the button held, so a click
+on a draggable card is still a click. Once it moves, a figure the size of what was picked
+up follows the pointer with its text on it, the target under it is outlined in the focus
+ring's colour, the click is cancelled, and Escape puts it back. A press something takes as
+a drag of its own -- a slider, a text field -- stays that thing's. Nothing behind an open
+blocking popup or in a screen on its way out is a target.
+
+Files from outside: `onFiles={(paths) => ...}` on any element, paths one per line, to the
+deepest element under the drop that asked. A backend's own drop queue still sees every
+drop.
+
+`rda shot --drag X1,Y1,X2,Y2` carries something across, `--hold` pictures it mid-air, and
+`--files "a;b"` drops files where the pointer is. `Probe::drop(from, onto)` does it with no
+window.
+
+### A dropdown finds what you type
+
+A focused `<select>` takes the first letters of a choice: `bud` goes to Budapest, and the
+same letter again steps through everything beginning with it. Shut, it opens on the match
+rather than choosing it, so Enter still decides and Escape still changes nothing. A pause of
+about a second starts again. While it has the keyboard, plain keys are typing as far as
+shortcuts are concerned, the same as in a field.
+
+`rda shot --type <text>` types, in order with `--key`; and `--key` now presses a key the
+way a hand would -- `--key Tab` moves the focus -- rather than only reaching shortcuts.
+
+### Floating panels
+
+A press on a floating panel brings it to the front, and a saved layout keeps the stacking.
+Two smaller things were wrong in the same place: every floating `<dock>` a layout declared
+started at the same rectangle, so two of them were one panel as far as anyone could see --
+they are stepped down and across now, and `x`, `y`, `w` and `h` on a `<dock>` say where one
+starts. And a press on one panel's body went on looking down the stack, so it could pick up
+the title bar of a panel *behind* it and drag that instead.
+
+### Documentation
+
+`limitations.md` still said there was one font face and that text outside Latin draws as a
+box, and the element index said nineteen. Fallback faces and glyphs baked on first use made
+the first two untrue some time ago; the third was four elements behind.
+
 ## 1.2.0 — 2026-10-02
 
 C ABI **1.6, unchanged**. Three things: a display scale, so an interface is the size it was

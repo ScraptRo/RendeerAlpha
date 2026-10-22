@@ -40,7 +40,7 @@
 
 import * as engine from './engine.js'
 
-export { RdaError, poll, onCommand, invoke, load } from './engine.js'
+export { RdaError, poll, onCommand, invoke, call, load } from './engine.js'
 
 let started = false
 

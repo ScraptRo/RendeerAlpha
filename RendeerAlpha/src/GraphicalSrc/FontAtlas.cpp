@@ -6,6 +6,13 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#if defined(_WIN32)
+	#define WIN32_LEAN_AND_MEAN
+	#include <windows.h>
+#endif
 
 namespace RDA {
 
@@ -33,7 +40,70 @@ namespace RDA {
 			stbtt_fontinfo             info{};
 		};
 		std::vector<Face> faces;
+		// The system's own faces for scripts the named ones do not cover -- Chinese,
+		// Japanese, Korean, symbols -- in the order they are worth trying, and how many of
+		// them have been loaded so far. Loaded one at a time, the first time a codepoint
+		// nothing loaded has is asked for: a CJK face is twenty megabytes, and an interface
+		// that never shows a Han character should never read one.
+		std::vector<std::string> system;
+		size_t                   systemLoaded = 0;
 	};
+
+	namespace {
+		// Reads one face from disk. False, and nothing appended, for a file that is not
+		// there or not a font.
+		bool loadFace(const std::string& path, std::vector<FontAtlas::Faces::Face>& into);
+	}
+
+	// The faces a system has for what an interface's own font does not draw, most likely
+	// first. Han characters are drawn differently in Chinese, Japanese and Korean type, so
+	// the order follows the language the reader's system is set to; anyone who wants a
+	// particular face names it in config.font and it is asked first.
+	static std::vector<std::string> systemFallbacks() {
+		std::vector<std::string> out;
+		if (const char* off = std::getenv("RDA_SYSTEM_FONTS"); off && off[0] == '0') return out;
+	#if defined(_WIN32)
+		std::string fonts = "C:/Windows/Fonts/";
+		if (const char* windir = std::getenv("WINDIR")) fonts = std::string(windir) + "/Fonts/";
+		const LANGID lang = GetUserDefaultUILanguage();
+		const WORD primary = PRIMARYLANGID(lang);
+		const WORD sub = SUBLANGID(lang);
+		std::vector<std::string> cjk = { "msyh.ttc", "YuGothM.ttc", "malgun.ttf", "msjh.ttc" };
+		if (primary == LANG_JAPANESE) cjk = { "YuGothM.ttc", "msyh.ttc", "malgun.ttf", "msjh.ttc" };
+		else if (primary == LANG_KOREAN) cjk = { "malgun.ttf", "msyh.ttc", "YuGothM.ttc", "msjh.ttc" };
+		else if (primary == LANG_CHINESE && sub != SUBLANG_CHINESE_SIMPLIFIED && sub != SUBLANG_CHINESE_SINGAPORE)
+			cjk = { "msjh.ttc", "msyh.ttc", "YuGothM.ttc", "malgun.ttf" };
+		for (const std::string& name : cjk) out.push_back(fonts + name);
+		// Then the faces that cover what CJK faces do not: symbols, other scripts.
+		for (const char* name : { "seguisym.ttf", "segoeui.ttf", "Nirmala.ttf", "ebrima.ttf" })
+			out.push_back(fonts + name);
+	#elif defined(__linux__)
+		const char* lang = std::getenv("LANG");
+		const std::string l = lang ? lang : "";
+		// Noto CJK is what nearly every distribution ships; its collections hold every
+		// regional variant, and the first face in them is the one used.
+		std::vector<std::string> cjk = {
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+			"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+			"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+			"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+		};
+		(void)l;
+		for (const std::string& path : cjk) out.push_back(path);
+		for (const char* path : { "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		                          "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf" })
+			out.push_back(path);
+	#endif
+		// Only what is actually there: a stat now saves a failed open on the first frame
+		// that needs one.
+		std::vector<std::string> present;
+		std::error_code ec;
+		for (std::string& path : out) if (std::filesystem::exists(path, ec)) present.push_back(std::move(path));
+		return present;
+	}
 
 	FontAtlas::FontAtlas() : mFaces(std::make_unique<Faces>()) {}
 	FontAtlas::~FontAtlas() = default;
@@ -133,6 +203,18 @@ namespace RDA {
 				continue;
 			}
 			mFaces->faces.push_back(std::move(face));
+		}
+
+		// The system's faces, after the named ones and not instead of any of them.
+		mFaces->system.clear();
+		mFaces->systemLoaded = 0;
+		for (std::string& path : systemFallbacks()) {
+			bool named = false;
+			for (const std::string& one : paths) {
+				std::error_code ec;
+				if (std::filesystem::equivalent(one, path, ec)) { named = true; break; }
+			}
+			if (!named) mFaces->system.push_back(std::move(path));
 		}
 
 		// Everything below bakes the preloaded blocks from the body font, as it always
@@ -482,6 +564,17 @@ namespace RDA {
 			const int found = stbtt_FindGlyphIndex(&face.info, static_cast<int>(cp));
 			if (found != 0) { chosen = &face.info; glyph = found; break; }
 		}
+		// Nothing named has it: the system's faces, one more at a time, until one does or
+		// they run out. Each is read once and kept, so the second Han character costs a
+		// lookup rather than another twenty megabytes.
+		while (!chosen && mFaces->systemLoaded < mFaces->system.size()) {
+			const std::string& path = mFaces->system[mFaces->systemLoaded++];
+			if (!loadFace(path, mFaces->faces)) continue;
+			RDA_LOG_INFO("Font: " << path << " is drawing what the named fonts do not have");
+			const Faces::Face& added = mFaces->faces.back();
+			const int found = stbtt_FindGlyphIndex(&added.info, static_cast<int>(cp));
+			if (found != 0) { chosen = &added.info; glyph = found; }
+		}
 		if (!chosen) {
 			// Nobody has it. Remembered as the replacement box rather than simply
 			// refused, so the next draw is a map hit instead of another walk over every
@@ -651,5 +744,22 @@ namespace RDA {
 			width += glyph ? glyph->xadvance : size.glyphs[kSpaceSlot].xadvance;
 		}
 		return width;
+	}
+
+	namespace {
+		bool loadFace(const std::string& path, std::vector<FontAtlas::Faces::Face>& into) {
+			std::ifstream file(path, std::ios::binary | std::ios::ate);
+			if (!file) return false;
+			const std::streamsize size = file.tellg();
+			if (size <= 0) return false;
+			file.seekg(0);
+			FontAtlas::Faces::Face face;
+			face.ttf.resize(static_cast<size_t>(size));
+			if (!file.read(reinterpret_cast<char*>(face.ttf.data()), size)) return false;
+			const int offset = stbtt_GetFontOffsetForIndex(face.ttf.data(), 0);
+			if (offset < 0 || !stbtt_InitFont(&face.info, face.ttf.data(), offset)) return false;
+			into.push_back(std::move(face));
+			return true;
+		}
 	}
 }

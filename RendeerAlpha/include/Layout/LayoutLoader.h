@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <Core/Signals.h>
 #include <Layout/Blueprint.h>
 #include <string>
@@ -18,6 +19,8 @@ namespace RDA {
 // stores nodes breadth-first and Blueprint::parse() has already established that every
 // parent appears before its children.
 namespace RDA::Layout {
+
+	class ScriptModule;
 
 	// What instantiating a layout produced.
 	//
@@ -40,18 +43,30 @@ namespace RDA::Layout {
 
 		RDA::Widget* root() const { return mRoot; }
 		bool valid() const { return mRoot != nullptr; }
-		size_t bindingCount() const { return mObservers.size(); }
+		size_t bindingCount() const { return mObservers ? mObservers->ids.size() : 0; }
 
 		// Stops every binding this instance created. Safe to call twice.
 		void release();
 
 		// Used by instantiate(); public so the loader is not a friend of everything.
 		void adopt(RDA::Widget* root) { mRoot = root; }
-		void track(ObserverId observer) { mObservers.push_back(observer); }
+		void track(ObserverId observer) { mObservers->ids.push_back(observer); }
+
+		// Every binding this layout made, shared with whatever goes on making them after it
+		// loaded -- a list that builds a row when its view grows. Released together, and a
+		// sink that has been released takes nothing more.
+		struct ObserverSink {
+			std::vector<ObserverId> ids;
+			bool                    open = true;
+			// The layout's functions, when it has any. Held here because everything that
+			// can still run one -- a list building a row late -- holds this too.
+			std::shared_ptr<ScriptModule> module;
+		};
+		std::shared_ptr<ObserverSink> sink() const { return mObservers; }
 
 	private:
-		RDA::Widget*            mRoot = nullptr;
-		std::vector<ObserverId> mObservers;
+		RDA::Widget*                  mRoot = nullptr;
+		std::shared_ptr<ObserverSink> mObservers = std::make_shared<ObserverSink>();
 	};
 
 	// Builds `blueprint` under `parent`.

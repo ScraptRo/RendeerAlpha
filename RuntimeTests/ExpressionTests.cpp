@@ -190,11 +190,23 @@ TEST(writing_a_signal_marks_the_bindings_that_read_it) {
 
 // ---- what the grammar refuses ---------------------------------------------------
 
-TEST(a_call_is_refused_by_name) {
+// The grammar alone refuses a call to anything the layout did not define -- the compiler
+// then decides whether the binding is JavaScript instead, and says so if it cannot be.
+TEST(a_call_to_nothing_the_layout_defines_is_refused_by_name) {
 	Fixture fx;
 	const std::string message = refusal("() => formatDate(state.when)");
 	CHECK(!message.empty());
-	CHECK(message.find("calls are not compiled") != std::string::npos);
+	CHECK(message.find("'formatDate' is not a function this layout defines") != std::string::npos);
+}
+
+TEST(a_call_to_a_layout_function_leaves_the_vm) {
+	Fixture fx;
+	const CallableName callable = [](const std::string& name) { return name == "fmt"; };
+	const ParseResult parsed = parseBinding("() => fmt(state.a, 2) + \"!\"", false, {}, callable);
+	CHECK(parsed.ok);
+	CHECK(parsed.calls.size() == 1 && parsed.calls[0] == "fmt");
+	CHECK(parsed.program.usesScript());
+	CHECK(disassemble(parsed.program).find("call.script $fmt (2)") != std::string::npos);
 }
 
 TEST(props_are_refused_with_the_reason) {

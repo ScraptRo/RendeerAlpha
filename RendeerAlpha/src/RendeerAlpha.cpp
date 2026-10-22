@@ -1,5 +1,6 @@
 ﻿#include <RendeerAlpha.h>
 #include <Layout/Bindings.h>
+#include <Layout/ScriptHost.h>
 #include <Layout/StyleWatch.h>
 #include <Core/Signals.h>
 #include <unordered_map>
@@ -109,6 +110,95 @@ namespace RDA {
 	float     gSyntheticScroll = 0.0f;
 	glm::vec2 gSyntheticAt{ 0.0f };
 	bool      gSyntheticDown = false;
+	bool      gSyntheticCtrl = false;
+	bool      gSyntheticShift = false;
+	// Shortcut.h writes GLFW's numbers out so that it does not need GLFW. Checked here,
+	// where GLFW is, so the two cannot quietly disagree.
+	static_assert(Chord::Shift == GLFW_MOD_SHIFT && Chord::Ctrl == GLFW_MOD_CONTROL
+	              && Chord::Alt == GLFW_MOD_ALT && Chord::Super == GLFW_MOD_SUPER,
+	              "Chord's modifier bits are GLFW's, so an event's mask needs no translation");
+	static_assert(Key::Space == GLFW_KEY_SPACE && Key::Apostrophe == GLFW_KEY_APOSTROPHE
+	              && Key::Comma == GLFW_KEY_COMMA && Key::Minus == GLFW_KEY_MINUS
+	              && Key::Period == GLFW_KEY_PERIOD && Key::Slash == GLFW_KEY_SLASH
+	              && Key::Digit0 == GLFW_KEY_0 && Key::Digit9 == GLFW_KEY_9
+	              && Key::Semicolon == GLFW_KEY_SEMICOLON && Key::Equal == GLFW_KEY_EQUAL
+	              && Key::A == GLFW_KEY_A && Key::C == GLFW_KEY_C && Key::S == GLFW_KEY_S
+	              && Key::V == GLFW_KEY_V && Key::X == GLFW_KEY_X && Key::Y == GLFW_KEY_Y
+	              && Key::Z == GLFW_KEY_Z && Key::LeftBracket == GLFW_KEY_LEFT_BRACKET
+	              && Key::Backslash == GLFW_KEY_BACKSLASH
+	              && Key::RightBracket == GLFW_KEY_RIGHT_BRACKET
+	              && Key::Grave == GLFW_KEY_GRAVE_ACCENT && Key::Escape == GLFW_KEY_ESCAPE
+	              && Key::Enter == GLFW_KEY_ENTER && Key::Tab == GLFW_KEY_TAB
+	              && Key::Backspace == GLFW_KEY_BACKSPACE && Key::Insert == GLFW_KEY_INSERT
+	              && Key::Delete == GLFW_KEY_DELETE && Key::Right == GLFW_KEY_RIGHT
+	              && Key::Left == GLFW_KEY_LEFT && Key::Down == GLFW_KEY_DOWN
+	              && Key::Up == GLFW_KEY_UP && Key::PageUp == GLFW_KEY_PAGE_UP
+	              && Key::PageDown == GLFW_KEY_PAGE_DOWN && Key::Home == GLFW_KEY_HOME
+	              && Key::End == GLFW_KEY_END && Key::F1 == GLFW_KEY_F1
+	              && Key::F24 == GLFW_KEY_F24 && Key::F25 == GLFW_KEY_F25
+	              && Key::KeypadEnter == GLFW_KEY_KP_ENTER
+	              && Key::LeftShift == GLFW_KEY_LEFT_SHIFT
+	              && Key::RightSuper == GLFW_KEY_RIGHT_SUPER,
+	              "Shortcut.h's keycodes are GLFW's");
+
+	// Chords nobody typed, delivered on the next frame and then forgotten. See
+	// rendeerSyntheticChord: a shortcut is matched against what went down, so testing one
+	// without a hand on the keyboard means saying what went down.
+	std::vector<RDA::Chord> gSyntheticChords;
+	// Characters nobody typed, the same way: delivered once, as this frame's text.
+	std::string gSyntheticText;
+	// Files nobody dragged in, let go of wherever the pointer is.
+	std::vector<std::string> gSyntheticFiles;
+	// A composition nobody is typing, held until it is cleared -- what a field looks like
+	// while an input method is part way through a word.
+	std::string gSyntheticPreedit;
+	int         gSyntheticPreeditCaret = 0;
+
+	// One key going down, or repeating, as the GUI wants to hear it: as a chord for the
+	// shortcuts, as an editing key for whatever has the keyboard, and as one of the
+	// clipboard and undo flags. `gi.ctrl` and `gi.shift` are already set for the frame.
+	void gatherKey(RDA::GuiInput& gi, int key, int mods) {
+		using namespace RDA;
+		// Every key but a modifier on its own: Ctrl going down is not a chord, it is the
+		// start of one. The keypad's Enter is Enter, because nobody who writes
+		// "Ctrl+Enter" means only the one on the main block.
+		if (key < GLFW_KEY_LEFT_SHIFT || key > GLFW_KEY_RIGHT_SUPER) {
+			Chord chord;
+			chord.key = (key == GLFW_KEY_KP_ENTER) ? GLFW_KEY_ENTER : key;
+			chord.mods = static_cast<uint8_t>(mods & Chord::Mask);
+			if (chord.key > 0) gi.chords.insert(chord);
+		}
+		switch (key) {
+		case GLFW_KEY_BACKSPACE: gi.editKeys.insert(GuiEditKey::Backspace); break;
+		case GLFW_KEY_DELETE:    gi.editKeys.insert(GuiEditKey::Delete);    break;
+		case GLFW_KEY_LEFT:      gi.editKeys.insert(GuiEditKey::Left);       break;
+		case GLFW_KEY_RIGHT:     gi.editKeys.insert(GuiEditKey::Right);      break;
+		case GLFW_KEY_UP:        gi.editKeys.insert(GuiEditKey::Up);         break;
+		case GLFW_KEY_DOWN:      gi.editKeys.insert(GuiEditKey::Down);       break;
+		case GLFW_KEY_HOME:      gi.editKeys.insert(GuiEditKey::Home);       break;
+		case GLFW_KEY_END:       gi.editKeys.insert(GuiEditKey::End);        break;
+		case GLFW_KEY_ENTER:
+		case GLFW_KEY_KP_ENTER:
+			if (gi.ctrl) gi.submit = true;
+			gi.editKeys.insert(GuiEditKey::Enter);
+			break;
+		case GLFW_KEY_TAB:       gi.editKeys.insert(GuiEditKey::Tab);        break;
+		case GLFW_KEY_ESCAPE:    gi.editKeys.insert(GuiEditKey::Escape);     break;
+		// Space reaches a text field as typed text and must go on doing so; it is also how
+		// a keyboard presses a button, so it arrives as both and the widget that has the
+		// keyboard decides which one it was.
+		case GLFW_KEY_SPACE:     gi.editKeys.insert(GuiEditKey::Space);      break;
+		case GLFW_KEY_C: if (gi.ctrl) gi.copy = true;      break;
+		case GLFW_KEY_X: if (gi.ctrl) gi.cut = true;       break;
+		case GLFW_KEY_V: if (gi.ctrl) gi.paste = true;     break;
+		case GLFW_KEY_A: if (gi.ctrl) gi.selectAll = true; break;
+		// Both spellings of redo, because both are muscle memory somewhere: Ctrl+Y on
+		// Windows, Ctrl+Shift+Z everywhere a Mac keyboard taught it.
+		case GLFW_KEY_Z: if (gi.ctrl) { if (gi.shift) gi.redo = true; else gi.undo = true; } break;
+		case GLFW_KEY_Y: if (gi.ctrl) gi.redo = true;      break;
+		default: break;
+		}
+	}
 
 	// Gathers one window's input and opens its GUI frame. Every window owns its own Gui
 	// and its own Input, so this is per window rather than per application: the runtime
@@ -119,6 +209,7 @@ namespace RDA {
 		// Reset only what is accumulated below; every other field is assigned.
 		gi.typed.clear();
 		gi.editKeys.clear();
+		gi.chords.clear();
 		gi.copy = gi.cut = gi.paste = gi.selectAll = gi.submit = false;
 		gi.undo = gi.redo = false;
 		// Both in layout units, because that is what the interface is written in. The
@@ -180,6 +271,8 @@ namespace RDA {
 		gi.dt = dtSeconds;
 		gi.shift = in.isKeyDown(GLFW_KEY_LEFT_SHIFT) || in.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
 		gi.ctrl = in.isKeyDown(GLFW_KEY_LEFT_CONTROL) || in.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+		gi.shift = gi.shift || gSyntheticShift;
+		gi.ctrl  = gi.ctrl  || gSyntheticCtrl;
 		gi.alt = in.isKeyDown(GLFW_KEY_LEFT_ALT) || in.isKeyDown(GLFW_KEY_RIGHT_ALT);
 
 		// Distill typed text and edit keys from this frame's event queue, which
@@ -199,37 +292,46 @@ namespace RDA {
 				}
 			} else if (e.type == InputEventType::Key &&
 			           (e.action == InputAction::Press || e.action == InputAction::Repeat)) {
-				switch (e.key) {
-				case GLFW_KEY_BACKSPACE: gi.editKeys.insert(GuiEditKey::Backspace); break;
-				case GLFW_KEY_DELETE:    gi.editKeys.insert(GuiEditKey::Delete);    break;
-				case GLFW_KEY_LEFT:      gi.editKeys.insert(GuiEditKey::Left);       break;
-				case GLFW_KEY_RIGHT:     gi.editKeys.insert(GuiEditKey::Right);      break;
-				case GLFW_KEY_UP:        gi.editKeys.insert(GuiEditKey::Up);         break;
-				case GLFW_KEY_DOWN:      gi.editKeys.insert(GuiEditKey::Down);       break;
-				case GLFW_KEY_HOME:      gi.editKeys.insert(GuiEditKey::Home);       break;
-				case GLFW_KEY_END:       gi.editKeys.insert(GuiEditKey::End);        break;
-				case GLFW_KEY_ENTER:
-				case GLFW_KEY_KP_ENTER:
-					if (gi.ctrl) gi.submit = true;
-					gi.editKeys.insert(GuiEditKey::Enter);
-					break;
-				case GLFW_KEY_TAB:       gi.editKeys.insert(GuiEditKey::Tab);        break;
-				case GLFW_KEY_ESCAPE:    gi.editKeys.insert(GuiEditKey::Escape);     break;
-				// Space reaches a text field as typed text and must go on doing so; it is
-				// also how a keyboard presses a button, so it arrives as both and the
-				// widget that has the keyboard decides which one it was.
-				case GLFW_KEY_SPACE:     gi.editKeys.insert(GuiEditKey::Space);      break;
-				case GLFW_KEY_C: if (gi.ctrl) gi.copy = true;      break;
-				case GLFW_KEY_X: if (gi.ctrl) gi.cut = true;       break;
-				case GLFW_KEY_V: if (gi.ctrl) gi.paste = true;     break;
-				case GLFW_KEY_A: if (gi.ctrl) gi.selectAll = true; break;
-				// Both spellings of redo, because both are muscle memory somewhere:
-				// Ctrl+Y on Windows, Ctrl+Shift+Z everywhere a Mac keyboard taught it.
-				case GLFW_KEY_Z: if (gi.ctrl) { if (gi.shift) gi.redo = true; else gi.undo = true; } break;
-				case GLFW_KEY_Y: if (gi.ctrl) gi.redo = true;      break;
-				default: break;
-				}
+				gatherKey(gi, e.key, e.mods);
 			}
+		}
+		// Every window hears it; the frame loop forgets it once they all have. Through the
+		// same door a real key goes through, with its modifiers held for the frame -- so a
+		// synthetic Tab moves the focus and a synthetic Ctrl+Z undoes, rather than only
+		// reaching the shortcuts.
+		for (const Chord& chord : gSyntheticChords) {
+			gi.shift = gi.shift || (chord.mods & Chord::Shift);
+			gi.ctrl  = gi.ctrl  || (chord.mods & Chord::Ctrl);
+			gi.alt   = gi.alt   || (chord.mods & Chord::Alt);
+			gatherKey(gi, chord.key, chord.mods);
+		}
+		gi.typed += gSyntheticText;
+		// What an input method finished, as text, and what it is still composing.
+		gi.typed += in.imeCommitted();
+		gi.preedit = gSyntheticPreedit.empty() ? in.preedit() : gSyntheticPreedit;
+		gi.preeditCaret = gSyntheticPreedit.empty() ? in.preeditCaret() : gSyntheticPreeditCaret;
+		gi.droppedFiles = in.droppedFiles();
+		gi.droppedFiles.insert(gi.droppedFiles.end(), gSyntheticFiles.begin(), gSyntheticFiles.end());
+
+		// A frameless window's edges are the window's, not the interface's: over them the
+		// pointer is a resize handle, and the interface hears nothing of it -- no hover on
+		// the button at the very edge, and no press. A synthetic pointer is a picture
+		// being taken, and pictures do not resize the window.
+		// Where the left button went down: the last position the pointer reported before
+		// the press in this frame's events, or, with no movement before it, where the
+		// pointer was at the end of the last frame.
+		glm::dvec2 pressAt = in.mousePosition() - in.mouseDelta();
+		for (const InputEvent& e : in.events()) {
+			if (e.type == InputEventType::MouseMove) pressAt = { e.x, e.y };
+			else if (e.type == InputEventType::MouseButton && e.key == GLFW_MOUSE_BUTTON_LEFT &&
+			         e.action == InputAction::Press) break;
+		}
+		if (!gSyntheticPointer && window.followEdges(gi.lPressed, gi.lDown, pressAt.x, pressAt.y)) {
+			gi.pointer = glm::vec2(-1.0e6f);
+			gi.lDown = gi.lPressed = gi.lReleased = false;
+			gi.rDown = gi.rPressed = gi.rReleased = false;
+			gi.mDown = gi.mPressed = gi.mReleased = false;
+			gi.scroll = 0.0f;
 		}
 		window.gui().begin(gi);
 	}
@@ -519,6 +621,11 @@ namespace RDA {
 	static uint32_t gMaximizedSignal = kNoSignal, gMinimizedSignal = kNoSignal;
 	static uint32_t gFullscreenSignal = kNoSignal, gFocusedSignal = kNoSignal;
 	static uint32_t gOpenSignal = kNoSignal;
+	// Whether something is being dragged in the interface, and what sort. Read-only, and
+	// what a layout reads to show where things may go before they get there.
+	static uint32_t gDraggingSignal = kNoSignal, gDragKindSignal = kNoSignal;
+	static bool        gMirrorDragging = false;
+	static std::string gMirrorDragKind;
 	// What was last agreed. A flag that differs from this on the signal side was written
 	// by the interface; one that differs on the OS side was done by the reader.
 	static bool gMirrorMaximized = false, gMirrorMinimized = false;
@@ -560,6 +667,24 @@ namespace RDA {
 			gFullscreenSignal = signals().define("rda.fullscreen", gMirrorFullscreen);
 			gFocusedSignal = signals().define("rda.focused", gMirrorFocused);
 			gOpenSignal = signals().define("rda.open", true);
+			gDraggingSignal = signals().define("rda.dragging", false);
+			gDragKindSignal = signals().define("rda.dragKind", std::string_view{});
+		}
+
+		// A drag is the main window's GUI's. Set on the change only, so an idle frame
+		// marks nothing.
+		if (mainWindow) {
+			const Gui& gui = mainWindow->gui();
+			const bool dragging = gui.dragging();
+			if (dragging != gMirrorDragging) {
+				gMirrorDragging = dragging;
+				signals().set(gDraggingSignal, dragging);
+			}
+			const std::string& kind = dragging ? gui.dragKind() : std::string();
+			if (kind != gMirrorDragKind) {
+				gMirrorDragKind = kind;
+				signals().set(gDragKindSignal, std::string_view(kind));
+			}
 		}
 
 		if (mainWindow) {
@@ -745,6 +870,12 @@ namespace RDA {
 		// rather than a loop local because the frame is now called from two places.
 		static GuiInput gi;
 
+		// Run-time code's own clock: the timers that are due go off, and state.ts's computed
+		// values that read a table are asked whether it moved -- a table has no observers.
+		// Ahead of the bindings, which may read what either wrote, and outside the GUI,
+		// because an application with no window still has its state.
+		Layout::scriptHost().tick();
+
 		// Every window feeds its own input into its own GUI.
 		if (config.gui.enabled) {
 			// Which viewport holds the GPU is settled again every frame, because the
@@ -810,6 +941,9 @@ namespace RDA {
 				if (config.hiddenMainWindow && window == mainWindow) continue;
 				beginWindowGui(*window, gi, dtSeconds);
 			}
+			gSyntheticChords.clear();
+			gSyntheticText.clear();
+			gSyntheticFiles.clear();
 		}
 
 		// What a stream's "is anybody looking" ages against. Counted here rather than in
@@ -824,10 +958,18 @@ namespace RDA {
 				if (!window || !window->windowIsUp()) continue;
 				if (config.hiddenMainWindow && window == mainWindow) continue;
 				window->gui().end();
+				window->accessibilityFrameDone();
+				window->textInputFrameDone();
 				// After the walk, because whether a title bar is being held is something
 				// the walk works out -- and before the frame is drawn, so the window and
 				// what is in it move together rather than a frame apart.
 				window->followGrip(window->gui().windowGrabbed());
+				window->frameDone();
+				// A double click on the bar maximises or puts back. Through setMaximized,
+				// as the OS button would, so `state.rda.maximized` hears of it the same way.
+				if (window->gui().windowToggleAsked() && !window->isFullscreen()) {
+					window->setMaximized(!window->isMaximized());
+				}
 			}
 		}
 
@@ -1006,8 +1148,14 @@ namespace RDA {
 		while (gRunning.load()) {
 			// Only idle the pump once a frame has been skipped: while frames are being
 			// produced the loop stays uncapped here and is paced by vsync at present.
-			const double wait = (config.redrawMode == RedrawMode::OnDemand && !renderedLastFrame)
+			double wait = (config.redrawMode == RedrawMode::OnDemand && !renderedLastFrame)
 				? kIdleWaitSeconds : 0.0;
+			// No longer than the next timer, so one goes off when it is due rather than up to
+			// an idle period late. A timer due now makes this a poll, not a wait.
+			if (wait > 0.0) {
+				const double timer = Layout::scriptHost().secondsToNextTimer();
+				if (timer >= 0.0 && timer < wait) wait = timer;
+			}
 			if (!pumpEvents(wait)) break; // every window closed
 
 			// Anything another thread has asked the loop to make, before the frame that
@@ -1103,9 +1251,46 @@ void rendeerSetSyntheticPointer(float x, float y, bool down) {
 	rendeerRequestRedraw();
 }
 
+bool rendeerSyntheticChord(const char* chord) {
+	RDA::Chord parsed;
+	std::string error;
+	if (!chord || !RDA::parseChord(chord, parsed, &error)) {
+		RDA_LOG_ERROR("synthetic chord '" << (chord ? chord : "") << "' " << error);
+		return false;
+	}
+	RDA::gSyntheticChords.push_back(parsed);
+	rendeerRequestRedraw();
+	return true;
+}
+
+void rendeerSyntheticText(const char* utf8) {
+	if (!utf8 || !*utf8) return;
+	RDA::gSyntheticText += utf8;
+	rendeerRequestRedraw();
+}
+
+void rendeerSyntheticDrop(const std::vector<std::string>& paths) {
+	RDA::gSyntheticFiles.insert(RDA::gSyntheticFiles.end(), paths.begin(), paths.end());
+	rendeerRequestRedraw();
+}
+
+void rendeerSyntheticComposition(const char* utf8, int caret) {
+	RDA::gSyntheticPreedit = utf8 ? utf8 : "";
+	RDA::gSyntheticPreeditCaret = caret;
+	rendeerRequestRedraw();
+}
+
+void rendeerSetSyntheticModifiers(bool ctrl, bool shift) {
+	RDA::gSyntheticCtrl = ctrl;
+	RDA::gSyntheticShift = shift;
+	rendeerRequestRedraw();
+}
+
 void rendeerClearSyntheticPointer() {
 	RDA::gSyntheticPointer = false;
 	RDA::gSyntheticDown = false;
+	RDA::gSyntheticCtrl = false;
+	RDA::gSyntheticShift = false;
 	RDA::gSyntheticScroll = 0.0f;
 	rendeerRequestRedraw();
 }

@@ -36,7 +36,7 @@
       "slug": "layout-language",
       "title": "The layout language",
       "tagline": "Constants, bindings and handlers — and a grammar small enough to compile into data.",
-      "summary": "What a .tsx layout may contain: the three kinds of value, the full expression grammar and the two rules it enforces, how sizing works, and the nineteen elements you have to build from.",
+      "summary": "What a .tsx layout may contain: the three kinds of value, the full expression grammar and the two rules it enforces, how sizing works, and the twenty-seven elements you have to build from.",
       "minutes": 12,
       "file": "layout-language.md"
     },

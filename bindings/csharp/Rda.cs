@@ -277,6 +277,13 @@ namespace Rendeer {
 		/// </summary>
 		public static void Invoke(string command) => Engine.Invoke(command);
 
+		/// <summary>
+		/// Runs a command and returns what it returned, as JSON: an action's result, or null
+		/// for one a handler answers. How a rule written once in state.ts is the backend's too.
+		/// </summary>
+		public static System.Text.Json.JsonElement Call(string command, params object?[] args) =>
+			Engine.Call(command, args);
+
 		/// <summary>Binds a handler to a declared command, by name.</summary>
 		/// <remarks>
 		/// The generated <c>Commands</c> class is the typed way to do this; use it unless

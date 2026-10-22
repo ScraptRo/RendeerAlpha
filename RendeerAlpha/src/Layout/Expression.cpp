@@ -50,6 +50,12 @@ namespace RDA::Layout {
 		return {};
 	}
 
+	namespace {
+		const ScriptHooks* gScriptHooks = nullptr;
+	}
+
+	void setScriptHooks(const ScriptHooks* hooks) { gScriptHooks = hooks; }
+
 	EvalResult evaluate(const Program& program, RDA::Signals& table,
 	                    const std::vector<uint32_t>& signalIds,
 	                    const Value* event, const RowRef* row) {
@@ -139,19 +145,78 @@ namespace RDA::Layout {
 			}
 
 			case Op::CallCommand: {
-				if (instruction.operand >= signalIds.size()) {
+				const uint32_t slot = instruction.operand & kScriptSlotMask;
+				const uint32_t argc = instruction.operand >> kScriptArgShift;
+				if (slot >= signalIds.size() || stack.size() < argc) {
 					result.error = "command slot out of range";
 					return result;
 				}
+				// The arguments, first deepest, as the array the command is handed.
+				CommandArgs args;
+				const size_t first = stack.size() - argc;
+				for (size_t i = first; i < stack.size(); ++i) {
+					const Value& one = stack[i];
+					switch (one.kind) {
+					case Value::Kind::Number: args.addNumber(one.number); break;
+					case Value::Kind::Bool:   args.addBool(one.number != 0.0); break;
+					case Value::Kind::Text:   args.addText(one.text); break;
+					}
+				}
+				stack.resize(first);
 				// The registry is reached directly rather than passed in, because unlike
 				// signals there is one of it: a command names work in this application,
 				// and a second registry would mean two answers for one name.
-				const bool ran = commands().invoke(signalIds[instruction.operand]);
+				const bool ran = commands().invoke(signalIds[slot], args);
 				if (!ran) {
 					result.error = "nothing is bound to this command";
 					return result;
 				}
 				stack.push_back(Value::fromBool(true));
+				break;
+			}
+
+			case Op::CallScript: {
+				const uint32_t slot = instruction.operand & kScriptSlotMask;
+				const uint32_t argc = instruction.operand >> kScriptArgShift;
+				if (slot >= signalIds.size() || stack.size() < argc) {
+					result.error = "script call out of range";
+					return result;
+				}
+				if (!gScriptHooks || !gScriptHooks->call) {
+					result.error = "this program calls a function, and no script runtime is running";
+					return result;
+				}
+				// The arguments are the top `argc` values, first argument deepest.
+				const size_t first = stack.size() - argc;
+				Value out;
+				std::string error;
+				if (!gScriptHooks->call(signalIds[slot], stack.data() + first, argc, out, error)) {
+					result.error = error;
+					result.scriptError = true;
+					return result;
+				}
+				stack.resize(first);
+				stack.push_back(std::move(out));
+				break;
+			}
+
+			case Op::RunScript: {
+				if (instruction.operand >= signalIds.size()) {
+					result.error = "script binding out of range";
+					return result;
+				}
+				if (!gScriptHooks || !gScriptHooks->run) {
+					result.error = "this binding is a function, and no script runtime is running";
+					return result;
+				}
+				Value out;
+				std::string error;
+				if (!gScriptHooks->run(signalIds[instruction.operand], row, event, out, error)) {
+					result.error = error;
+					result.scriptError = true;
+					return result;
+				}
+				stack.push_back(std::move(out));
 				break;
 			}
 
@@ -172,6 +237,11 @@ namespace RDA::Layout {
 				Value value;
 				if (!pop(value)) { result.error = "nothing to store"; return result; }
 				const uint32_t id = signalIds[instruction.operand];
+				if (table.computed(id)) {
+					result.error = "state." + program.signals[instruction.operand] +
+					               " is computed by state.ts, and nothing else writes it";
+					return result;
+				}
 				// Written through the signal's own type rather than the expression's, so
 				// `state.count = "3"` lands as the number three rather than changing what
 				// the signal is.
@@ -294,7 +364,7 @@ namespace RDA::Layout {
 			"eq", "ne", "lt", "le", "gt", "ge",
 			"and", "or", "not",
 			"select", "concat", "totext", "pop",
-			"push.event", "call", "push.field",
+			"push.event", "call", "push.field", "call.script", "run.script",
 		};
 
 		std::ostringstream out;
@@ -317,8 +387,15 @@ namespace RDA::Layout {
 			case Op::PushBool:
 				out << (instruction.operand ? " true" : " false");
 				break;
-			case Op::LoadSignal:
+			case Op::CallScript:
 			case Op::CallCommand:
+				if ((instruction.operand & kScriptSlotMask) < program.signals.size()) {
+					out << " " << program.signals[instruction.operand & kScriptSlotMask]
+					    << " (" << (instruction.operand >> kScriptArgShift) << ")";
+				}
+				break;
+			case Op::RunScript:
+			case Op::LoadSignal:
 			case Op::PushRowField:
 			case Op::StoreSignal:
 				if (instruction.operand < program.signals.size()) {

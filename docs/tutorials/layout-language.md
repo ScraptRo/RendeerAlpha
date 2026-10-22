@@ -48,7 +48,7 @@ An event that carries a value hands it to the handler, and a two-way widget take
 | **Commands** | `commands.name()` — handlers only |
 | **Sequence** | `;` between statements in a handler |
 
-That is the list. There is no function call other than a command, no property access other than `state.` and a row’s, no array, no object, no loop. Each of those would need something at run time to interpret it, and there is nothing at run time to interpret it with.
+That is the grammar, and a binding written in it runs with no engine behind it. A binding that goes past it — a function you wrote, a method, an array, a loop — is compiled to JavaScript instead and runs as QuickJS bytecode; see [functions](../frontend/functions.md).
 
 Two rules the grammar **enforces** rather than hopes for: a value binding may not call a command — drawing must not have effects — and a handler may write while a binding may not. Everything else, a loop or a computation or a call into a library, belongs in the backend, which is the half of the application that has a language.
 
@@ -84,20 +84,22 @@ They are read-only, and they cost nothing when nothing moves: a write that chang
 
 `"content"` and `"fill"` are not values: one is a request to measure, the other a claim on room nobody has divided yet. Both are answered during layout, long after every binding has run — which is why the offset rides along with the word instead of being arithmetic, and why the offset itself may still be computed.
 
-## The nineteen elements
+## The twenty-seven elements
 
 | Group | Elements |
 | --- | --- |
-| **Containers** | `<container>`, `<panel>`, `<stack>`, `<scroll>`, `<splitter>` |
-| **Text and input** | `<label>`, `<button>`, `<checkbox>`, `<slider>`, `<textfield>` |
+| **Containers** | `<container>`, `<panel>`, `<stack>`, `<scroll>`, `<splitter>`, `<popup>` |
+| **Text and input** | `<label>`, `<button>`, `<checkbox>`, `<slider>`, `<textfield>`, `<number>` |
+| **Keys** | `<shortcut>` — a key chord and what it does; a `<button>` or `<checkbox>` takes `shortcut="Ctrl+S"` itself |
 | **Choices and pages** | `<select>` and `<option>`, `<tabs>` and `<tab>`, `<image>` |
-| **Large data** | `<list>` — rows from a declared table, through a pool of widgets |
-| **Docking** | `<dockspace>`, `<dock>` |
+| **Large data** | `<list>` — rows from a declared table, through a pool of widgets; `<tree>` — the same rows nested by a depth column; `<grid>` and `<column>` — a table as columns under titles, sorted by clicking one |
+| **Live pictures** | `<stream>` — a picture the backend replaces, frame after frame |
+| **Docking** | `<dockspace>`, `<dock>`, `<header>` |
 | **The viewport** | `<viewport>` — a hole the application fills, with Vulkan or with 2D commands |
 
 Each takes its own properties plus the common ones: `id`, `visible`, `animate`, `width` / `height` and their bounds, `hAlign` / `vAlign` and the per-child `hAlignSelf` / `vAlignSelf`, and absolute placement with `x`, `y`, `w`, `h`, `anchor` for the times a stack is the wrong tool.
 
-Every `text` property is UTF-8, from the `.tsx` through the blueprint to the screen, and so is everything a `<textfield>` receives from the keyboard. The font atlas covers Latin — including the Romanian comma-below letters — and anything outside it draws as a hollow box, which is a thing you can see, rather than as blank space.
+Every `text` property is UTF-8, from the `.tsx` through the blueprint to the screen, and so is everything a `<textfield>` receives from the keyboard. The font atlas is baked with Latin — including the Romanian comma-below letters — and anything outside it is baked the first time it is drawn, from the first face in `config.font` that has it, or failing that from the system's own. A codepoint no face has draws as a hollow box, which is a thing you can see, rather than as blank space.
 
 ## Beyond one layout
 

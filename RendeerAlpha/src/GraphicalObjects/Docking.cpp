@@ -44,6 +44,26 @@ namespace RDA {
 	DockContainer* DockSpace::adopt(std::unique_ptr<DockContainer> container) {
 		if (!container) return nullptr;
 		structuralChange();
+		// Two floating panels that start in the same place are one panel as far as anyone
+		// can see -- which is what every layout with two of them and no positions got,
+		// because they all start at the same default. Stepped down and across until it is
+		// clear of the others, the way spawn() already cascades.
+		if (container->dock == DockSide::Floating) {
+			for (int guard = 0; guard < 32; ++guard) {
+				bool taken = false;
+				for (const auto& other : mContainers) {
+					if (other->dock != DockSide::Floating) continue;
+					if (std::fabs(other->floatingRect.x - container->floatingRect.x) < 1.0f &&
+					    std::fabs(other->floatingRect.y - container->floatingRect.y) < 1.0f) {
+						taken = true;
+						break;
+					}
+				}
+				if (!taken) break;
+				container->floatingRect.x += 26.0f;
+				container->floatingRect.y += 26.0f;
+			}
+		}
 		mContainers.push_back(std::move(container));
 		return mContainers.back().get();
 	}
@@ -113,7 +133,16 @@ namespace RDA {
 		return bar ? bar->bandHeight(fallback) : fallback;
 	}
 
+	bool DockContainer::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::Pane;
+		out.name = alt.empty() ? title : alt;
+		return true;
+	}
+
 	void DockContainer::drawContents(Gui& gui, const Rect& body) {
+		// A panel is a place a reader can go, named by its title, and what is in it hangs
+		// off it. Recorded here because the dock space, not a parent, is what draws it.
+		if (gui.accessibilityWanted()) gui.noteAccessible(this, body);
 		// Indexed and re-read for the same reason paintChildren is: a callback in here
 		// may add or remove a sibling while this is walking them.
 		for (size_t i = 0; i < children().size(); ++i) {
@@ -252,6 +281,7 @@ namespace RDA {
 
 		std::istringstream in(data);
 		std::string line;
+		std::vector<DockContainer*> written;   // in the order the file has them
 		while (std::getline(in, line)) {
 			std::istringstream ls(line);
 			char kind = 0;
@@ -274,10 +304,20 @@ namespace RDA {
 				}
 			}
 			if (!c) continue;
+			written.push_back(c);
 			if (fr.w > 0.0f && fr.h > 0.0f) c->floatingRect = fr;
 			// Placed by the file, so seeding leaves it alone. A container the file does
 			// not mention is new since the layout was saved and still gets its hint.
 			mSeeded.insert(c->id());
+		}
+
+		// The file's order is the stacking the floating panels were left in -- the last
+		// one raised is last -- so it is put back. Each moves to the end in turn, which
+		// leaves them in file order behind anything the file did not mention.
+		for (DockContainer* c : written) {
+			auto at = std::find_if(mContainers.begin(), mContainers.end(),
+			                       [c](const std::unique_ptr<DockContainer>& p) { return p.get() == c; });
+			if (at != mContainers.end()) std::rotate(at, at + 1, mContainers.end());
 		}
 
 		mTree.load(data); // ignores the lines above; migrates the old format if needed
@@ -947,6 +987,8 @@ namespace RDA {
 				mTree.layout(area, kSplit, showing);
 				mDragging = c;
 				mDragOffset = { 40.0f, chrome.tabHeight * 0.5f };
+				mDragFrom = in.pointer;
+				mDragTravelled = true;   // it moved to become a drag at all
 			}
 		}
 
@@ -996,12 +1038,16 @@ namespace RDA {
 		if (mDragging) {
 			mDragging->floatingRect.x = in.pointer.x - mDragOffset.x;
 			mDragging->floatingRect.y = in.pointer.y - mDragOffset.y;
+			// The same slop a pressed tab has before it tears off: until then a press is a
+			// click, and a click on a floating panel's bar is not a request to dock it.
+			if (glm::length(in.pointer - mDragFrom) > 6.0f) mDragTravelled = true;
 
 			// The window border takes precedence: that is how you get a strip across the
 			// full width or height rather than a share of one pane.
-			previewZone = windowEdgeAt(in.pointer, area, &previewRect);
+			previewZone = mDragTravelled ? windowEdgeAt(in.pointer, area, &previewRect)
+			                             : DockDrop::None;
 			wholeEdge = (previewZone != DockDrop::None);
-			if (!wholeEdge) {
+			if (!wholeEdge && mDragTravelled) {
 				previewPane = mTree.leafAt(in.pointer);
 				if (previewPane && previewPane->tabs.empty()) previewPane = nullptr;
 				if (previewPane) previewZone = mTree.dropZoneAt(previewPane, in.pointer, &previewRect);
@@ -1026,8 +1072,9 @@ namespace RDA {
 		bool busy = mDragging || mResizingFloat || mPressTab || mResizeSplit ||
 		            !mCornerId.empty();
 
-		// --- input: floating containers get first crack (topmost = last created) ---
+		// --- input: floating containers get first crack (topmost = drawn last) ---
 		if (!busy && in.lPressed) {
+			DockContainer* pressed = nullptr;
 			for (auto it = mContainers.rbegin(); it != mContainers.rend(); ++it) {
 				DockContainer* c = it->get();
 				if (!c->visible || mTree.contains(c->id())) continue;
@@ -1035,21 +1082,68 @@ namespace RDA {
 				// is still arriving is not at its rect yet, and grabbing one has to agree
 				// with where it looks like it is.
 				const Rect r = (c->computedRect.w > 0.0f) ? c->computedRect : c->floatingRect;
+				// The topmost panel under the press is the one pressed, wherever on it the
+				// press landed. Anything underneath is underneath: going on down the list
+				// let a press on one panel's body pick up another's title bar behind it.
+				if (!r.contains(in.pointer)) continue;
+				pressed = c;
 				const Rect grip{ r.x + r.w - 16.0f, r.y + r.h - 16.0f, 16.0f, 16.0f };
 				if (grip.contains(in.pointer)) { mResizingFloat = c; busy = true; break; }
 				if (c->closable) {
 					const Rect xr{ r.x + r.w - 20.0f, r.y, 18.0f, chrome.tabHeight };
 					if (xr.contains(in.pointer)) { mPendingRemove = c; busy = true; break; }
 				}
+				// A panel wearing its own header takes that press while the header draws,
+				// because only then is it known whether a button on the bar took it first --
+				// the same rule tiles follow. Taking it here put a close button drawn on the
+				// header under the bar's drag, so pressing it carried the panel instead.
+				if (c->header()) break;
 				const Rect titleBar{ r.x, r.y, r.w, chrome.tabHeight };
 				if (titleBar.contains(in.pointer)) {
 					mDragging = c;
 					mDragOffset = in.pointer - glm::vec2(r.x, r.y);
+					mDragFrom = in.pointer;
+					mDragTravelled = false;
 					busy = true;
-					break;
 				}
+				break;
+			}
+
+			// Pressed is brought to the front, the way every window anyone has used
+			// behaves. Floating panels are drawn and take input in the order they are
+			// held, so the front is the end. Moved after the loop rather than inside it,
+			// and the press itself is unaffected: the panel it landed on was already the
+			// topmost one under the pointer, so its widgets got it this frame either way.
+			// The order is also the order a saved layout writes them in, so the stacking
+			// survives a restart.
+			if (pressed && pressed != mContainers.back().get()) {
+				auto at = std::find_if(mContainers.begin(), mContainers.end(),
+				                       [pressed](const std::unique_ptr<DockContainer>& p) {
+				                           return p.get() == pressed;
+				                       });
+				std::rotate(at, at + 1, mContainers.end());
+				++mRevision;   // drawn in a new order, which the GUI cache cannot see
 			}
 		}
+
+		// --- what is under a floating panel is under it --------------------------------
+		//
+		// Docked panes are painted first and floating panels over them, and a widget in an
+		// immediate-mode GUI decides about a press while it paints -- so without this a
+		// press on a floating panel was also a press on whatever docked widget lay beneath
+		// it, which a <viewport> listening for clicks made easy to see. Not while something
+		// is already held: a drag that began in a pane keeps going when it passes under a
+		// floating panel, the way it keeps going past the pane's own edge.
+		bool underFloating = false;
+		if (gui.activeWidget() == 0 && !mResizeSplit && mCornerId.empty()) {
+			for (const auto& cp : mContainers) {
+				const DockContainer* c = cp.get();
+				if (!c->visible || mTree.contains(c->id())) continue;
+				const Rect r = (c->computedRect.w > 0.0f) ? c->computedRect : c->floatingRect;
+				if (r.contains(in.pointer)) { underFloating = true; break; }
+			}
+		}
+		if (underFloating) gui.pushPointerAway();
 
 		// --- draw the docked panes ---
 		std::vector<DockNode*> leaves;
@@ -1101,6 +1195,8 @@ namespace RDA {
 				busy = true;
 			}
 		}
+
+		if (underFloating) gui.popPointerAway();
 
 		// --- draw floating containers (creation order; last on top) ---
 		for (auto& cp : mContainers) {
@@ -1169,6 +1265,8 @@ namespace RDA {
 				if (drawHeaderBand(gui, c, band, busy)) {
 					mDragging = c;
 					mDragOffset = in.pointer - glm::vec2(r.x, r.y);
+					mDragFrom = in.pointer;
+					mDragTravelled = false;
 					busy = true;
 				}
 			} else {

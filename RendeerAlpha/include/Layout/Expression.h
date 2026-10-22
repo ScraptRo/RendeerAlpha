@@ -49,14 +49,27 @@ namespace RDA::Layout {
 		// decodes to the instructions it was written with.
 		PushEvent,   // pushes the value the handler was called with
 		// operand: a slot in `signals` -- the pool holds every name a program refers to,
-		// and which registry a name belongs to is decided by the opcode that reads it.
-		// Pushes whether the command ran, so a statement still leaves one value behind.
+		// and which registry a name belongs to is decided by the opcode that reads it --
+		// in the low 24 bits, and the number of arguments it pops in the high 8, laid out
+		// as CallScript's are. A blueprint from before arguments has zero there. Pushes
+		// whether the command ran, so a statement still leaves one value behind.
 		CallCommand,
 		// operand: a slot in `signals` holding a marked column name, resolved to a column
 		// index when the layout loads. Reads that column of whichever row the template is
 		// showing at the moment it is evaluated.
 		PushRowField,
+		// A function the layout defined, run by the script runtime. The low 24 bits are a
+		// slot in `signals` naming it ("$formatSize"), the high 8 the number of arguments
+		// it pops; it pushes what the function returned. See docs/architecture/runtime-code.md.
+		CallScript,
+		// A whole binding that the grammar above does not cover, compiled to JavaScript
+		// instead: operand is a slot naming it ("%3", or "%r3" for one that reads the row).
+		// Called with the row and the event, if there are any, and pushes its result.
+		RunScript,
 	};
+
+	inline constexpr uint32_t kScriptSlotMask = 0x00FFFFFFu;
+	inline constexpr uint32_t kScriptArgShift = 24;
 
 	struct Instruction {
 		Op       op = Op::Halt;
@@ -96,6 +109,13 @@ namespace RDA::Layout {
 		std::vector<std::string> signals;
 
 		bool empty() const { return code.empty(); }
+		// Whether running it leaves the VM: a program that does has dependencies nobody
+		// could list at build time, and is watched while it runs instead.
+		bool usesScript() const {
+			for (const Instruction& one : code)
+				if (one.op == Op::CallScript || one.op == Op::RunScript) return true;
+			return false;
+		}
 	};
 
 	// Which row a row template's bindings are showing while they are evaluated. Supplied
@@ -109,7 +129,21 @@ namespace RDA::Layout {
 		bool        ok = false;
 		Value       value;
 		std::string error; // only when ok is false
+		// The failure was a script throwing rather than the program being malformed. A
+		// broken program stays broken; a function that threw on one value may well not on
+		// the next, so a binding that failed this way is kept and run again.
+		bool        scriptError = false;
 	};
+
+	// How the VM reaches the script runtime, without depending on it. Set by ScriptHost
+	// when it starts; null in a process that has loaded no layout with functions in it,
+	// and in the tests that exercise the VM alone. `id` is what the program's slot was
+	// resolved to when the layout loaded.
+	struct ScriptHooks {
+		bool (*call)(uint32_t id, const Value* args, size_t argc, Value& out, std::string& error) = nullptr;
+		bool (*run)(uint32_t id, const RowRef* row, const Value* event, Value& out, std::string& error) = nullptr;
+	};
+	void setScriptHooks(const ScriptHooks* hooks);
 
 	// Runs `program` against `table`. `signalIds` maps the program's signal slots to
 	// entries in that table and must be as long as program.signals; resolving names once

@@ -70,6 +70,12 @@ option(RDA_BUILD_TOOLS   "Build the layout toolchain" ON)
 # that qualifies it. See RendeerAlpha/CMakeLists.txt for the rest of the reasoning.
 option(RDA_ENABLE_SCRIPTING "Build the run-time JavaScript host" OFF)
 
+# Functions a layout defines run when it is used, as QuickJS bytecode -- see
+# docs/architecture/runtime-code.md. Off refuses every layout that would need that, at
+# build time and naming the binding, for an application that wants "a shipped binary
+# evaluates no JavaScript" to stay true. Passed to rda as --no-runtime-code.
+option(RDA_RUNTIME_CODE "Allow layouts to define functions that run at run time" ON)
+
 # Recompiling layouts from their .tsx needs esbuild, and esbuild needs node. A
 # machine building from a source tree may have neither, so this can be turned off:
 # the committed blueprints are used as they are, and the build says so rather than

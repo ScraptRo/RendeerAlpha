@@ -1,5 +1,6 @@
 ﻿#include <Layout/Probe.h>
 #include <Layout/Bindings.h>
+#include <Layout/ScriptHost.h>
 #include <Logger/Logger.h>
 
 namespace RDA::Layout {
@@ -78,7 +79,10 @@ namespace RDA::Layout {
 		return widget;
 	}
 
-	size_t Probe::settle() { return bindings().applyDirty(); }
+	size_t Probe::settle() {
+		scriptHost().tick();
+		return bindings().applyDirty();
+	}
 
 	bool Probe::click(std::string_view id) {
 		Widget* widget = require(id, "click");
@@ -95,6 +99,54 @@ namespace RDA::Layout {
 		}
 		RDA_LOG_WARNING("Probe: " << mError);
 		return false;
+	}
+
+	bool Probe::press(std::string_view chord) {
+		Chord parsed;
+		std::string error;
+		if (!parseChord(chord, parsed, &error)) {
+			mError = "'" + std::string(chord) + "' " + error;
+			RDA_LOG_WARNING("Probe: " << mError);
+			return false;
+		}
+		std::vector<Widget*> offered;
+		for (const auto& child : mRoot.children()) {
+			if (child && child->visible) child->offerShortcuts(offered);
+		}
+		Widget* chosen = pickShortcut(offered, parsed);
+		if (!chosen) {
+			mError = "nothing that can be reached has the shortcut " + chordName(parsed);
+			return false;
+		}
+		chosen->pressShortcut();
+		settle();
+		mError.clear();
+		return true;
+	}
+
+	bool Probe::drop(std::string_view from, std::string_view onto) {
+		Widget* source = require(from, "drag");
+		if (!source) return false;
+		Widget* target = require(onto, "drop onto");
+		if (!target) return false;
+		if (source->drag.empty()) {
+			mError = "'" + std::string(from) + "' carries nothing; give it drag=";
+			return false;
+		}
+		if (!target->onDrop) {
+			mError = "'" + std::string(onto) + "' has no onDrop";
+			return false;
+		}
+		if (!target->acceptsKind(source->dragKind)) {
+			mError = "'" + std::string(onto) + "' does not accept the kind '"
+			       + source->dragKind + "'";
+			return false;
+		}
+		const std::string carried = source->drag;
+		target->onDrop(carried);
+		settle();
+		mError.clear();
+		return true;
 	}
 
 	bool Probe::set(std::string_view id, bool value) {

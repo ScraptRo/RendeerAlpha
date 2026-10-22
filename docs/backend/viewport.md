@@ -88,6 +88,70 @@ viewport no backend has touched shows the engine's own 3D scene instead.
 last frame laid out — both zero before the first one. A drawing sized to a stale answer is
 the one mistake this is easy to make.
 
+### Hearing back from it
+
+Two things happen to a viewport that its backend has to hear about. It is **resized** — a
+splitter moves, a panel beside it closes, the window changes — and a drawing made for the
+old size is now stretched or cropped. And the **pointer** does something over it: a graph
+to pan, a plot to zoom, a model to orbit. Both arrive the same way:
+
+```python
+rda.listen_viewport("graph")          # take the pointer; resizes come either way
+
+def viewports():
+    while rda.running():
+        name = rda.wait_viewport(0.5)        # sleeps until something happens; None on a timeout
+        if not name:
+            continue
+        e = rda.viewport_event(name)
+        if e.resized:
+            relayout(e.width, e.height)       # the size now, in the units a drawing uses
+        if e.held & e.LEFT:
+            pan(e.dx, e.dy)                   # all the movement since the last look
+        if e.wheel:
+            zoom_about(e.x, e.y, e.wheel)     # notches, summed; positive is away from you
+        if (e.released & e.LEFT) and e.clicks == 1:
+            pick(e.x, e.y)
+        redraw()
+
+threading.Thread(target=viewports, daemon=True).start()
+```
+
+**Every viewport reports its size**, from the first frame that places it — which is also
+the moment a backend can make its first drawing at the right size, rather than drawing
+into a size of zero and hoping. A hidden viewport is not laid out, and keeps its last
+size; it reports again when it comes back at a different one.
+
+**Listening is what changes the pointer.** Not listened to, a viewport is a picture and the
+pointer goes through it as it always did — a viewport inside a `<scroll>` still lets the
+wheel scroll the page. Listened to, it is a surface: a press over it belongs to it until
+the button comes up, wherever the pointer wanders meanwhile, and the wheel stops there.
+
+**Summed, not queued.** What a pan wants is how far the pointer travelled since the drawing
+was last made, not the forty positions in between; what a redraw wants is the size now, not
+every size a dragged splitter passed through. A backend that was busy drawing must not come
+back to a backlog. So `dx`/`dy` and `wheel` add up until taken, `pressed`, `released` and
+`resized` remember that something happened at least once, and `x`, `y`, `held`, `inside`,
+`width` and `height` are how things are now. `clicks` is 2 on the press of a double click.
+
+**Waiting costs nothing.** Neither `wait_viewport` nor `viewport_event` crosses to the loop
+thread; they read a queue of their own behind a lock, like the command queue. Polling the
+loop every frame instead would ask for a frame every frame, and an idle window would never
+be idle. Two busy viewports are answered in turn.
+
+Coordinates are the viewport's own, the same ones a drawing uses. Only the part that can be
+seen takes the pointer, so a viewport half scrolled out of a `<scroll>` does not take
+presses meant for whatever is drawn over the rest.
+
+A viewport drawn with an *empty* list draws nothing at all, so one laid over a `<stream>`
+or an `<image>` with `anchor="fill"` is a transparent surface that takes the pointer for the
+picture underneath — and draws labels over it.
+
+The C ABI is `rda_viewport_listen`, `rda_viewport_take` and `rda_viewport_wait` (1.7), with
+`rda_viewport_event` as what is taken. C++ reads the same thing from
+`RDA::viewports().events()`: `take(name, out)` and `wait(timeoutMs)`, after
+`RDA::viewports().listen(name, true)` for the pointer.
+
 ## The large half: Vulkan, from C++
 
 A C++ application gets the command buffer. The render pass has already begun on the

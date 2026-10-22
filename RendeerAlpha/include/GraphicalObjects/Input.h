@@ -82,6 +82,23 @@ namespace RDA {
 
 		// ---- discrete events for this frame (in arrival order) ----
 		const std::vector<InputEvent>& events() const { return mEvents; }
+		// Files let go over the window this frame, in the order the platform gave them.
+		// Kept for the frame as well as handed to onFilesDropped, so the interface can
+		// give them to whichever element they landed on.
+		const std::vector<std::string>& droppedFiles() const { return mDropped; }
+
+		// ---- an input method ----------------------------------------------------------
+		//
+		// What a Chinese, Japanese or Korean input method has finished composing this frame,
+		// as UTF-8 -- text, exactly as if it had been typed -- and what it is in the middle
+		// of composing, which is not text yet: it is drawn at the caret and can still change
+		// entirely. `preeditCaret` is where the method's own cursor is inside it, in
+		// characters. Filled by the platform's text-input layer; empty where there is none.
+		const std::string& imeCommitted() const { return mImeCommitted; }
+		const std::string& preedit() const { return mPreedit; }
+		int preeditCaret() const { return mPreeditCaret; }
+		void imeCommit(const std::string& text) { mImeCommitted += text; }
+		void setPreedit(std::string text, int caret) { mPreedit = std::move(text); mPreeditCaret = caret; }
 
 		// ---- engine-internal: driven by the window and the loop, not the app ----
 		void setCallbacks(const InputCallbacks& callbacks) { mCallbacks = callbacks; }
@@ -111,6 +128,10 @@ namespace RDA {
 		bool      mHasMouse = false; // suppress a huge delta on the first cursor event
 
 		std::vector<InputEvent> mEvents;
+		std::vector<std::string> mDropped;
+		std::string mImeCommitted;     // this frame's
+		std::string mPreedit;          // until the method says otherwise
+		int         mPreeditCaret = 0;
 		InputCallbacks          mCallbacks;
 	};
 }

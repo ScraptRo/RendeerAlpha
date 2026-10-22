@@ -78,13 +78,48 @@ read, which is how the buttons do something:
 </panel>
 ```
 
-A maximised or fullscreen window ignores `dragWindow`: dragging one somewhere would leave
-it maximised and in the wrong place.
+**The bar behaves like a title bar.** A double click on a `dragWindow` region maximises
+the window, or puts it back -- not a double click on a button drawn over it, which takes
+its own presses. Dragging the bar of a maximised window restores it *under the pointer*,
+at the same fraction of its width and the same depth into the bar, and the drag carries
+on, the way every platform's own title bar does. A fullscreen window ignores `dragWindow`.
 
-**A frameless window cannot be resized by dragging its edges.** There is no non-client
-area to drag and the engine does not invent one, so `resizable` has nothing to act on
-once `decorated` is false. Maximising still works, and a corner grip that writes a size
-is a layout's to write.
+**Its edges resize it.** A frameless window has no non-client area for the OS to drag, so
+the engine keeps one of its own: a band five units deep inside the window's edges, a
+little longer at the corners. Over it the pointer turns into a resize cursor, and a press
+there resizes from that edge until the button comes up. The interface hears nothing of the
+pointer while it is on the band -- a button at the very edge does not light up or click
+under a resize -- and a drag that began in the interface keeps going if it wanders over
+the band. The far edge stays where it is, and `min_width`/`min_height` and the maximums
+hold; with no minimum named, a window still stops at 160 by 100, so it cannot be dragged
+down to something too small to take hold of again.
+
+`resizable = false` turns the band off, and so does being maximised or fullscreen, which
+have no edges to move.
+
+**On Windows the platform does all of it**, and adds what only it can: snapping. A
+frameless, resizable window is given a frame's styles with no frame drawn, and Windows is
+told what is under the pointer the way a frame would tell it -- the resize edges, the bar
+wherever nothing is drawn over it, and the maximise button. So the bar is Windows' own
+caption: drag the window to a screen edge to snap it to half the screen, to the top to
+maximise it, drag a snapped or maximised window away to restore it under the pointer,
+double-click to maximise, right-click for the system menu. The edges resize with Windows'
+own cursors, and snap while they are dragged.
+
+Mark the button that maximises with `maximizeButton`, and on Windows 11 resting the pointer
+on it offers the snap layouts, as the system's own maximise button does. It changes nothing
+about how the button draws or clicks -- the layout still decides what a click does:
+
+```tsx
+<button id="max" variant="caption" width={46} height={44} maximizeButton={true}
+        onClick={() => state.rda.maximized = !state.rda.maximized} />
+```
+
+Elsewhere the engine's own versions above are what there is; there is no snapping.
+
+A window cannot snap to half a screen narrower than its `min_width`, so a minimum wider
+than half the display turns half-screen snapping into a clamped, misplaced one. Keep the
+minimum within half of the screens it will be used on.
 
 ## `state.rda`
 
@@ -96,6 +131,7 @@ is a layout's to write.
 | `minimized` | **writable** — setting it iconifies or restores |
 | `fullscreen` | **writable** |
 | `open` | **writable** — writing false closes the window |
+| `dragging`, `dragKind` | whether something in the interface is being dragged, and its `dragKind` — see [dragging and dropping](drag-and-drop.md) |
 
 The four writable ones are a conversation rather than a report. The OS changes them when
 the reader presses a button or alt-tabs; the interface changes them when a title bar it
@@ -107,7 +143,7 @@ an assignment — and a label bound to `state.rda.maximized` follows it without 
 that windows can be maximised. A backend reads and writes the same four as ordinary
 signals, under those names.
 
-`width`, `height` and `focused` are the engine reporting, and writing one is refused where
+`width`, `height`, `focused`, `dragging` and `dragKind` are the engine reporting, and writing one is refused where
 it is written rather than allowed and quietly undone.
 
 ---

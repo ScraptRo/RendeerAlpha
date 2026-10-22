@@ -21,9 +21,12 @@ namespace RDA::Layout {
 		constexpr PropDesc kCommon[] = {
 			PROP(id,      String, "name for this node; the compiler turns it into a path, which is what hover and focus are keyed on"),
 			PROP(visible, Bool,   "drawn and interactive when true"),
-			PROP(dragWindow, Bool, "dragging this moves the window; for a window opened "
+			PROP(dragWindow, Bool, "dragging this moves the window, and a double click maximises it; for a window opened "
 			                       "with frame={false}, where the layout draws its own "
 			                       "title bar"),
+			PROP(maximizeButton, Bool, "this is the window's maximise button, in a title bar the "
+			                           "layout draws; on Windows 11 resting the pointer on it "
+			                           "offers snap layouts"),
 			PROP(route, String, "the shape this travels along when it moves, as an SVG "
 			                    "path; fitted to wherever it is going, so one route works "
 			                    "between any two places"),
@@ -54,6 +57,24 @@ namespace RDA::Layout {
 				PROP_EVENT(onContext, "runs when the right button goes down on this; open a "
 			                      "<popup anchor=\"pointer\"> in it for a context menu"),
 			PROP_EVENT_OF(onHover, "boolean", "runs when the pointer arrives or leaves, with which"),
+
+			PROP_ENUM(live, "off|polite|assertive",
+			          "read out by a screen reader when what this says changes, without the "
+			          "focus going there: politely after what is being read, or at once"),
+			PROP(alt, String, "what a screen reader calls this; needed where nothing else names "
+			                  "it -- a slider, a picture, a button holding only an icon"),
+			PROP(drag, String, "what this carries when it is picked up and dragged; empty "
+			                   "is not draggable. An id, a path -- what the drop target is handed"),
+			PROP(dragKind, String, "what sort of thing it carries, so a target can take some "
+			                       "kinds and refuse others"),
+			PROP(accepts, String, "as a drop target, the kinds it takes, separated by |; "
+			                      "empty takes any"),
+			PROP_EVENT_OF(onDrop, "string", "runs when something it accepts is let go of over "
+			                                "it, with what that carries"),
+			PROP_EVENT_OF(onDragOver, "boolean", "runs when a drag it would take arrives over "
+			                                     "it or leaves, with which"),
+			PROP_EVENT_OF(onFiles, "string", "runs when files from outside the application are "
+			                                 "let go of over it, with their paths one per line"),
 	};
 
 		constexpr PropDesc kContainer[] = {
@@ -116,13 +137,21 @@ namespace RDA::Layout {
 			     "Draws in the variant's pressed colour, or as the last state of the "
 			     "variant's mesh"),
 			PROP_VARIANT("button"),
+			PROP(shortcut, Chord, "a key chord that clicks it, \"Ctrl+S\"; works while it "
+			                      "can be reached, including inside a closed <popup>"),
 			PROP_EVENT(onClick, "runs on each completed click"),
 		};
 		constexpr PropDesc kCheckbox[] = {
 			PROP(label, String, "the text beside the box"),
 			PROP(value, Bool,   "ticked when true"),
 			PROP_VARIANT("checkbox"),
+			PROP(shortcut, Chord, "a key chord that toggles it, \"Ctrl+B\""),
 			PROP_EVENT_OF(onChange, "boolean", "runs when it is toggled, with the new state"),
+		};
+		constexpr PropDesc kShortcut[] = {
+			PROP(keys, Chord, "the chord, \"Ctrl+K\", \"F5\", \"Mod+Shift+P\""),
+			PROP_EVENT(onPress, "runs when the chord is pressed and this is where the "
+			                    "reader is: on the showing screen, on the showing tab"),
 		};
 		constexpr PropDesc kSlider[] = {
 			PROP(value, Number, "where the knob starts"),
@@ -141,7 +170,69 @@ namespace RDA::Layout {
 			PROP(wheelStep, Number, "pixels per wheel notch"),
 			PROP(follow,    Bool,   "stay at the end when rows arrive, while already there"),
 			PROP(revealRow, Number, "scroll until this row is in view; -1 asks for nothing"),
+			PROP(sortBy,    String, "a column to show the rows ordered by, without the table changing"),
+			PROP(sortDescending, Bool, "largest first"),
+			PROP(filter,    String, "show only rows containing this, ignoring case"),
+			PROP(filterColumns, String, "the columns the filter looks in, separated by |; every text column unless said"),
 			PROP_VARIANT("textfield"),
+		};
+
+		constexpr PropDesc kGrid[] = {
+			PROP(of,        String, "which declared table its rows come from"),
+			PROP(keyColumn, String, "the column a row is known by -- what `selected` holds and the handlers are "
+			                        "given; \"id\" unless said"),
+			PROP(selected,  String, "the chosen row's key; the grid reports a choice with onSelect. "
+			                        "With multiSelect, the row the keyboard is on"),
+			PROP(multiSelect, Bool, "several rows can be chosen: Ctrl+click, Shift+click, Shift with the arrows, Ctrl+A"),
+			PROP(selectedKeys, String, "with multiSelect, the chosen rows' keys, one per line"),
+			PROP(sortBy,    String, "the column the rows are ordered by; clicking a title sets it"),
+			PROP(sortDescending, Bool, "largest first; clicking the sorted title again turns it round"),
+			PROP(filter,    String, "show only rows containing this, ignoring case"),
+			PROP(filterColumns, String, "the columns the filter looks in, separated by |; every text column unless said"),
+			PROP(rowHeight, Number, "height of one row"),
+			PROP(headerHeight, Number, "height of the titles; a line of text and some room unless said"),
+			PROP(barWidth,  Number, "thickness of the scroll bars"),
+			PROP(wheelStep, Number, "pixels per wheel notch; Shift and the wheel scroll sideways"),
+			PROP_VARIANT("textfield"),
+			PROP_EVENT_OF(onSelect,   "string", "a row was clicked or arrowed to, with its key"),
+			PROP_EVENT_OF(onActivate, "string", "a row was double-clicked or had Enter pressed on it, with its key"),
+			PROP_EVENT_OF(onSort,     "string", "a title was clicked: the column, with a - in front for descending"),
+			PROP_EVENT_OF(onSelectionChange, "string", "with multiSelect, the chosen rows changed: their keys, one per line"),
+		};
+
+		constexpr PropDesc kColumn[] = {
+			PROP(field,    String, "the table column it shows"),
+			PROP(title,    String, "what its title says; the field's name unless said"),
+			PROP_ALIGN(hAlign, "start|center|end", "where the values and the title sit across the column"),
+			PROP(sortable, Bool,   "clicking its title sorts by it; true unless said"),
+			PROP(decimals, Number, "places a number is shown to; as many as it has unless said"),
+		};
+
+		constexpr PropDesc kTree[] = {
+			PROP(of,        String, "which declared table its nodes come from, each node followed by everything under it"),
+			PROP(depthColumn, String, "the number column saying how far in a node is, 0 at the top; \"depth\" unless said"),
+			PROP(keyColumn,   String, "the column a node is known by -- what it remembers being open by, and what "
+			                          "the handlers are given; \"id\" unless said"),
+			PROP(childrenColumn, String, "a bool column saying a node has something under it before anything is; "
+			                             "\"hasChildren\" unless said"),
+			PROP(indent,    Number, "how far in each level is"),
+			PROP(openDepth, Number, "nodes shallower than this start open; 0 starts everything shut"),
+			PROP(selected,  String, "the chosen node's key; the tree reports a choice with onSelect. "
+			                        "With multiSelect, the node the keyboard is on"),
+			PROP(multiSelect, Bool, "several nodes can be chosen: Ctrl+click, Shift+click, Shift with the arrows, Ctrl+A"),
+			PROP(selectedKeys, String, "with multiSelect, the chosen nodes' keys, one per line"),
+			PROP(rowHeight, Number, "height of one row"),
+			PROP(spacing,   Number, "gap between rows"),
+			PROP(poolSize,  Number, "how many row widgets to keep; enough to fill the view"),
+			PROP(barWidth,  Number, "thickness of the scroll bar"),
+			PROP(wheelStep, Number, "pixels per wheel notch"),
+			PROP(revealRow, Number, "scroll until this table row is in view, if it is shown; -1 asks for nothing"),
+			PROP_VARIANT("textfield"),
+			PROP_EVENT_OF(onSelect,   "string", "a node was clicked or arrowed to, with its key"),
+			PROP_EVENT_OF(onActivate, "string", "a node was double-clicked or had Enter pressed on it, with its key"),
+			PROP_EVENT_OF(onExpand,   "string", "a node was opened, with its key; append its children here to load them lazily"),
+			PROP_EVENT_OF(onCollapse, "string", "a node was shut, with its key"),
+			PROP_EVENT_OF(onSelectionChange, "string", "with multiSelect, the chosen nodes changed: their keys, one per line"),
 		};
 
 		constexpr PropDesc kImage[] = {
@@ -278,12 +369,21 @@ namespace RDA::Layout {
 			WIDGET(label,      kLabel,      "a line of text"),
 			WIDGET(button,     kButton,     "a clickable button; may hold children instead of text"),
 			WIDGET(checkbox,   kCheckbox,   "a labelled boolean toggle"),
+			WIDGET(shortcut,   kShortcut,
+			       "a key chord and what it does, for a shortcut no button owns; draws nothing"),
 			WIDGET(slider,     kSlider,     "a draggable value between two bounds"),
 			WIDGET(number,     kNumber,
 			       "a number you drag sideways to change, and click to type into"),
 			WIDGET(textfield,  kTextField,  "an editable text field"),
 			WIDGET(list,       kList,
 			       "rows from a table, showing only as many widgets as fit"),
+			WIDGET(tree,       kTree,
+			       "nodes from a table, each followed by what is under it, opening and shutting"),
+			WIDGET(grid,       kGrid,
+			       "a table as a table: columns under titles, sorted by clicking one, "
+			       "drawn without a widget per cell"),
+			WIDGET(column,     kColumn,
+			       "one column of a <grid>: which field, its title, how wide; draws nothing itself"),
 			WIDGET(image,      kImage,      "a picture from a file, or one the backend registered"),
 			WIDGET(stream,     kStream,
 			       "a picture that keeps arriving: a camera, a decoded video, a filter's output"),

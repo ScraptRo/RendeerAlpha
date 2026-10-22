@@ -14,6 +14,7 @@ namespace RDA::Layout {
 	static_assert(sizeof(BlueprintBinding)     == 44, "blueprint binding layout changed");
 	static_assert(sizeof(BlueprintInstruction) ==  8, "blueprint instruction layout changed");
 	static_assert(sizeof(BlueprintString)      ==  8, "blueprint string layout changed");
+	static_assert(sizeof(BlueprintScriptHeader) == 16, "blueprint script header layout changed");
 
 	namespace {
 		// Sections follow the header in this order, each tightly packed.
@@ -44,6 +45,7 @@ namespace RDA::Layout {
 		mHeader = nullptr; mNodes = nullptr; mProps = nullptr;
 		mBindings = nullptr; mInstructions = nullptr; mRefs = nullptr; mNumbers = nullptr;
 		mStrings = nullptr; mText = nullptr;
+		mScript = BlueprintScript{};
 	}
 
 	bool Blueprint::parse(std::vector<uint8_t> bytes, std::string& error) {
@@ -61,16 +63,27 @@ namespace RDA::Layout {
 			error = "not a blueprint (bad magic)";
 			return false;
 		}
-		if (header.version != kBlueprintVersion) {
+		if (header.version != kBlueprintVersion && header.version != kBlueprintScriptVersion) {
 			error = "blueprint version " + std::to_string(header.version) +
-			        ", this build reads version " + std::to_string(kBlueprintVersion);
+			        ", this build reads versions " + std::to_string(kBlueprintVersion) +
+			        " and " + std::to_string(kBlueprintScriptVersion);
 			return false;
 		}
 
 		const Sections at = sectionsFor(header);
-		if (at.total != bytes.size()) {
+		const bool scripted = header.version == kBlueprintScriptVersion;
+		if (scripted ? bytes.size() < at.total + sizeof(BlueprintScriptHeader)
+		             : at.total != bytes.size()) {
 			error = "size mismatch: header describes " + std::to_string(at.total) +
 			        " bytes, file has " + std::to_string(bytes.size());
+			return false;
+		}
+
+		// The script section, read out into owned storage: it is handed to a different
+		// engine as a whole and never indexed in place, so there is nothing to gain from
+		// pointing into the buffer.
+		BlueprintScript script;
+		if (scripted && !readScriptSection(bytes.data() + at.total, bytes.size() - at.total, script, error)) {
 			return false;
 		}
 
@@ -85,6 +98,7 @@ namespace RDA::Layout {
 		mNumbers      = base + at.numbers;
 		mStrings      = reinterpret_cast<const BlueprintString*>(base + at.strings);
 		mText         = reinterpret_cast<const char*>(base + at.text);
+		mScript       = std::move(script);
 
 		// Everything below is checked once, here, so nothing downstream has to. A
 		// caller that got true back may index freely without checking again.
@@ -292,7 +306,7 @@ namespace RDA::Layout {
 	std::vector<uint8_t> BlueprintBuilder::finish() const {
 		BlueprintHeader header{};
 		header.magic       = kBlueprintMagic;
-		header.version     = kBlueprintVersion;
+		header.version     = mScript.empty() ? kBlueprintVersion : kBlueprintScriptVersion;
 		header.nodeCount        = static_cast<uint32_t>(mNodes.size());
 		header.propCount        = static_cast<uint32_t>(mProps.size());
 		header.bindingCount     = static_cast<uint32_t>(mBindings.size());
@@ -322,7 +336,52 @@ namespace RDA::Layout {
 			std::memcpy(base + at.strings, mStrings.data(), sizeof(BlueprintString) * mStrings.size());
 		if (!mText.empty())
 			std::memcpy(base + at.text, mText.data(), mText.size());
+
+		if (!mScript.empty()) {
+			const std::vector<uint8_t> section = writeScriptSection(mScript);
+			out.insert(out.end(), section.begin(), section.end());
+		}
 		return out;
+	}
+
+	std::vector<uint8_t> writeScriptSection(const BlueprintScript& script) {
+		BlueprintScriptHeader trailer{};
+		trailer.magic       = kBlueprintScriptMagic;
+		trailer.engineBytes = static_cast<uint32_t>(script.engine.size());
+		trailer.codeBytes   = static_cast<uint32_t>(script.code.size());
+		trailer.mapBytes    = static_cast<uint32_t>(script.lineMap.size());
+		std::vector<uint8_t> out;
+		out.reserve(sizeof(trailer) + script.engine.size() + script.code.size() + script.lineMap.size());
+		const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&trailer);
+		out.insert(out.end(), bytes, bytes + sizeof(trailer));
+		out.insert(out.end(), script.engine.begin(), script.engine.end());
+		out.insert(out.end(), script.code.begin(), script.code.end());
+		out.insert(out.end(), script.lineMap.begin(), script.lineMap.end());
+		return out;
+	}
+
+	bool readScriptSection(const uint8_t* bytes, size_t size, BlueprintScript& out,
+	                       std::string& error) {
+		BlueprintScriptHeader trailer{};
+		if (!bytes || size < sizeof(trailer)) {
+			error = "the script section is not well formed";
+			return false;
+		}
+		std::memcpy(&trailer, bytes, sizeof(trailer));
+		const size_t want = sizeof(trailer) + static_cast<size_t>(trailer.engineBytes) +
+		                    trailer.codeBytes + trailer.mapBytes;
+		if (trailer.magic != kBlueprintScriptMagic || want != size || trailer.codeBytes == 0) {
+			error = "the script section is not well formed";
+			return false;
+		}
+		const char* raw = reinterpret_cast<const char*>(bytes + sizeof(trailer));
+		out.engine.assign(raw, trailer.engineBytes);
+		raw += trailer.engineBytes;
+		out.code.assign(reinterpret_cast<const uint8_t*>(raw),
+		                reinterpret_cast<const uint8_t*>(raw) + trailer.codeBytes);
+		raw += trailer.codeBytes;
+		out.lineMap.assign(raw, trailer.mapBytes);
+		return true;
 	}
 
 	bool loadBlueprintFile(const std::string& path, Blueprint& out, std::string& error) {

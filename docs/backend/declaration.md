@@ -47,6 +47,43 @@ made it rather than a value that quietly holds zero forever.
 Declaring `routes` adds two things for free: a `route` signal holding the name of the
 screen showing, and `back` / `forward` as commands.
 
+## Code in the declaration
+
+A declaration may also say what is worked out and what is answered, and the generated
+module carries that code to every backend:
+
+```ts
+export const state = defineState({
+  price: 0,
+  qty:   { value: 1, doc: "how many" },
+  total: { compute: () => state.price * state.qty, doc: "what the cart costs" },
+})
+
+export const commands = defineCommands({
+  save:     "write the cart out",
+  rename:   { doc: "rename a line", params: { id: 0, name: "" } },
+  validate: { doc: "is this a code we sell", run: (code: string) => /^[A-Z]{3}-\d{4}$/.test(code) },
+})
+```
+
+| | what it is | on the backend |
+| --- | --- | --- |
+| `total: { compute }` | a computed signal: worked out by state.ts, current the moment what it read changes | read like any signal; no setter, and the C ABI refuses a write |
+| `rename: { params }` | a command with arguments, declared by example and in order | a handler typed from them -- `onRename([](double id, const std::string& name) {...})` |
+| `validate: { run }` | an action: state.ts answers it | callable -- `call("validate", "ABC-1234")` returns `true` -- and bindable, to hear of it after |
+
+A computed value's type and starting value are what it returned when the build ran it once,
+against the declared starting values with every table empty; one that cannot run there gives
+`value` as well. `defineState`, `defineTables` and `defineCommands` change nothing that is
+built -- they make the editor type `state` in the file the way it is when the code runs.
+
+The code is compiled to QuickJS bytecode by `rda build` and **embedded in the generated
+module** -- `RdaState.h`, `state.py`, `state.mjs`, `state.cs` -- and `define()` loads it, so
+it is running before any interface is loaded and there is no second file to ship. A rule
+written once here -- `validate` above -- is then the interface's rule and the backend's
+rule in every language, which is the point of putting it here. See
+[code that runs](../architecture/runtime-code.md#logic-in-the-state-phase-2).
+
 ## "So I write my state twice?"
 
 The usual first reaction, and worth answering precisely, because half of it is wrong and
@@ -74,7 +111,8 @@ In practice three things keep it small:
 | --- | --- |
 | state only the interface cares about | which panel is open, what is typed, which tab is showing. The signal table is its only home, and there is nothing to mirror |
 | rows | a `<list>` reads a table. A backend fills it from whatever it already has, rather than declaring a signal per row |
-| actions | a command carries no state at all. `commands.save()` is a function call, not a value to keep in step |
+| commands | a command keeps no state at all: `commands.save()` is a function call, and what it needs travels with it as arguments |
+| derived values | a total, a label, a flag worked out from others is `compute`d in the declaration, once, rather than kept in step by every backend |
 
 What is left over is the handful of values a screen actually shows, and those are the ones a
 view model would have had anyway.

@@ -101,7 +101,9 @@ into the blueprint. `text={() => ...}` is a **binding**: parsed at build time in
 operations over `state`, evaluated when a signal it reads changes and at no other time.
 `onClick={() => ...}` is a **handler**, the same machinery pointed the other way. None of
 them is a closure that ships — the file is evaluated once, at build time, and what the
-application loads is a flat blueprint with no parser and no JavaScript engine.
+application loads is a flat blueprint. A binding that needs more than the expression grammar
+calls a function you wrote, which ships as bytecode: see
+[functions](../../frontend/functions.md).
 
 `commands.save()` names work for the backend to do. The layout says *which*; the backend
 says *what*.
@@ -115,7 +117,7 @@ says *what*.
     "moduleResolution": "bundler", "jsx": "react", "jsxFactory": "h",
     "types": [], "skipLibCheck": true
   },
-  "include": ["rda.d.ts", "*.tsx", "../themes/*.ts"]
+  "include": ["rda.d.ts", "*.tsx", "../themes/*.ts", "../state.ts"]
 }
 ```
 

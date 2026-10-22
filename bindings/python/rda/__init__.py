@@ -42,14 +42,15 @@ free.
 """
 
 from . import _engine
-from ._engine import RdaError, bind_command, invoke, load
+from ._engine import RdaError, bind_command, call, invoke, load
 
 __all__ = [
     "StartupConfig", "RdaError", "Drawing",
-    "init", "stop", "wait", "running", "load_interface", "bind_command", "invoke", "load",
+    "init", "stop", "wait", "running", "load_interface", "bind_command", "invoke", "call", "load",
     "open_routes", "set_transition_ms", "back", "forward",
     "can_go_back", "can_go_forward",
     "draw", "viewport_size", "set_theme",
+    "listen_viewport", "viewport_event", "wait_viewport", "ViewportEvent",
     "set_title", "set_icon", "clipboard", "set_clipboard", "measure_text",
     "focus", "pick_folder", "pick_file", "dropped_files",
     "define_image", "define_image_pixels", "forget_image",
@@ -743,3 +744,106 @@ def viewport_size(name="main"):
     if not _engine.load().rda_viewport_size(name.encode("utf-8"), byref(width), byref(height)):
         _engine._fail("cannot measure '{}'".format(name))
     return width.value, height.value
+
+
+# ---- what happens to a viewport -----------------------------------------------------
+
+class ViewportEvent:
+    """What happened to a <viewport> since it was last asked: resized, or the pointer.
+
+    Summed, not queued: `dx`/`dy` is all the movement there was with a button held and
+    `wheel` all the notches, however long ago the last look was -- so a pan or an orbit
+    is one addition, and a backend that was busy drawing comes back to an answer rather
+    than a backlog. `pressed` and `released` remember a button that went down or came up
+    at least once in between, and `resized` that the size changed at least once; `held`,
+    the position and `width`/`height` are how things are now.
+
+    Buttons are bits: LEFT, RIGHT, MIDDLE. Modifiers too: SHIFT, CTRL, ALT.
+    """
+
+    LEFT, RIGHT, MIDDLE = 1, 2, 4
+    SHIFT, CTRL, ALT = 1, 2, 4
+
+    __slots__ = ("name", "x", "y", "dx", "dy", "wheel", "held", "pressed", "released",
+                 "clicks", "inside", "mods", "width", "height", "resized", "fresh")
+
+    def __init__(self, name, raw, fresh):
+        self.name = name
+        self.x, self.y = raw.x, raw.y          # in the viewport's own coordinates
+        self.dx, self.dy = raw.dx, raw.dy      # moved with a button held, summed
+        self.wheel = raw.wheel                 # notches; positive is away from the reader
+        self.held = raw.held                   # buttons down now that went down over it
+        self.pressed = raw.pressed             # went down over it since last asked
+        self.released = raw.released           # came up since last asked
+        self.clicks = raw.clicks               # of the latest press: 2 is a double click
+        self.inside = bool(raw.inside)         # the pointer is over it now
+        self.mods = raw.mods
+        self.width, self.height = raw.width, raw.height   # its size now, in layout units
+        self.resized = bool(raw.resized)       # the size changed since last asked
+        self.fresh = fresh                     # False: nothing happened since last asked
+
+    def __repr__(self):
+        return ("ViewportEvent({!r}, size=({:.0f}, {:.0f}){}, at=({:.0f}, {:.0f}), "
+                "moved=({:.0f}, {:.0f}), wheel={}, held={}, pressed={}, released={}, "
+                "clicks={}, inside={})").format(
+            self.name, self.width, self.height, " resized" if self.resized else "",
+            self.x, self.y, self.dx, self.dy, self.wheel, self.held, self.pressed,
+            self.released, self.clicks, self.inside)
+
+
+def listen_viewport(name, on=True):
+    """Makes <viewport name="..."> take the pointer, or (on=False) go back to a picture.
+
+    Listening, a press over it is its own and a drag that starts there stays with it
+    wherever the pointer goes; the wheel stops there instead of scrolling what is around
+    it. May be called before the layout that has it is loaded. Resizes are reported for
+    every viewport whether or not anybody listens.
+    """
+    if not _engine.load().rda_viewport_listen(name.encode("utf-8"), 1 if on else 0):
+        _engine._fail("cannot listen to '{}'".format(name))
+
+
+def viewport_event(name):
+    """A ViewportEvent: everything that happened to `name` since the last call.
+
+    Does not cross to the engine's loop -- it reads a queue of its own -- so it is cheap
+    to call as often as you like. `.fresh` is False when nothing happened.
+    """
+    from ctypes import byref
+    raw = _engine.ViewportEventC()
+    got = _engine.load().rda_viewport_take(name.encode("utf-8"), byref(raw))
+    if got < 0:
+        _engine._fail("cannot read what happened to '{}'".format(name))
+    return ViewportEvent(name, raw, got == 1)
+
+
+def wait_viewport(timeout=None):
+    """Blocks until something happened to a viewport -- resized, or the pointer over a
+    listened-to one -- and returns its name.
+
+    None after `timeout` seconds, or when the engine shut down. `timeout=None` waits as
+    long as it takes. Releases the interpreter while it waits, so the usual shape is a
+    thread of its own:
+
+        rda.listen_viewport("graph")
+
+        def viewports():
+            while rda.running():
+                name = rda.wait_viewport(0.5)
+                if not name:
+                    continue
+                e = rda.viewport_event(name)
+                if e.resized: relayout(e.width, e.height)
+                if e.held & e.LEFT: pan(e.dx, e.dy)
+                if e.wheel: zoom(e.wheel, e.x, e.y)
+                redraw()
+
+        threading.Thread(target=viewports, daemon=True).start()
+    """
+    from ctypes import create_string_buffer
+    buffer = create_string_buffer(256)
+    ms = -1 if timeout is None else max(0, int(timeout * 1000))
+    got = _engine.load().rda_viewport_wait(buffer, 256, ms)
+    if got < 0:
+        _engine._fail("cannot wait for a viewport")
+    return buffer.value.decode("utf-8", "replace") if got == 1 else None

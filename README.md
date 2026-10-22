@@ -3,8 +3,9 @@
 Glue between an application's backend and its interface.
 
 The interface is written in TypeScript and compiled ahead of time into a flat binary
-blueprint. The application that loads it contains no parser and no JavaScript engine — it
-reads a buffer and builds widgets. The backend is ordinary C++ that owns the GPU device
+blueprint. The application that loads it parses nothing — it reads a buffer and builds
+widgets, and the functions a layout defines arrive as precompiled bytecode for an embedded
+QuickJS that starts only if a layout has any. The backend is ordinary C++ that owns the GPU device
 directly, in its own process, without a bridge in the way.
 
 ```tsx

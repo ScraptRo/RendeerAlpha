@@ -130,6 +130,31 @@ namespace RDA {
 		// the walk is over.
 		bool windowGrip(const char* id, const Rect& rect);
 		bool windowGrabbed() const { return mWindowGrabbed; }
+		// A double click on a `dragWindow` region this frame: what a title bar does on
+		// every platform, maximise or put back. Asked by whatever owns the window, after
+		// the walk, like windowGrabbed.
+		bool windowToggleAsked() const { return mWindowToggle; }
+		// Where the layout's maximise button was drawn (see `maximizeButton`), in layout
+		// units; empty when it was not. A platform frame asks, to offer what its own
+		// maximise button would -- snap layouts, on Windows 11.
+		void noteMaximizeButton(const Rect& rect) { mMaximizeButton = rect; }
+		const Rect& maximizeButton() const { return mMaximizeButton; }
+		// Whether the pointer, as of the last walk, was over a `dragWindow` region and not
+		// over anything drawn on top of it -- a bare stretch of title bar. A platform frame
+		// asks, to hand presses there to the OS's own caption handling.
+		bool captionUnderPointer() const { return mCaptionHot; }
+
+		// A surface that takes the pointer the way a button does and hands it on raw: hot
+		// while the pointer is over it, held from a press of *any* button over it until
+		// every button is up again. Held is what keeps a drag that wandered off the edge
+		// going, and what stops whatever it wandered over from lighting up meanwhile.
+		// On the frame the last button comes up it still answers held, so the release
+		// is seen by whoever asked.
+		struct PointerArea {
+			bool hot = false;
+			bool held = false;
+		};
+		PointerArea pointerArea(const char* id, const Rect& rect);
 
 		// The widget the pointer went down on, as an opaque id.
 		//
@@ -147,6 +172,68 @@ namespace RDA {
 		// deeper, so the last one to claim it is the deepest under the pointer -- the
 		// same rule hover follows, and for the same reason.
 		void noteContext(Widget* widget) { mContext = widget; }
+
+		// ---- what a screen reader is told ------------------------------------------------
+		//
+		// The bridge a platform layer listens on. Set by the window; null in a GUI that no
+		// window owns, which then never builds a tree.
+		void setAccessibleBridge(AccessibleBridge* bridge) { mA11y = bridge; }
+		// Whether to describe anything this frame. False until a screen reader has asked,
+		// and one check per widget after that.
+		bool accessibilityWanted() const { return mA11yThisFrame; }
+		// A widget, as it is placed. Its own describe() says whether it is a node.
+		void noteAccessible(Widget* widget, const Rect& where);
+		// An item a widget describes on its own behalf -- a tab title, a list or tree row.
+		// `row` is the widget the item's contents are, when it has one, so what is inside
+		// the row hangs off the item; `id` must be stable for as long as the item is the
+		// same item.
+		// `focused` says this item has the keyboard rather than the widget that owns it -- the
+		// highlighted option of an open dropdown, which the arrow keys move while the focus
+		// itself stays on the dropdown.
+		void noteAccessibleItem(Widget* owner, uint32_t id, int item, Widget* row,
+		                        const Rect& where, const AccessibleInfo& info,
+		                        const std::string& automationId, bool focused = false);
+		// A text field's caret, selection and lines, added to the node it was described as.
+		// Called by the field itself, which is the only thing that knows them.
+		void noteAccessibleText(uint32_t id, AccessibleText text);
+		// The tree built by the last walk, or null when nothing has asked. For tests and
+		// for `rda shot --a11y`, which prints it.
+		std::shared_ptr<const AccessibleTree> accessibleTree() const { return mA11yTree; }
+
+		// ---- dragging and dropping -----------------------------------------------------
+		//
+		// A widget with something to carry was pressed. Noted as the walk goes, so the
+		// deepest one under the pointer is the one picked up -- a card inside a column
+		// that is itself draggable moves the card. Nothing travels until the pointer has
+		// moved a few units with the button held; a press that does not go anywhere is
+		// still a click.
+		void notePickUp(Widget* widget, const Rect& where);
+		// A widget that would take what is being carried, and where it is. Offered during
+		// a drag only, by every target that is drawn; the last one under the pointer is
+		// the one a drop lands on.
+		void offerDropTarget(Widget* widget, const Rect& where);
+		// A widget asking for files dropped from outside, under the drop.
+		void noteFileTarget(Widget* widget) { mFileTarget = widget; }
+		bool dragging() const { return mDrag.active; }
+		const std::string& dragKind() const { return mDrag.kind; }
+
+		// ---- shortcuts ---------------------------------------------------------------
+		//
+		// Whether any key went down this frame. Everything below is free on the frames it
+		// is false, which is nearly all of them: a widget asks this before offering, and a
+		// subtree that is not drawn is only walked for its shortcuts when there is a chord
+		// to match. False inside pushInert(), which takes the keys away with the pointer --
+		// so a screen on its way out offers nothing without having to know it is leaving.
+		bool wantsShortcuts() const { return !mInput.chords.empty(); }
+
+		// A widget whose shortcut could be pressed right now. Collected during the walk
+		// and matched in end(), for the same reason a context menu is: a handler may
+		// change the tree, and the walk is iterating it. The last offer of a chord wins,
+		// which is the widget drawn last -- an open menu over the interface behind it.
+		void offerShortcut(Widget* widget);
+		// The shortcuts of a subtree that is not being painted: a closed popup, a child
+		// scrolled out of view. A no-op on a frame with no chord.
+		void offerShortcutsIn(Widget& subtree);
 		bool pointerClaimed() const { return mPointerClaimed; }
 
 		// Structural edits, applied at the top of the next frame rather than immediately.
@@ -282,7 +369,15 @@ namespace RDA {
 		// screen fading out has to finish fading.
 		void pushInert();
 		void popInert();
-		bool inert() const { return !mInputStack.empty(); }
+		// The pointer is somewhere else for a while, and the keyboard is not. For what is
+		// painted *under* something drawn later -- a docked pane beneath a floating panel:
+		// a press on the panel must not also land on what is under it, but a field in that
+		// pane that has the caret goes on taking keys while the pointer rests on the panel.
+		void pushPointerAway();
+		void popPointerAway();
+		// Only pushInert counts: a pane whose pointer is merely elsewhere is still there,
+		// and a screen reader still has to be told about it.
+		bool inert() const { return mInertDepth > 0; }
 
 		void pushClipRect(const Rect& rect);
 		void popClipRect();
@@ -412,6 +507,18 @@ namespace RDA {
 		               bool* outFocused = nullptr, uint64_t version = 0,
 		               const TextFieldExtras* extras = nullptr);
 
+		// Said by a focused widget that takes typed characters as something other than
+		// text -- a dropdown finding a choice by its first letters. Plain keys are then
+		// typing as far as shortcuts are concerned, the same as in a field.
+		void claimTyping() { mTextFocus = true; }
+
+		// Whether a text field had the keyboard this frame, and where its caret was, in
+		// layout units. What an input method needs to know: whether to be on at all -- a
+		// Chinese input method left on over a button would eat the keys of every shortcut --
+		// and where to open its list of candidates, which is under the caret.
+		bool wantsTextEntry() const { return mTextEntry; }
+		Rect textCaret() const { return mTextCaret; }
+
 		// Whether anything currently holds keyboard focus.
 		bool hasKeyboardFocus() const { return mFocused != 0; }
 
@@ -444,6 +551,14 @@ namespace RDA {
 		// Said by a widget that used Tab for something of its own -- a code field
 		// indenting -- so the focus walk leaves it alone this frame.
 		void consumeFocusMove() { mFocusMoveConsumed = true; }
+
+		// Said by a focused widget that pages -- a grid, a tree -- so Home, End, Page Up and
+		// Page Down are its keys this frame rather than a shortcut's. A button has nowhere
+		// to page to, so those stay shortcuts everywhere else.
+		//
+		// `selects` is a widget that chooses several things: it keeps those keys with Shift
+		// and Ctrl held as well, and the arrows with them, Ctrl+A and Ctrl+Space.
+		void focusPages(bool selects = false) { mFocusPages = true; mFocusSelects = selects; }
 
 		// Puts the keyboard somewhere, or nowhere with 0.
 		//
@@ -655,6 +770,7 @@ namespace RDA {
 		// The real input, held while a subtree is being shown something else -- nothing
 		// at all, or a pointer somewhere else. See pushInert() and pushPointerOffset().
 		std::vector<GuiInput> mInputStack;
+		int                   mInertDepth = 0;   // how many of mInputStack are pushInert's
 		// Widgets that asked to be painted last, and where they were when they asked.
 		std::vector<std::pair<Widget*, glm::vec2>> mOverlays;
 
@@ -667,9 +783,83 @@ namespace RDA {
 
 		// An overlay asked for the pointer last frame, and this frame's walk runs without
 		// one. The real input, kept so the overlay pass can have it back.
+		bool     mFocusPages = false;     // see focusPages(); cleared once shortcuts are dispatched
+		bool     mFocusSelects = false;
 		bool     mAwake = false;          // something is playing; walk again next frame
+		// Widget::destroyedCount() when this frame's walk began. See end().
+		uint64_t mWalkDestroyed = 0;
 		bool     mWindowGrabbed = false;  // a dragWindow region is being held
+		bool     mWindowToggle = false;   // ...and was double-clicked this frame
+		Rect     mMaximizeButton{};       // re-declared by every walk that draws it
+		std::vector<uint32_t> mGripIds;   // the dragWindow regions this walk declared
+		bool     mCaptionHot = false;     // the pointer ended the last walk on one of them
+		bool     mWalked = false;         // this frame walked the tree (not reused)
 		Widget*  mContext = nullptr;      // right-pressed this frame; fired after the walk
+		// Shortcuts that could be pressed this frame, in the order they were offered. Only
+		// filled on a frame with a chord in it.
+		std::vector<Widget*> mShortcuts;
+
+		// What is being carried. Copied out of the widget when it is picked up, so the
+		// widget may scroll away, be re-bound to another row, or be destroyed by the
+		// screen changing, and the drop still has what it was given.
+		struct DragState {
+			bool        pending = false;   // pressed, not yet moved far enough
+			bool        active = false;    // travelling
+			std::string payload;
+			std::string kind;
+			std::string label;
+			glm::vec2   size{ 0.0f };
+			glm::vec2   grab{ 0.0f };      // where in it the pointer took hold
+			glm::vec2   from{ 0.0f };      // where the press was
+		};
+		DragState mDrag;
+		Widget*   mPickUp = nullptr;       // pressed this frame and has something to carry
+		Rect      mPickUpRect{};
+		// The widget whose press is only a click waiting to happen -- a button, a checkbox.
+		// A pick-up may take such a press over, because what it would have done is
+		// something a drag can cancel. Anything else that took the press -- a slider, a
+		// field, a splitter -- is dragging already, and keeps it.
+		uint32_t  mClickPress = 0;
+		// Every target drawn this frame during a drag, and where. The one under the
+		// pointer is worked out after the walk from the last that contains it.
+		std::vector<std::pair<Widget*, Rect>> mDropTargets;
+		Widget*   mFileTarget = nullptr;   // under a drop of files this frame
+		void finishDrag(bool dropped);
+
+		// The tree as the walk finds it, before parents are resolved.
+		struct AccessibleRecord {
+			Widget*        widget = nullptr;   // what it describes, when it is a widget
+			Widget*        owner = nullptr;    // for an item: who described it
+			Widget*        row = nullptr;      // for an item: the widget its contents are
+			int            item = -1;
+			uint32_t       id = 0;
+			Rect           where{};
+			AccessibleInfo info;
+			AccessibleText text;
+			std::string    automationId;
+			bool           focused = false;   // an item standing in for its owner's focus
+		};
+		AccessibleBridge* mA11y = nullptr;
+		bool mA11yThisFrame = false;   // describing during this frame's walk
+		bool mA11yBuilt = false;       // a tree has been built since somebody asked
+		std::vector<AccessibleRecord> mA11yRecords;
+		std::unordered_set<const Widget*> mA11ySeen;   // recorded this frame
+		std::vector<AccessibleRequest> mA11yRequests;
+		std::shared_ptr<const AccessibleTree> mA11yTree;
+		uint64_t mA11yVersion = 0;
+		void buildAccessibleTree();
+		static std::string spokenText(const Widget& widget);
+		void applyAccessibleRequests(Widget* widget, Widget* owner, int item, uint32_t id);
+		void drawDragFigure(const Rect& target, bool haveTarget);
+		// A focused text field drew this frame, so plain keys are typing rather than
+		// shortcuts. Set by textField, read in end().
+		bool     mTextFocus = false;
+		bool     mTextEntry = false;   // a field, specifically, had the keyboard
+		Rect     mTextCaret{};
+		// Chords already reported as belonging to two live widgets, so the log says it
+		// once rather than on every press.
+		std::vector<Chord> mShortcutClashes;
+		void dispatchShortcuts();
 		bool     mPointerClaimed = false;
 		bool     mPointerClaimedNext = false;
 		GuiInput mRealInput;

@@ -1,6 +1,8 @@
 #include <GraphicalObjects/Viewports.h>
 #include <Logger/Logger.h>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace RDA {
 
@@ -93,6 +95,22 @@ namespace RDA {
 		}
 		slot->rect = rect;
 
+		// A new size is news to whoever draws here. Compared with what was last *told*
+		// rather than with last frame's rect, so a frame that reuses the GUI's geometry and
+		// places nothing cannot make a resize look like it happened twice, or not at all.
+		// Half a unit of slack, because an animated splitter settles through fractions.
+		const glm::vec2 size{ rect.w, rect.h };
+		if (std::abs(size.x - slot->reportedSize.x) > 0.5f ||
+		    std::abs(size.y - slot->reportedSize.y) > 0.5f) {
+			slot->reportedSize = size;
+			ViewportEvent resized;
+			resized.width = size.x;
+			resized.height = size.y;
+			resized.hasSize = true;
+			resized.resized = true;
+			mEvents.report(name, resized);
+		}
+
 		// The first placement of a frame is what starts the question over. Anything
 		// reported after it this frame is a second viewport competing for the target.
 		if (!mPlacedThisFrame) {
@@ -120,7 +138,21 @@ namespace RDA {
 		mPlacedThisFrame = false;
 		mClockStarted = false;
 		mWarnedAboutSharing = false;
+		mListening.clear();
+		// And anybody blocked waiting is let go, rather than left waiting on a window that
+		// is not coming back.
+		mEvents.clear();
 		++mRevision; // whatever was drawn is gone, and the GUI has to walk again to see it
+	}
+
+	void Viewports::listen(const std::string& name, bool on) {
+		auto it = std::find(mListening.begin(), mListening.end(), name);
+		if (on && it == mListening.end()) mListening.push_back(name);
+		if (!on && it != mListening.end()) mListening.erase(it);
+	}
+
+	bool Viewports::listening(const std::string& name) const {
+		return std::find(mListening.begin(), mListening.end(), name) != mListening.end();
 	}
 
 	void Viewports::record(VkCommandBuffer cmd, VkRenderPass pass, VkExtent2D extent,

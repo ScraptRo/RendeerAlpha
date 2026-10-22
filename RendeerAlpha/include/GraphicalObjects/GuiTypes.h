@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <Core/Datatypes.h>
 #include <vendor/RDA_Library/inline_vector.h>
+#include <GraphicalObjects/Shortcut.h>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -132,6 +133,19 @@ namespace RDA {
 		// handful, so these live inside the struct and never reach the heap; the spill
 		// path is only there for a stuck key or a very long repeat burst.
 		RDL::inline_vector<GuiEditKey, 16> editKeys;
+		// Every key that went down this frame, repeats included, with the modifiers held as
+		// it did. What a shortcut is matched against; see Gui::offerShortcut. Separate from
+		// editKeys because those are the keys a *field* understands and these are every key
+		// there is -- F5 means nothing to a field and everything to a menu.
+		RDL::inline_vector<Chord, 8> chords;
+		// Files let go over the window this frame. Empty on every frame but the one a drop
+		// lands on, which is why a plain vector costs nothing here.
+		std::vector<std::string> droppedFiles;
+		// What an input method is composing, not yet text, and its cursor inside it in
+		// characters. Drawn by the focused field at its caret; empty almost always. What the
+		// method finishes arrives in `typed` like anything else.
+		std::string preedit;
+		int         preeditCaret = 0;
 		bool  shift = false;              // extend selection with movement keys
 		bool  ctrl = false;              // word-wise movement; enables the actions below
 		bool  alt = false;               // column (box) selection while dragging

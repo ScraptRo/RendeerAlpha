@@ -22,7 +22,7 @@ const koffi = require('koffi')
 // exactly and the engine's minor has to be at least this one -- the contract is in
 // RendeerC.h.
 export const ABI_MAJOR = 1
-export const ABI_MINOR = 6
+export const ABI_MINOR = 8
 
 // Laid out exactly as rda_draw_cmd. Registered once, at module load, because koffi
 // interns a struct type by name and registering it twice is an error.
@@ -229,6 +229,9 @@ function declare() {
 		commandInvoke: f('int rda_command_invoke(const char *name)'),
 		commandWatch: f('int rda_command_watch(const char *name)'),
 		pollCommand: f('int rda_poll_command(_Out_ char *buffer, int capacity)'),
+		commandArgs: f('const char *rda_command_args()'),
+		call: f('const char *rda_call(const char *name, const char *args)'),
+		loadStateCode: f('int rda_load_state_code(const void *bytes, int size)'),
 	}
 }
 
@@ -468,6 +471,25 @@ export function invoke(name) {
 	if (!fn.commandInvoke(name)) fail(`cannot invoke '${name}'`)
 }
 
+/**
+ * Runs a command and returns what it returned. One state.ts answers returns its function's
+ * result; one a handler answers runs it and returns null. The handler of a watched command
+ * still runs on Node's loop, later -- this returns as soon as the engine has queued it.
+ */
+export function call(name, ...args) {
+	load()
+	const out = fn.call(name, JSON.stringify(args))
+	if (out === null || out === undefined) fail(`cannot call '${name}'`)
+	return JSON.parse(out)
+}
+
+/** Hands the engine state.ts's code, as a generated state module carries it. */
+export function loadStateCode(encoded) {
+	load()
+	const bytes = Buffer.from(encoded, 'base64')
+	if (!fn.loadStateCode(bytes, bytes.length)) fail("cannot load state.ts's code")
+}
+
 const pollBuffer = Buffer.allocUnsafe(256)
 
 /**
@@ -488,9 +510,12 @@ export function poll() {
 		const handler = handlers.get(name)
 		if (handler) {
 			++ran
+			// What the event meant, handed over as the handler's arguments. Read now: the
+			// engine keeps them for this thread only until the next command is polled.
+			const args = JSON.parse(fn.commandArgs() || '[]')
 			// A throwing handler must not stop the ones behind it, or stop polling.
 			try {
-				handler()
+				handler(...args)
 			} catch (problem) {
 				queueMicrotask(() => { throw problem })
 			}

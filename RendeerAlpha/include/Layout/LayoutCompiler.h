@@ -33,6 +33,13 @@ namespace RDA::Layout {
 		size_t               bindingCount = 0;
 		double               transformMs = 0.0; // step 1
 		double               evaluateMs  = 0.0; // steps 2 and 3
+		// Run-time code, when the layout has any: bindings compiled to JavaScript, functions
+		// the grammar's bindings call, and the size of the bytecode they ship as.
+		size_t               scriptBindings = 0;
+		size_t               scriptCalls = 0;
+		size_t               scriptBytes = 0;
+		// Worth saying, not worth failing over -- a top-level value run-time code changes.
+		std::vector<std::string> warnings;
 	};
 
 	struct CompileOptions {
@@ -43,6 +50,10 @@ namespace RDA::Layout {
 		// Passed to the builder function as its props argument, as a JSON object. The
 		// walking skeleton has no props worth passing; this is the seam for them.
 		std::string propsJson = "{}";
+		// False refuses anything that would run at run time, naming the first binding that
+		// needs it -- for an application that wants "a shipped binary evaluates no
+		// JavaScript" to stay true. `rda build --no-runtime-code`.
+		bool        allowRuntimeCode = true;
 	};
 
 	// Compiles one source file. Accepts .tsx, .ts, .jsx and .js — esbuild picks its
@@ -58,4 +69,18 @@ namespace RDA::Layout {
 	// Where a compiled blueprint conventionally lives for a given source: the same path
 	// with the extension replaced by .rdab.
 	std::string blueprintPathFor(const std::string& sourcePath);
+
+	// state.ts's code: its computed values and its actions, compiled the way a layout's
+	// functions are, as one script section -- the bytes a generated state module carries and
+	// loads. A declaration with no code in it is ok with no bytes. See
+	// docs/architecture/runtime-code.md, "Logic in the state".
+	struct StateCodeResult {
+		bool                     ok = false;
+		std::string              error;
+		std::vector<uint8_t>     bytes;
+		size_t                   computedCount = 0;
+		size_t                   actionCount = 0;
+		std::vector<std::string> warnings;
+	};
+	StateCodeResult compileStateCode(const std::string& statePath, const CompileOptions& options = {});
 }

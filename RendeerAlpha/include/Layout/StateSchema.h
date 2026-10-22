@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,18 @@
 //   export const commands = { save: "write the notes out" }
 //   export const tables = { products: { title: "", price: 0 } }
 //   export const routes = { home: "hello", catalogue: { layout: "catalogue" } }
+//
+// Logic goes here too, and is still a declaration of state: a field with `compute` is a
+// signal state.ts works out, and a command with `run` is one state.ts answers.
+//
+//   export const state = defineState({
+//     price: 0,
+//     total: { compute: () => state.price * 2, doc: "what it costs" },
+//   })
+//   export const commands = defineCommands({
+//     rename: { doc: "rename a file", params: { id: 0, name: "" } },
+//     add:    { run: (n: number) => { state.price += n } },
+//   })
 //
 // Declaring routes adds a `route` signal holding the name of the screen showing, and the
 // commands `back` and `forward`. Navigation is then an ordinary write -- `state.route =
@@ -49,6 +62,10 @@ namespace RDA::Layout {
 		// where it is written instead of a signal that quietly holds nonsense. `routes`
 		// is what fills this today.
 		std::vector<std::string> choices;
+		// Worked out by state.ts rather than written by anybody: read-only on every side.
+		// Its type and `value` are what it returned when run once at build, or what the
+		// declaration gave as `value` when it could not be.
+		bool computed = false;
 	};
 
 	// Work the interface can ask the application to do. Declared beside state because it
@@ -57,6 +74,12 @@ namespace RDA::Layout {
 	struct StateCommand {
 		std::string name;
 		std::string doc;
+		// What it is called with, in order, declared by example the way state is: `params:
+		// { id: 0, name: "" }` is a number and then a text. Empty for one that takes none.
+		std::vector<StateField> params;
+		// Answered by state.ts -- it has a `run` -- rather than by the backend. Its
+		// parameters are then its function's, which TypeScript types and nothing here sees.
+		bool action = false;
 	};
 
 	// Rows of data a list shows. Declared here for the same reason a signal is: the
@@ -90,6 +113,16 @@ namespace RDA::Layout {
 		std::vector<StateCommand> commands;
 		std::vector<StateTable>   tables;
 		std::vector<StateRoute>   routes;
+		// state.ts's code, compiled -- the bytes a generated module carries and loads. Filled
+		// by whoever generates one (compileStateCode); empty when there is no code.
+		std::vector<uint8_t>      code;
+
+		// Whether it declares anything that runs: a computed signal or an action.
+		bool hasCode() const {
+			for (const StateField& field : fields) if (field.computed) return true;
+			for (const StateCommand& command : commands) if (command.action) return true;
+			return false;
+		}
 
 		bool empty() const {
 			return fields.empty() && commands.empty() && tables.empty() && routes.empty();

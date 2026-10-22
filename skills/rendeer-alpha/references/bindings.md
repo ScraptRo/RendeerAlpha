@@ -1,8 +1,11 @@
 # Bindings and handlers
 
-`{() => ...}` is not JavaScript that ships. It is parsed at build time into a short
-sequence of stack operations over signals and constants. The running program has no
-interpreter, so **the only things that exist inside a thunk are the ones listed here**.
+`{() => ...}` is compiled at build time, two ways. What the grammar below covers becomes a
+few stack operations with no engine behind it -- the fast path, used whenever it can be.
+Anything more is JavaScript, compiled to QuickJS bytecode and run by the engine: a function
+the file defines, a method, an array, a loop. **What a thunk can name is `state`,
+`commands`, `tables`, `item` in a row, and the top level of its file and its imports** --
+never the code around it, because it is compiled from its own text.
 
 | | |
 | --- | --- |
@@ -65,53 +68,89 @@ See `docs/frontend/window.md` for the config that opens a window without a frame
 | write a signal | `state.open = true` |
 | compound write | `state.count += 1`, also `-= *= /=` |
 | increment | `state.count++`, `state.count--` |
-| ask for work | `commands.save()` |
+| ask for work | `commands.save()`, `commands.open(item.id, state.draft)` -- arguments travel with it |
 | the event's value | `(typed) => state.notes = typed` |
 | several statements | `() => { state.open = false; commands.save() }` |
 
-## Not allowed anywhere
+## Functions: code that runs
 
-Each of these is a build error with a message naming the property and the element.
+Write the logic once, in the layout, instead of in every backend:
+
+```tsx
+// util.ts -- or the top of the .tsx
+const UNITS = ["B", "KB", "MB", "GB"]
+export function formatSize(bytes: number) {
+  let i = 0
+  while (bytes >= 1024 && i < UNITS.length - 1) { bytes /= 1024; i++ }
+  return `${bytes.toFixed(i ? 1 : 0)} ${UNITS[i]}`
+}
+export const total = () => tables.files.reduce((sum, f) => sum + f.size, 0)
+```
+
+```tsx
+<label id="s" text={() => formatSize(state.size)} />
+<label id="t" text={() => state.tags.split(",").length + " tags"} />
+<label id="u" text={() => `${formatSize(total())} in ${tables.files.length} files`} />
+<button id="b" text="Add" onClick={() => { const n = state.count + 1; state.count = n }} />
+```
+
+- **What runs when.** Code a binding or handler reaches runs at run time. The file's top
+  level and every component run at build time, as always. A top-level value with no call
+  in its initializer (`[...]`, a literal) ships as code; one made by a call ships as the
+  value the call returned -- it must be plain data (numbers, text, arrays, objects, Map,
+  Set, Date, RegExp), not a class instance or a closure.
+- **Run-time code may** read and write `state` (writes only in a handler), read `tables`
+  (`.length`, `.at(i)`, `for...of`, `.map`, `.filter`, `.find`, `.reduce`), call
+  `commands` (handler only), use `Math`, `JSON`, `Date`, `RegExp`, `Map`, `Set`, the colour
+  helpers, `format`, `console.log`, and -- in a handler or an action -- `setTimeout` and
+  `setInterval`. Not files, network, `eval`, JSX or `signal()`.
+- **Dependencies** are recorded while it runs: a binding re-runs when exactly what it read
+  changes, tables included.
+- **Errors** are logged once with the `.tsx` line; the binding keeps its last value. A call
+  that runs past 50 ms is stopped.
+- **No `Intl`; use `format`.** `format.number(x, { decimals: 2 })` -> `"1,234.50"`,
+  `format.percent(0.25)`, `format.bytes(n)` -> `"1.5 KB"`, `format.duration(ms)` ->
+  `"1:02:03"`, `format.date(t, "EEE d MMM, HH:mm")`, `format.relative(t)` -> `"5 minutes ago"`.
+- **Timers** run on the frame clock, as a handler does: a toast that clears itself is
+  `setTimeout(() => { state.toast = "" }, 1500)` in the handler or action that set it. Not
+  in a value binding, a computed value, or at the top level. A layout's timers go when it
+  reloads.
+- `rda build --no-runtime-code` refuses all of it, for an application that wants none.
+- **Logic shared by several layouts or the backend** goes in `state.ts` instead: a
+  `compute`d field, or a command with a `run`. See `references/state.md`.
+
+## Still not allowed
+
+Each of these is a build error naming the property and the element.
 
 | Written | What happens |
 | --- | --- |
-| `Math.round(state.kb)` | `'Math' is not in scope` |
-| `state.kb.toFixed(1)` | `only a single level of state is readable: state.<name>` |
-| `state.name.toUpperCase()` | the same — any method call on a signal |
-| `state.user.name` | the same — state is one level deep, apart from `state.rda` |
-| `[1, 2, 3]`, `{ a: 1 }` | `arrays and objects are not compiled yet` |
-| `const step = 5` … `state.n += step` | `'step' is not in scope` |
 | `() => props.label` in a component | `props are resolved when the layout is compiled` |
-| `commands.save()` in a value binding | `a value binding cannot call a command` |
+| a local of the function around the JSX, read in a thunk | `'x' is not in scope` |
+| the same, when the file's top level has an `x` too | `'x' is declared by the code around this binding` -- it would read the top-level one |
 | `item.x` outside a `<list>` row | `'item' is not in scope` |
+| `commands.save()` in a value binding | `a value binding cannot call a command` |
+| `state.x = 1` in a value binding | `a value binding cannot write state` |
+| JSX or `signal()` in a function a binding calls | `JSX builds the layout, which happens once` |
+| `const one = new Thing()` read at run time | `'one' (main.tsx:3) is a Thing, and only plain data ... can be written out` |
 
-The pattern behind every one: a binding is compiled **from its own source text**, so
-nothing it appears to close over comes with it.
+The pattern behind the scope ones: a binding is compiled **from its own source text**, so
+nothing it appears to close over comes with it -- only the top level, which it can name.
 
 ## What to do instead
 
-**Formatting a number.** There is no `toFixed`. Round in the backend and write the
-result to a signal, or a text signal beside it:
+**A value derived from two signals** is fine either way: arithmetic stays in the grammar,
+anything more is a function. Prefer a function in the layout over a signal the backend
+keeps up to date; prefer the backend for anything that touches files, the network or a
+lot of data.
 
-```python
-State.totalKb = round(total / 1024.0, 1)     # Python decides how it reads
-```
-
-```tsx
-<label id="t" height="content" text={() => `${state.totalKb} KB`} />
-```
-
-**A value derived from two signals** is fine as long as it is arithmetic:
-`text={() => `${state.done} of ${state.total}`}`. Anything harder belongs in the backend.
-
-**A constant used twice.** A `const` at the top of the file cannot be read from a thunk,
-but it *can* be used in a constant property, because that is substituted before there is
-an expression to parse:
+**A constant used twice** -- at the top of the file -- is readable from a thunk now, and
+from a constant property as before:
 
 ```tsx
 const WIDTH = 110
-<button id="a" width={WIDTH} text="Save" />            // fine
-<button id="b" width={() => WIDTH} text="Save" />      // error: 'WIDTH' is not in scope
+<button id="a" width={WIDTH} text="Save" />            // substituted at build time
+<button id="b" width={() => WIDTH} text="Save" />      // a binding; WIDTH ships with it
 ```
 
 **A component's props** work the same way: pass them through as constants.

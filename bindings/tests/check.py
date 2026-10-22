@@ -192,6 +192,37 @@ check("invoke runs the handler", asked, [7.0])
 refused("invoking a command nothing is bound to is refused", lambda: rda.invoke("unused"))
 refused("invoking a command that does not exist is refused", lambda: rda.invoke("nope"))
 
+# ---- what state.ts computes and answers (ABI 1.8) --------------------------------------
+print("state.ts's code")
+State.count = 3
+check("a computed value is current as soon as what it reads is", State.doubled, 6.0)
+refused("a computed value has no setter", lambda: setattr(State, "doubled", 1))
+refused("and the engine refuses a write to it", lambda: _engine.set_number("doubled", 1))
+renamed = []
+
+
+@Commands.rename
+def on_rename(id, name):
+    renamed.append((id, name))
+
+
+check("calling a backend's command returns null", rda.call("rename", 5, "five \u00e9"), None)
+check("its arguments reach the handler, typed", renamed, [(5, "five \u00e9")])
+check("an action answers rda.call with its result", rda.call("add", 2), 5)
+check("its writes landed", State.count, 5.0)
+check("and what they are computed into", State.doubled, 10.0)
+watched = []
+
+
+@Commands.add
+def on_add(n):
+    watched.append(n)
+
+
+rda.call("add", 1)
+check("a backend that binds an action watches it", watched, [1])
+refused("calling a command that does not exist is refused", lambda: rda.call("nope"))
+
 # ---- the window, the clipboard, and measuring (ABI 1.2) --------------------------------
 print("window and clipboard")
 rda.set_title("binding test \u2014 renamed")

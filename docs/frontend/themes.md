@@ -86,6 +86,25 @@ outside it is rasterised on demand into spare room in the atlas, at the size it 
 from the first face that has it. Nothing declares what an application will show, which
 matters when the text comes from somewhere the application does not control.
 
+**And then the system's own faces.** A character none of the named faces has is looked for
+in the faces the system ships for it — on Windows Microsoft YaHei, Yu Gothic, Malgun Gothic
+and Microsoft JhengHei for Chinese, Japanese and Korean, then Segoe UI Symbol; on Linux Noto
+Sans CJK, WenQuanYi or Droid Sans Fallback, whichever is installed. So an interface shows
+`你好`, `こんにちは` and `안녕하세요` without naming a font. They are read one at a time, the
+first time a character needs one, because a CJK face is twenty megabytes and an interface
+that never shows one should never load one; the log says when one is.
+
+The same Han character is drawn differently in Chinese, Japanese and Korean type, and which
+of those the system's faces are tried in follows the language Windows is set to — Japanese
+first on a Japanese system, Korean on a Korean one, Traditional Chinese on a Taiwanese or
+Hong Kong one, Simplified otherwise. An application that knows better names the face it
+wants in `config.font`, and a named face is always asked first. `RDA_SYSTEM_FONTS=0` turns
+the system faces off.
+
+The atlas has room for about two thousand CJK characters at one size. That is every
+interface and not every document: a long CJK text at several sizes can fill it, and what
+does not fit draws as a box with a line in the log.
+
 What it cannot do: **colour emoji**. Faces like `seguiemj.ttf` are COLR/CPAL and would
 rasterise as their base layer only, so the atlas is monochrome coverage and `seguisym.ttf`
 is the face to point at. ZWJ sequences and skin-tone modifiers draw as their parts. When

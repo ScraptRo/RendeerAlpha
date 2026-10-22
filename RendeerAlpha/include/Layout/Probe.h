@@ -69,6 +69,16 @@ namespace RDA::Layout {
 		bool type(std::string_view id, std::string text);   // text field
 		bool choose(std::string_view id, std::string value);// select, by an option's value
 		bool showTab(std::string_view id, int index);       // tabs
+		// A key chord, "Ctrl+S", pressed with nothing holding the keyboard. Runs whatever
+		// a running interface would: the last widget that could be reached and has it.
+		// "Reached" is structural here, because nothing is drawn -- visible, on the
+		// showing tab, inside a popup open or shut -- which is what a window shows when
+		// nothing is scrolled out of view.
+		bool press(std::string_view chord);
+		// What `from` carries, let go of over `onto`: onto's onDrop runs with from's drag
+		// value. False when from carries nothing, onto takes no drops, or onto does not
+		// accept from's kind -- the three reasons a real drag would land nowhere.
+		bool drop(std::string_view from, std::string_view onto);
 
 		// Applies every binding whose signals moved. Only needed after writing a signal
 		// directly -- the actions above do it for you.

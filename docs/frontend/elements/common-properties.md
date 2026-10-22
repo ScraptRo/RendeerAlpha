@@ -17,6 +17,12 @@ Accepted by every element above.
 | `onHover(boolean)` | true when the pointer arrives, false when it leaves |
 | `onContext()` | the right button went down on this — see [containers](containers.md#right-click-menus) |
 | `dragWindow` | dragging this moves the window — see [The window](../window.md) |
+| `maximizeButton` | this is the window's maximise button; on Windows 11 resting on it offers snap layouts — see [The window](../window.md) |
+| `alt` | what a screen reader calls this — see [Screen readers](../accessibility.md) |
+| `live` | `polite` or `assertive`: read out by a screen reader when what this says changes — see [Announcements](../accessibility.md#announcements) |
+| `drag`, `dragKind` | what this carries when it is picked up, and what sort it is — see [Dragging and dropping](../drag-and-drop.md) |
+| `accepts`, `onDrop(string)`, `onDragOver(boolean)` | as a drop target: the kinds it takes, and what it is handed |
+| `onFiles(string)` | files from outside were let go of over this; their paths, one per line |
 
 `onHover` fires on the edges only, not every frame the pointer is inside, so a handler that
 writes a signal is not rewriting it sixty times a second. It answers for the rectangle the

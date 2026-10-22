@@ -25,6 +25,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
 namespace Rendeer {
 
@@ -51,7 +52,7 @@ namespace Rendeer {
 		// engine's exactly and the engine's minor has to be at least this one -- the
 		// contract is in RendeerC.h.
 		internal const int AbiMajor = 1;
-		internal const int AbiMinor = 6;
+		internal const int AbiMinor = 8;
 		internal const uint NoSignal = 0xFFFFFFFFu;
 		internal const uint NoTable = 0xFFFFFFFFu;
 
@@ -490,6 +491,89 @@ namespace Rendeer {
 		/// <summary>Asks for a command as if the interface had.</summary>
 		public static void Invoke(string name) {
 			if (rda_command_invoke(name) == 0) Fail("cannot invoke '" + name + "'");
+		}
+
+		[DllImport(Library, CallingConvention = Cdecl)]
+		private static extern IntPtr rda_command_args();
+		[DllImport(Library, CallingConvention = Cdecl)]
+		private static extern IntPtr rda_call(
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+			[MarshalAs(UnmanagedType.LPUTF8Str)] string args);
+		[DllImport(Library, CallingConvention = Cdecl)]
+		private static extern int rda_load_state_code(byte[] bytes, int size);
+
+		/// <summary>The arguments of the command being handled -- what the event meant.</summary>
+		public static JsonElement[] CommandArgs() {
+			string json = Marshal.PtrToStringUTF8(rda_command_args()) ?? "[]";
+			using JsonDocument document = JsonDocument.Parse(json);
+			var list = new List<JsonElement>();
+			foreach (JsonElement one in document.RootElement.EnumerateArray()) list.Add(one.Clone());
+			return list.ToArray();
+		}
+
+		/// <summary>
+		/// Binds a handler that is given the command's arguments. A generated state file wraps
+		/// this in one typed to the declaration's params.
+		/// </summary>
+		public static void OnCommand(string name, Action<JsonElement[]> handler) {
+			if (handler == null) throw new RdaException("a handler for '" + name + "' has to be a function");
+			Callback trampoline = _ => handler(CommandArgs());
+			Alive.Add(trampoline);   // see the header comment
+			if (rda_command_bind(name, trampoline, IntPtr.Zero) == 0)
+				Fail("cannot bind '" + name + "'");
+		}
+
+		// One argument, as the declaration typed it. Forgiving the way the engine's own reader
+		// is: an argument that is missing or of another kind is the type's zero, not a throw
+		// in the middle of a click.
+		/// <summary>Argument <paramref name="i"/> as a number.</summary>
+		public static double ArgNumber(JsonElement[] a, int i) {
+			if (i >= a.Length) return 0;
+			JsonElement e = a[i];
+			if (e.ValueKind == JsonValueKind.Number) return e.GetDouble();
+			if (e.ValueKind == JsonValueKind.True) return 1;
+			if (e.ValueKind == JsonValueKind.String && double.TryParse(e.GetString(),
+				System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+				out double parsed)) return parsed;
+			return 0;
+		}
+		/// <summary>Argument <paramref name="i"/> as a flag.</summary>
+		public static bool ArgBool(JsonElement[] a, int i) {
+			if (i >= a.Length) return false;
+			JsonElement e = a[i];
+			return e.ValueKind switch {
+				JsonValueKind.True => true,
+				JsonValueKind.Number => e.GetDouble() != 0,
+				JsonValueKind.String => (e.GetString() ?? "").Length > 0,
+				_ => false,
+			};
+		}
+		/// <summary>Argument <paramref name="i"/> as text.</summary>
+		public static string ArgText(JsonElement[] a, int i) {
+			if (i >= a.Length) return "";
+			JsonElement e = a[i];
+			return e.ValueKind switch {
+				JsonValueKind.String => e.GetString() ?? "",
+				JsonValueKind.Null => "",
+				_ => e.GetRawText(),
+			};
+		}
+
+		/// <summary>
+		/// Runs a command and returns what it returned, as JSON. One state.ts answers returns
+		/// its function's result; one a handler answers runs it and returns null.
+		/// </summary>
+		public static JsonElement Call(string name, params object?[] args) {
+			IntPtr raw = rda_call(name, JsonSerializer.Serialize(args));
+			if (raw == IntPtr.Zero) Fail("cannot call '" + name + "'");
+			using JsonDocument document = JsonDocument.Parse(Marshal.PtrToStringUTF8(raw) ?? "null");
+			return document.RootElement.Clone();
+		}
+
+		/// <summary>Hands the engine state.ts's code, as a generated state file carries it.</summary>
+		public static void LoadStateCode(string encoded) {
+			byte[] bytes = Convert.FromBase64String(encoded);
+			if (rda_load_state_code(bytes, bytes.Length) == 0) Fail("cannot load state.ts's code");
 		}
 
 		[DllImport(Library, CallingConvention = Cdecl)]

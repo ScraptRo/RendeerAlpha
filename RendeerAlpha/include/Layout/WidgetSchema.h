@@ -32,6 +32,7 @@ namespace RDA::Layout {
 		Variant,  // a theme variant name; `values` says which theme element defines them
 		Enum,     // one of `values`, which is a '|' separated list
 		Event,    // a handler: a program that runs when the widget says so
+		Chord,    // a key chord, "Ctrl+Shift+P" -- see GraphicalObjects/Shortcut.h
 	};
 
 	struct PropDesc {

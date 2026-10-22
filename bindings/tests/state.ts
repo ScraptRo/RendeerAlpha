@@ -2,9 +2,10 @@
 //
 // Deliberately small, and deliberately one of everything: a signal of each type, a table
 // with a column of each type, two screens (one with a param), a command that is bound and
-// a command that never is. If the C ABI can carry this, it can carry an application.
+// a command that never is -- and the code state.ts may carry: a computed value, a command
+// with arguments, and an action. If the C ABI can carry this, it can carry an application.
 
-export const state = {
+export const state = defineState({
   count: { value: 0,       doc: "a number" },
   flag:  { value: false,   doc: "a boolean" },
   text:  { value: "hello", doc: "some text" },
@@ -12,17 +13,23 @@ export const state = {
   // two-call read path -- ask the length, then ask again -- is exercised rather than
   // assumed. Both bindings guess; neither had ever been made to guess wrong.
   note:  { value: "",      doc: "long text, for the read that has to be retried" },
-}
+  // Worked out by state.ts and read-only everywhere else.
+  doubled: { compute: () => state.count * 2, doc: "count, twice" },
+})
 
 export const routes = {
   first:  { layout: "first",  doc: "where it opens" },
   second: { layout: "second", doc: "and where it goes", params: ["count"] },
 }
 
-export const commands = {
+export const commands = defineCommands({
   bump:   "add one to count",
   unused: "declared and never bound, so invoking it is refused rather than ignored",
-}
+  // What the event meant travels with it, typed in every language from these examples.
+  rename: { doc: "a command with arguments", params: { id: 0, name: "" } },
+  // Answered by state.ts, and called from the backend through rda_call.
+  add: { doc: "an action", run: (n: number) => { state.count += n; return state.count } },
+})
 
 export const tables = {
   // Not called `rows`: the generated table object has a `rows` accessor of its own, and a

@@ -3,6 +3,7 @@
 #include <RendeerAlpha.h>
 #include <Core/Commands.h>
 #include <Core/FileDialog.h>
+#include <Core/Json.h>
 #include <Core/LoopWork.h>
 #include <Core/Signals.h>
 #include <Core/Tables.h>
@@ -14,6 +15,7 @@
 #include <GraphicalObjects/Window.h>
 #include <Layout/LayoutHost.h>
 #include <Layout/Router.h>
+#include <Layout/ScriptHost.h>
 #include <Logger/Logger.h>
 
 #define GLFW_INCLUDE_NONE
@@ -42,6 +44,12 @@ namespace {
 	// One message per thread, so two threads failing at once do not overwrite each
 	// other's explanation before either has read it.
 	thread_local std::string tLastError;
+
+	// The arguments of the command this thread is handling: set around a bound callback on
+	// the loop thread, and by rda_poll_command on whichever thread polls.
+	thread_local std::string tCommandArgs = "[]";
+	// What the last rda_call on this thread returned.
+	thread_local std::string tCallResult;
 
 	bool fail(const char* what) {
 		tLastError = what;
@@ -129,8 +137,12 @@ namespace {
 	// unbounded memory. Dropping the oldest keeps the most recent intent, which is the
 	// half worth keeping.
 	constexpr size_t kMaxPending = 256;
+	struct Pending {
+		std::string name;
+		std::string args;   // the JSON array it was called with
+	};
 	std::mutex               gQueueLock;
-	std::vector<std::string> gPending;
+	std::vector<Pending>     gPending;
 
 	// Paths dropped on the window, waiting to be asked for. Its own lock: a drop arrives
 	// on the loop thread while a backend may be draining from anywhere, and the command
@@ -625,12 +637,20 @@ int rda_signal_get_number(uint32_t signal, double* out) {
 	return ok ? 1 : fail("no such signal");
 }
 
+namespace {
+	// A computed signal is state.ts's to write, and a backend writing one would be
+	// overwritten by the next thing it read moving -- so it is refused, and said so.
+	constexpr const char* kComputed = "that signal is computed by state.ts, and nothing else writes it";
+}
+
 int rda_signal_set_number(uint32_t signal, double value) {
-	bool ok = false;
+	bool ok = false, computed = false;
 	if (!onLoop([&] {
 		if (!(ok = RDA::signals().valid(signal))) return;
+		if ((computed = RDA::signals().computed(signal))) return;
 		RDA::signals().set(signal, value);
 	})) return false;
+	if (computed) return fail(kComputed);
 	return ok ? 1 : fail("no such signal");
 }
 
@@ -645,11 +665,13 @@ int rda_signal_get_bool(uint32_t signal, int* out) {
 }
 
 int rda_signal_set_bool(uint32_t signal, int value) {
-	bool ok = false;
+	bool ok = false, computed = false;
 	if (!onLoop([&] {
 		if (!(ok = RDA::signals().valid(signal))) return;
+		if ((computed = RDA::signals().computed(signal))) return;
 		RDA::signals().set(signal, value != 0);
 	})) return false;
+	if (computed) return fail(kComputed);
 	return ok ? 1 : fail("no such signal");
 }
 
@@ -674,11 +696,13 @@ int rda_signal_get_text(uint32_t signal, char* buffer, int capacity) {
 int rda_signal_set_text(uint32_t signal, const char* value) {
 	if (!value) return fail("no value");
 	const std::string text = value;
-	bool ok = false;
+	bool ok = false, computed = false;
 	if (!onLoop([&] {
 		if (!(ok = RDA::signals().valid(signal))) return;
+		if ((computed = RDA::signals().computed(signal))) return;
 		RDA::signals().set(signal, std::string_view(text));
 	})) return false;
+	if (computed) return fail(kComputed);
 	return ok ? 1 : fail("no such signal");
 }
 
@@ -842,7 +866,14 @@ int rda_command_bind(const char* name, rda_callback fn, void* user) {
 	if (!onLoop([&] {
 		const uint32_t command = RDA::commands().find(wanted);
 		if (command == RDA::kNoCommand) return;
-		RDA::commands().bind(command, [fn, user] { fn(user); });
+		// The arguments are there to be asked for while the callback runs, and put back
+		// after: a handler that invokes another command is handling two at once.
+		RDA::commands().bind(command, [fn, user](const RDA::CommandArgs& args) {
+			std::string outer = std::move(tCommandArgs);
+			tCommandArgs = args.json();
+			fn(user);
+			tCommandArgs = std::move(outer);
+		});
 		ok = true;
 	})) return false;
 	return ok ? 1 : fail("no command by that name; declaring one is what creates it");
@@ -875,7 +906,7 @@ int rda_command_watch(const char* name) {
 		if (command == RDA::kNoCommand) return;
 		// The handler runs on the loop thread and does the least it can: take a lock,
 		// push a string, return. Anything more would be work the interface waits for.
-		RDA::commands().bind(command, [wanted] {
+		RDA::commands().bind(command, [wanted](const RDA::CommandArgs& args) {
 			std::lock_guard<std::mutex> held(gQueueLock);
 			if (gPending.size() >= kMaxPending) {
 				if (!gWarnedOverflow) {
@@ -886,7 +917,7 @@ int rda_command_watch(const char* name) {
 				}
 				gPending.erase(gPending.begin());
 			}
-			gPending.push_back(wanted);
+			gPending.push_back(Pending{ wanted, args.json() });
 		});
 		ok = true;
 	})) return false;
@@ -901,7 +932,8 @@ int rda_poll_command(char* buffer, int capacity) {
 		// its own queue must not cost a frame every time it looks.
 		std::lock_guard<std::mutex> held(gQueueLock);
 		if (gPending.empty()) return 0;
-		next = std::move(gPending.front());
+		next = std::move(gPending.front().name);
+		tCommandArgs = std::move(gPending.front().args);
 		gPending.erase(gPending.begin());
 	}
 	const int length = static_cast<int>(next.size());
@@ -911,6 +943,48 @@ int rda_poll_command(char* buffer, int capacity) {
 	return 1;
 }
 
+
+const char* rda_command_args(void) {
+	return tCommandArgs.c_str();
+}
+
+const char* rda_call(const char* name, const char* args_json) {
+	if (!name) { fail("no command name"); return nullptr; }
+	const std::string wanted = name;
+	const std::string args = args_json && *args_json ? args_json : "[]";
+	// Checked here, on the caller's thread, so a malformed array is the caller's error with
+	// the place it went wrong, rather than something an action trips over.
+	std::vector<RDA::Json::Item> items;
+	std::string why;
+	if (!RDA::Json::readArray(args, items, &why)) {
+		tLastError = "the arguments are not a JSON array: " + why;
+		return nullptr;
+	}
+	bool found = false, ok = false;
+	std::string result, error;
+	if (!onLoop([&] {
+		const uint32_t command = RDA::commands().find(wanted);
+		if (command == RDA::kNoCommand) return;
+		found = true;
+		ok = RDA::commands().call(command, RDA::CommandArgs(args), result, error);
+	})) return nullptr;
+	if (!found) { fail("no command by that name; declaring one is what creates it"); return nullptr; }
+	if (!ok) { tLastError = error; return nullptr; }
+	tCallResult = std::move(result);
+	return tCallResult.c_str();
+}
+
+int rda_load_state_code(const void* bytes, int size) {
+	if (!bytes || size <= 0) return fail("no state code");
+	const uint8_t* begin = static_cast<const uint8_t*>(bytes);
+	const std::vector<uint8_t> code(begin, begin + size);
+	bool ok = false;
+	std::string error;
+	if (!onLoop([&] { ok = RDA::Layout::scriptHost().loadState(code.data(), code.size(), error); }))
+		return 0;
+	if (!ok) { tLastError = error; return 0; }
+	return 1;
+}
 
 // ---- viewports -------------------------------------------------------------------
 
@@ -1272,6 +1346,45 @@ int rda_measure_text(const char* text, float size, float* out_width, float* out_
 	*out_width = width;
 	*out_height = height;
 	return ok ? 1 : fail("there is no window to measure against");
+}
+
+int rda_viewport_listen(const char* name, int on) {
+	if (!name || !*name) return fail("no viewport name");
+	const std::string wanted = name;
+	if (!onLoop([&] { RDA::viewports().listen(wanted, on != 0); })) return false;
+	return 1;
+}
+
+int rda_viewport_take(const char* name, rda_viewport_event* out) {
+	if (!name || !*name) { fail("no viewport name"); return -1; }
+	if (!out) { fail("no destination"); return -1; }
+	RDA::ViewportEvent state;
+	const bool fresh = RDA::viewports().events().take(name, state);
+	out->x = state.x;
+	out->y = state.y;
+	out->dx = state.dx;
+	out->dy = state.dy;
+	out->wheel = state.wheel;
+	out->held = state.held;
+	out->pressed = state.pressed;
+	out->released = state.released;
+	out->clicks = state.clicks;
+	out->inside = state.inside ? 1 : 0;
+	out->mods = state.mods;
+	out->width = state.width;
+	out->height = state.height;
+	out->resized = state.resized ? 1 : 0;
+	return fresh ? 1 : 0;
+}
+
+int rda_viewport_wait(char* name, int capacity, int timeout_ms) {
+	if (!name || capacity <= 0) { fail("no buffer"); return -1; }
+	const std::string which = RDA::viewports().events().wait(timeout_ms);
+	const int length = static_cast<int>(which.size());
+	const int room = capacity - 1 < length ? capacity - 1 : length;
+	std::memcpy(name, which.data(), static_cast<size_t>(room));
+	name[room] = 0;
+	return which.empty() ? 0 : 1;
 }
 
 int rda_viewport_size(const char* name, float* out_width, float* out_height) {

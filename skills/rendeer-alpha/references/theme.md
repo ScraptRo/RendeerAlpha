@@ -129,7 +129,9 @@ hollow box and is named once in the log.
 15, 18, 22, 28, 36. A size that was not baked is drawn at the nearest one that was, and
 the log says so, naming both. An application can change the list in its startup config.
 
-`weight: "bold"` is synthesised and does not change metrics. There is one font face.
+`weight: "bold"` is synthesised and does not change metrics. There is one body face;
+`config.font` may name fallback faces after a `;`, used only for codepoints the body face
+lacks.
 
 ## Colour helpers
 

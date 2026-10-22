@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  The tool's code page is UTF-8, so what is written on its command line arrives as the
+  UTF-8 the engine works in, rather than being lost in the old ANSI page, and the paths
+  it opens are read in the same encoding they were given in. Windows 10 1903 and later
+  honour this; earlier versions ignore it and behave as before.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

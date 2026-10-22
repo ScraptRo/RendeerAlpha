@@ -6,8 +6,9 @@ description: Write a RendeerAlpha interface — a .tsx layout, a res/state.ts de
 # RendeerAlpha
 
 A desktop interface is written in TypeScript and **compiled ahead of time** into a flat
-binary blueprint (`.rdab`). The running program contains no parser and no JavaScript
-engine: it reads the blueprint and builds widgets. The backend is C++, Python, Node or C#
+binary blueprint (`.rdab`). The running program parses nothing: it reads the blueprint and
+builds widgets. Functions the layout defines and its bindings call ship as QuickJS
+bytecode, compiled at build time. The backend is C++, Python, Node or C#
 and owns the data.
 
 They meet at three things, declared once in `res/state.ts`:
@@ -121,20 +122,22 @@ rda.wait()
 
 The first four are build errors. The rest are worse: they build, and go wrong later.
 
-1. **A binding may read `state.<name>`, `state.rda.<name>`, `item.<column>` and
-   literals. Nothing else.**
-   No function calls, no `Math`, no `.toFixed()`, no `.length`, no arrays, no objects,
-   and no variable from the code around it — not even a `const` at the top of the same
-   file. Compute in the backend and put the answer in a signal.
-2. **`commands.x()` only inside an event handler**, never in a value binding.
+1. **A binding sees `state`, `commands`, `tables`, `item` in a row, and the top level of
+   its file and its imports. Nothing from the code around it** — not a component's
+   `props`, not a local `const` inside the function that returns the JSX. A binding is
+   compiled from its own text. Within that, it is JavaScript: `.toFixed()`, `.split()`,
+   `Math`, a function you defined at the top level. See `references/bindings.md`.
+2. **`commands.x(...)` only inside an event handler**, never in a value binding. Pass what
+   it needs as arguments; logic both sides need goes in `state.ts` as a `compute` or a `run`.
 3. **`state.a.b` does not exist.** State is one level deep. The single exception is
    `state.rda.width` and `state.rda.height`, the window's size, which the engine
    maintains and a layout may only read.
 4. **A layout file has a `default` export that is a function** returning one element.
 
-5. **Only these 19 elements exist.** `container panel stack scroll splitter viewport
-   label button checkbox slider textfield list image tabs tab select option
-   dockspace dock`. There is no `div`, `text`, `input`, `row`, `column` or `grid`.
+5. **Only these 27 elements exist.** `container panel stack scroll splitter popup
+   viewport label button checkbox slider number textfield shortcut list tree grid column
+   image stream tabs tab select option dockspace dock header`. There is no `div`, `text`,
+   `input`, `row` or `table`, and `<column>` belongs only inside a `<grid>`.
    A made-up element **compiles**, and at run time it and all its children are skipped
    with a line in the log. A made-up property is ignored the same way.
 6. **A name the application never declared also compiles.** `state.typo` reads 0,

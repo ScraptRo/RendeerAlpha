@@ -24,14 +24,27 @@ without carrying a JavaScript engine.
 may write signals and call commands, and it runs when the widget says so.
 
 The arrow is not a closure. It is a syntax the compiler recognises so it knows *this
-expression is to be evaluated later*, and it is parsed from its source text. Nothing from
-the surrounding code comes along:
+expression is to be evaluated later*, and it is compiled from its source text. Nothing from
+the code around it comes along -- what it can name is `state`, `commands`, `tables`, and
+the top level of its file and its imports:
 
 ```tsx
-const step = 5
-<button onClick={() => state.count += step} />    // error: `step` is not in scope
-<button onClick={() => state.count += 5} />       // fine
+const STEP = 5                                     // the file's top level
+
+function Counter() {
+  const step = 5                                   // a local of the component
+  return (
+    <stack id="c">
+      <button id="a" onClick={() => state.count += step} />  // error: `step` is not in scope
+      <button id="b" onClick={() => state.count += STEP} />  // fine: STEP ships with it
+      <button id="c" onClick={() => state.count += 5} />     // fine
+    </stack>
+  )
+}
 ```
+
+A binding that goes past the [expression grammar](expressions.md) -- `STEP` above, a call,
+a method -- runs as compiled JavaScript; see [functions](functions.md).
 
 An event that carries a value hands it to the handler:
 

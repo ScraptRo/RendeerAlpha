@@ -1,5 +1,6 @@
 ﻿#include <Layout/ListView.h>
 #include <Layout/Bindings.h>
+#include <Layout/ScriptHost.h>
 #include <Core/Tables.h>
 #include <Core/Signals.h>
 #include <GraphicalObjects/Gui.h>
@@ -11,6 +12,85 @@
 namespace RDA {
 
 	using namespace RDA::Layout;
+
+	size_t ListView::shownRows(const Table& table) const {
+		return mViewOn ? mView.size() : table.rows();
+	}
+
+	void ListView::updateView(const Table& table) {
+		TableViewSpec spec{ sortBy, sortDescending, filter, filterColumns };
+		if (!spec.active()) {
+			if (mViewOn) { mViewOn = false; mView.clear(); mViewAt.clear(); invalidateRows(); }
+			return;
+		}
+		if (mViewOn && spec == mViewSpec && table.version() == mViewVersion) return;
+		mView = tableView(table, spec);
+		mViewAt.assign(table.rows(), kNoRow);
+		for (size_t i = 0; i < mView.size(); ++i) mViewAt[mView[i]] = i;
+		mViewSpec = std::move(spec);
+		mViewVersion = table.version();
+		mViewOn = true;
+		// The slots on screen show different rows now; each re-binds as it is reached.
+		invalidateRows();
+	}
+
+	bool ListView::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::List;
+		out.name = alt;
+		return true;
+	}
+
+	std::string ListView::rowName(size_t row, Widget* root) {
+		if (mTable == kNoTable || mPool.empty()) return root ? root->dragLabel() : std::string();
+		Table& table = tables().at(mTable);
+		// Forgotten whenever the table or anything the bindings read moves -- a version and
+		// an epoch, both of which a change bumps.
+		if (table.version() != mNamesVersion || mNamesEpoch != mNamesBuiltEpoch || mNames.size() != table.rows()) {
+			mNames.assign(table.rows(), std::string());
+			mNamed.assign(table.rows(), false);
+			mNamesVersion = table.version();
+			mNamesBuiltEpoch = mNamesEpoch;
+		}
+		if (row >= mNames.size()) return {};
+		if (mNamed[row]) return mNames[row];
+		// The template's text, in the order it was written, evaluated against this row: the
+		// first that says anything is the row's name, which is what a person would read.
+		const RowRef ref{ &table, row };
+		std::string name;
+		for (const RowBinding& binding : mPool.front().bindings) {
+			if (binding.property != "text") continue;
+			const ScriptHost::Frame frame(ScriptHost::Mode::Value);
+			const EvalResult result = evaluate(binding.program, signals(), binding.ids, nullptr, &ref);
+			if (!result.ok) continue;
+			name = result.value.asText();
+			if (!name.empty()) break;
+		}
+		// A template whose words are all constant: what the row on screen says, if it is.
+		if (name.empty() && root) name = root->dragLabel();
+		mNames[row] = name;
+		mNamed[row] = true;
+		return name;
+	}
+
+	void ListView::accessibleItemAction(int item, AccessibleAction action, const std::string& value) {
+		(void)value;
+		if (item < 0 || action != AccessibleAction::ScrollIntoView) return;
+		const size_t shown = shownIndexOf(static_cast<size_t>(item));
+		if (shown != kNoRow) revealShown(shown);
+	}
+
+	void ListView::describeRow(Gui& gui, size_t row, Widget* root, const Rect& placed) {
+		AccessibleInfo item;
+		item.role = AccessibleRole::ListItem;
+		item.name = rowName(row, root);
+		item.offscreen = (root == nullptr);
+		// Known by its table row, mixed into the list's own id: two lists showing row 4
+		// are two different items, and one list's row 4 is the same item whichever pooled
+		// widget happens to be drawing it.
+		const uint32_t id = gui.widgetId(mId.c_str()) ^ (static_cast<uint32_t>(row + 1) * 2654435761u);
+		gui.noteAccessibleItem(this, id, static_cast<int>(row), root, placed, item,
+		                       mId + "#" + std::to_string(row));
+	}
 
 	size_t ListView::rowCount() const {
 		if (!mResolved || mTable == kNoTable) return 0;
@@ -35,14 +115,19 @@ namespace RDA {
 	}
 
 	void ListView::rebuildTops(const Table& table) {
-		const size_t rows = table.rows();
+		// What is on the list, in its order -- which a sort, a filter or a tree's shut nodes
+		// make different from the table's.
+		const size_t rows = shownRows(table);
 		// One pass, and only when something it was computed from moved. Everything that
-		// reads a position reads this, so there is nothing else to invalidate.
+		// reads a position reads this, so there is nothing else to invalidate. The epoch is
+		// what moves when the shown rows do without the table changing.
 		const bool stale = table.version() != mBuiltVersion || rows != mBuiltRows ||
+		                   mNamesEpoch != mBuiltEpoch ||
 		                   rowHeight != mBuiltRowHeight || spacing != mBuiltSpacing ||
 		                   mRowTop.size() != rows + 1;
 		if (!stale) return;
 		mBuiltVersion = table.version();
+		mBuiltEpoch = mNamesEpoch;
 		mBuiltRows = rows;
 		mBuiltRowHeight = rowHeight;
 		mBuiltSpacing = spacing;
@@ -50,7 +135,7 @@ namespace RDA {
 		float top = 0.0f;
 		for (size_t i = 0; i < rows; ++i) {
 			mRowTop[i] = top;
-			top += heightOf(table, i) + spacing;
+			top += heightOf(table, tableRow(i)) + spacing;
 		}
 		// The last entry is the content's height, spacing after the final row included --
 		// which is what the uniform path's rows * pitch also comes to, so both kinds of
@@ -63,10 +148,21 @@ namespace RDA {
 		const RowRef ref{ &table, index };
 		for (RowBinding& binding : row.bindings) {
 			if (!binding.target) continue;
+			// A binding that runs JavaScript is watched while it runs, and what it read is
+			// added to what the list re-binds its rows for.
+			const ScriptHost::Frame frame(ScriptHost::Mode::Value);
 			const EvalResult result = evaluate(binding.program, signals(), binding.ids,
 			                                   nullptr, &ref);
+			if (mScriptRefresh != kNoObserver) {
+				for (const uint32_t signal : frame.signals()) bindings().watch(mScriptRefresh, signal);
+			}
 			if (!result.ok) {
-				RDA_LOG_WARNING("list " << mId << ": " << binding.property << " - " << result.error);
+				// Once per binding: a list re-binds as it scrolls, and a function that throws
+				// on one row will throw on the next forty.
+				if (!result.scriptError || !binding.warned) {
+					RDA_LOG_WARNING("list " << mId << ": " << binding.property << " - " << result.error);
+				}
+				if (result.scriptError) binding.warned = true;
 				continue;
 			}
 			// Checked, the way BindingRuntime checks it. Discarding this is how a bound
@@ -105,7 +201,8 @@ namespace RDA {
 			return { available.x, mRowTop.back() };
 		}
 		const float pitch = rowHeight + spacing;
-		const float total = static_cast<float>(rowCount()) * pitch;
+		const size_t shown = (mResolved && mTable != kNoTable) ? shownRows(tables().at(mTable)) : 0;
+		const float total = static_cast<float>(shown) * pitch;
 		return { available.x, total };
 	}
 
@@ -125,7 +222,11 @@ namespace RDA {
 		}
 
 		Table& table = tables().at(mTable);
-		const size_t rows = table.rows();
+		mLastView = view;
+		updateView(table);
+		prepare(gui, view, table);
+		// How many are on the list, which for a tree is fewer than the table holds.
+		const size_t rows = shownRows(table);
 		const float pitch = (std::max)(1.0f, rowHeight + spacing);
 
 		// The height column, resolved once against the table this list turned out to
@@ -183,15 +284,22 @@ namespace RDA {
 		// Asked to show a particular row. Nudged rather than centred: a row already on
 		// screen should not move, and one just off the edge should come just on --
 		// which is what a reader following a search expects, and what centring is not.
+		size_t want = kNoRow;
 		if (revealRow >= 0 && revealRow != mRevealed && rows > 0) {
 			mRevealed = revealRow;
-			const size_t want = std::min<size_t>(static_cast<size_t>(revealRow), rows - 1);
-			const float top = topOf(want);
-			const float bottom = top + heightOf(table, want);
-			if (top < offset)                 offset = top;
-			else if (bottom > offset + inner.h) offset = bottom - inner.h;
+			want = shownIndexOf(std::min<size_t>(static_cast<size_t>(revealRow), table.rows() - 1));
 		} else if (revealRow < 0) {
 			mRevealed = -1;   // asked for nothing, so the next request is heard
+		}
+		if (mRevealShown != kNoRow) {
+			want = mRevealShown;
+			mRevealShown = kNoRow;
+		}
+		if (want != kNoRow && want < rows) {
+			const float top = topOf(want);
+			const float bottom = top + heightOf(table, tableRow(want));
+			if (top < offset)                 offset = top;
+			else if (bottom > offset + inner.h) offset = bottom - inner.h;
 		}
 
 		// Follow: the content grew and the reader was at the end of it, so move the end
@@ -247,11 +355,25 @@ namespace RDA {
 			first = static_cast<size_t>(drawnOffset / pitch);
 			wanted = static_cast<size_t>(std::ceil(inner.h / pitch)) + 1;
 		}
+		// As many rows as the view needs, and no more: built the first time the list is drawn,
+		// and again whenever the view grows -- a taller window, a list given more room. Never
+		// thrown away when it shrinks, because it is likely to grow back, and an idle row is
+		// a few widgets that are not drawn. The cap is only there so a mistake -- a row
+		// height of a fraction of a unit -- cannot build ten thousand widgets in one frame.
+		constexpr size_t kMostRows = 512;
+		if (wanted > mPool.size() && mRowFactory) {
+			const WidgetBuildScope building;   // see WidgetBuildScope for why this is safe
+			while (mPool.size() < wanted && mPool.size() < kMostRows) {
+				const size_t before = mPool.size();
+				mRowFactory();
+				if (mPool.size() == before) break;
+			}
+		}
 		if (wanted > mPool.size()) {
 			if (!mWarnedPool) {
 				mWarnedPool = true;
-				RDA_LOG_WARNING("list " << mId << ": " << wanted << " rows fit but only "
-				                << mPool.size() << " were built; raise poolSize");
+				RDA_LOG_WARNING("list " << mId << ": " << wanted << " rows fit but a list builds at "
+				                "most " << mPool.size() << "; is rowHeight what was meant?");
 			}
 			wanted = mPool.size();
 		}
@@ -262,23 +384,54 @@ namespace RDA {
 		const bool tableMoved = table.version() != mSeenVersion;
 		mSeenVersion = table.version();
 
+		// The rows a screen reader is told about without their being drawn: every row of the
+		// list, up to a limit, in a window around the ones on screen -- so it can say "row
+		// 40 of 900" and read any of them. Those before the view go first and those after it
+		// last, so the tree is in the list's own order.
+		constexpr size_t kMostDescribed = 2000;
+		size_t describeFrom = 0, describeTo = 0;
+		const bool describing = gui.accessibilityWanted() && !gui.inert();
+		if (describing && rows > 0) {
+			const size_t span = (std::min)(rows, kMostDescribed);
+			const size_t lead = (span > wanted) ? (span - wanted) / 2 : 0;
+			describeFrom = (first > lead) ? first - lead : 0;
+			if (describeFrom + span > rows) describeFrom = rows - span;
+			describeTo = describeFrom + span;
+		}
+		auto describeOffscreen = [&](size_t from, size_t to) {
+			for (size_t index = from; index < to && index < rows; ++index) {
+				const size_t source = tableRow(index);
+				if (source >= table.rows()) continue;
+				const Rect away{ inner.x, inner.y + topOf(index) - drawnOffset, inner.w, heightOf(table, source) };
+				describeRow(gui, source, nullptr, away);
+			}
+		};
+		if (describing) describeOffscreen(describeFrom, (std::min)(first, describeTo));
+
 		gui.pushClipRect(inner);
+		size_t drawnTo = first;
 		for (size_t slot = 0; slot < wanted; ++slot) {
 			const size_t index = first + slot;
 			if (index >= rows) break;
 			PooledRow& row = mPool[slot];
 			if (!row.root) continue;
+			const size_t source = tableRow(index);
+			if (source >= table.rows()) continue;
 
-			if (row.showing != index || tableMoved || mRowsDirty) rebind(row, index);
+			if (row.showing != source || tableMoved || mRowsDirty) rebind(row, source);
 
-			const Rect placed{ inner.x, inner.y + topOf(index) - drawnOffset,
-			                   inner.w, heightOf(table, index) };
+			const Rect slotRect{ inner.x, inner.y + topOf(index) - drawnOffset,
+			                     inner.w, heightOf(table, source) };
+			const Rect placed = arrangeRow(gui, slotRect, source);
+			if (describing) describeRow(gui, source, row.root, slotRect);
+			drawnTo = index + 1;
 			row.root->setArranged(placed);
 			row.root->paint(gui, glm::vec2(placed.x, placed.y));
 		}
 		// Every visible row has been re-bound by now, so the flag has done its job. Rows
 		// scrolled to later are re-bound anyway, by the index check above.
 		mRowsDirty = false;
+		if (describing) describeOffscreen((std::max)(drawnTo, describeFrom), describeTo);
 		gui.popClipRect();
 
 		// Asked for whether or not the table is long enough to scroll: a list filtered

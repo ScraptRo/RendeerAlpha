@@ -154,6 +154,28 @@ check('and the poll runs the handler', asked, [7])
 refused('invoking a command nothing is bound to is refused', () => rda.invoke('unused'))
 refused('invoking a command that does not exist is refused', () => rda.invoke('nope'))
 
+// ---- what state.ts computes and answers (ABI 1.8) --------------------------------------
+console.log("state.ts's code")
+State.count = 3
+check('a computed value is current as soon as what it reads is', State.doubled, 6)
+refused('a computed value has no setter', () => { State.doubled = 1 })
+const renamed = []
+Commands.rename((id, name) => { renamed.push([id, name]) })
+// Watched, as every Node handler is: rda_call queues it and returns null, and the poll runs
+// it with its arguments.
+check("calling a backend's command returns null", rda.call('rename', 5, 'five \u00e9'), null)
+rda.poll()
+check('its arguments reach the handler', renamed, [[5, 'five \u00e9']])
+check('an action answers rda.call with its result', rda.call('add', 2), 5)
+check('its writes landed', State.count, 5)
+check('and what they are computed into', State.doubled, 10)
+const watched = []
+Commands.add((n) => { watched.push(n) })
+rda.call('add', 1)
+rda.poll()
+check('a backend that binds an action watches it', watched, [1])
+refused('calling a command that does not exist is refused', () => rda.call('nope'))
+
 // ---- the window, the clipboard, and measuring (ABI 1.2) --------------------------------
 console.log('window and clipboard')
 rda.setTitle('binding test \u2014 renamed')

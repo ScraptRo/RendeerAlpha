@@ -9,6 +9,7 @@ set(RDA_SOURCES
 	src/Core/LoopWork.cpp
 	src/Core/Signals.cpp
 	src/Core/Commands.cpp
+	src/Core/Json.cpp
 	src/Core/Tables.cpp
 	src/Core/Png.cpp
 	src/Core/Utf8.cpp
@@ -35,9 +36,11 @@ set(RDA_SOURCES
 	src/GraphicalSrc/MemoryBuffer.cpp
 
 	src/GraphicalObjects/Window.cpp
+	src/GraphicalObjects/WindowEdges.cpp
 	src/GraphicalObjects/Input.cpp
 	src/GraphicalObjects/Texture.cpp
 	src/GraphicalObjects/Viewports.cpp
+	src/GraphicalObjects/ViewportEvents.cpp
 
 	src/vendor/stb_image/stb_image.cpp
 	src/vendor/stb_truetype/stb_truetype.cpp
@@ -66,6 +69,12 @@ list(APPEND RDA_SOURCES
 	src/GraphicalObjects/Motion.cpp
 	src/GraphicalObjects/GuiWidgets.cpp
 	src/GraphicalObjects/GuiTheme.cpp
+	src/GraphicalObjects/Shortcut.cpp
+	src/Platform/Accessibility.cpp
+	src/Platform/AccessibilityLinux.cpp
+	src/Platform/TextInput.cpp
+	src/Platform/WindowFrame.cpp
+	src/GraphicalObjects/Accessible.cpp
 	src/GraphicalObjects/Widget.cpp
 	src/GraphicalObjects/Syntax.cpp
 	src/GraphicalObjects/Docking.cpp
@@ -77,11 +86,18 @@ list(APPEND RDA_SOURCES
 	src/Layout/ThemeSchema.cpp
 	src/Layout/LayoutLoader.cpp
 	src/Layout/ListView.cpp
+	src/Layout/TreeView.cpp
+	src/Layout/GridView.cpp
+	src/Layout/TableOrder.cpp
+	src/Layout/Selection.cpp
 	src/Layout/LayoutHost.cpp
 	src/Layout/Router.cpp
 	src/Layout/Probe.cpp
 	src/Layout/Expression.cpp
 	src/Layout/Bindings.cpp
+	# What a layout's functions run on: QuickJS, created the first time a blueprint that
+	# carries bytecode is loaded, and never otherwise. See docs/architecture/runtime-code.md.
+	src/Layout/ScriptHost.cpp
 )
 
 # ---- scripting at run time, off by default ----------------------------------------
@@ -112,6 +128,8 @@ list(APPEND RDA_SOURCES
 	src/Layout/TypeEmitter.cpp
 	src/Layout/StateSchema.cpp
 	src/Layout/ExpressionParser.cpp
+	# Which of a layout's functions run at run time, and the bytecode they ship as.
+	src/Layout/ScriptCompiler.cpp
 	# Placeholder state for a declaration with no backend behind it yet. Here rather than
 	# with the loader, because it reads JSON with the same engine the compiler uses.
 	src/Layout/Prototype.cpp
@@ -151,6 +169,31 @@ endif()
 add_library(rendeer STATIC ${RDA_SOURCES})
 add_library(rendeer::rendeer ALIAS rendeer)
 target_link_libraries(rendeer PRIVATE rendeer_quickjs)
+
+# acorn, as bytes, for the layout compiler: it parses a bundled layout to find which
+# functions a binding reaches. Generated at configure time from the vendored file, and
+# an array rather than a string literal because MSVC refuses a literal past 64 KB.
+# Regenerated whenever acorn.js is newer than the header.
+set(RDA_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(RDA_GENERATED_DIR "${RDA_GENERATED_DIR}" PARENT_SCOPE)
+set(_rda_acorn "${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/acorn/acorn.js")
+set(_rda_acorn_header "${RDA_GENERATED_DIR}/AcornSource.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_rda_acorn}")
+if(NOT EXISTS "${_rda_acorn_header}" OR "${_rda_acorn}" IS_NEWER_THAN "${_rda_acorn_header}")
+	file(READ "${_rda_acorn}" _rda_hex HEX)
+	string(LENGTH "${_rda_hex}" _rda_hex_length)
+	math(EXPR _rda_acorn_bytes "${_rda_hex_length} / 2")
+	string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _rda_hex "${_rda_hex}")
+	# Thirty-two to a line, so no compiler meets a line a megabyte long.
+	string(REPEAT "0x[0-9a-f][0-9a-f]," 32 _rda_row)
+	string(REGEX REPLACE "(${_rda_row})" "\\1\n" _rda_hex "${_rda_hex}")
+	file(WRITE "${_rda_acorn_header}"
+		"// Generated from src/vendor/acorn/acorn.js by RendeerAlpha/CMakeLists.txt. Do not edit.\n"
+		"#pragma once\n#include <cstddef>\n"
+		"static const unsigned char kAcornSource[] = {\n${_rda_hex}0x00 };\n"
+		"static const size_t kAcornSourceSize = ${_rda_acorn_bytes};\n")
+endif()
+target_include_directories(rendeer PRIVATE "${RDA_GENERATED_DIR}")
 
 # PUBLIC, so an application that links this is compiled as C++20 without having to know
 # that it must. CMAKE_CXX_STANDARD covers this repository's own targets and nothing else,
@@ -201,6 +244,10 @@ if(WIN32)
 	# NOMINMAX because windows.h defines min and max as macros, which breaks every
 	# std::numeric_limits<T>::max() it is included ahead of -- vulkan.hpp included.
 	target_compile_definitions(rendeer PUBLIC NOMINMAX _CRT_SECURE_NO_WARNINGS)
+	# UI Automation, which is how a screen reader reads a window. A system library on
+	# every Windows there is; PUBLIC because this is a static library and the application
+	# is what links.
+	target_link_libraries(rendeer PUBLIC uiautomationcore imm32)
 else()
 	find_package(Threads REQUIRED)
 	target_link_libraries(rendeer PUBLIC Threads::Threads ${CMAKE_DL_LIBS})

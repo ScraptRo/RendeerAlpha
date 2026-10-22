@@ -103,6 +103,10 @@ namespace RDA {
 		uint64_t revision() const;
 
 		bool     valid(uint32_t table) const { return table < mTables.size(); }
+		size_t   count() const { return mTables.size(); }
+		std::string_view name(uint32_t table) const {
+			return table < mNames.size() ? std::string_view(mNames[table]) : std::string_view();
+		}
 		Table&   at(uint32_t table);
 
 	private:

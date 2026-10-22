@@ -6,12 +6,14 @@ remembered.
 
 RendeerAlpha is glue between an application's backend and its interface. The interface is
 written in TypeScript, compiled ahead of time into a flat binary blueprint, and loaded by
-an application that contains no parser and no JavaScript engine. The backend is ordinary
+an application that parses nothing. The backend is ordinary
 C++ that owns the device directly, in its own process — or, through a C ABI, anything
 with an FFI.
 
 The thing to hold onto: **TypeScript is a build-time language here, not a runtime one.**
-Nothing in a shipped binary evaluates JavaScript. What ships is a blueprint and a loader.
+What ships is a blueprint and a loader. A layout's own functions are the one thing that runs
+later, and they ship compiled, as QuickJS bytecode -- see
+[code that runs](runtime-code.md).
 
 This folder is the reasoning. [setup/](../setup/README.md), [frontend/](../frontend/README.md)
 and [backend/](../backend/README.md) are the reference.
@@ -35,6 +37,7 @@ and [backend/](../backend/README.md) are the reference.
 | [State a layout owns](layout-state.md) | `signal()`, its scope, and where the checking stops |
 | [Screens](screens.md) | routes as state, params as signals, and where the swap happens |
 | [Asking the application to do something](commands.md) | commands, and why a binding may not call one |
+| [Code that runs: functions in a layout](runtime-code.md) | what runs at build time and what at run time, decided by where it is reached from -- built: functions, logic in state.ts, format and timers |
 
 ## Drawing
 
@@ -52,6 +55,7 @@ and [backend/](../backend/README.md) are the reference.
 | | |
 | --- | --- |
 | [The repository](repository.md) | what each folder is, and what is not vendored |
+| [Restructuring into layers](restructure.md) | proposal: what a review of the whole engine found, the layers it should be cut into, and the steps to get there |
 | [Testing](testing.md) | driving an interface without opening one, and the four tiers |
 | [The bindings, and the seam out of C++](bindings.md) | out-of-process hosting and why it is gone; the C ABI; Python, Node and C# |
 | [Where things stand](where-things-stand.md) | what is load-bearing, what is optional, and the known loose ends |

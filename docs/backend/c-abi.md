@@ -119,12 +119,13 @@ that will not load and a call made before `rda_init()` all return 0.
 | **Declaring** | `rda_define_number/bool/text/command/table/column` |
 | **Signals** | `rda_signal_find/type`, `rda_signal_get_/set_` × `number`/`bool`/`text` |
 | **Tables** | `rda_table_find/column/rows/resize`, `rda_table_set_numbers/bools/texts`, `rda_table_get_number/bool/text` |
-| **Commands** | `rda_command_bind`, or `rda_command_watch` + `rda_poll_command`; `rda_command_invoke` to ask for one yourself |
-| **Viewports** | `rda_viewport_draw`, `rda_viewport_size` |
+| **Commands** | `rda_command_bind`, or `rda_command_watch` + `rda_poll_command`; `rda_command_invoke` to ask for one yourself; `rda_command_args` — what the one being handled carries; `rda_call` — run one and get what it returned (1.8) |
+| **state.ts's code** | `rda_load_state_code` — the computed values and actions a generated module carries, loaded by its `define()` (1.8) |
+| **Viewports** | `rda_viewport_draw`, `rda_viewport_size`; what happens to one, resized or the pointer: `rda_viewport_listen`, `rda_viewport_take`, `rda_viewport_wait` (1.7) |
 | **Theme** | `rda_set_theme` — swap the whole look while the window is open |
 | **The window** | `rda_config_set_size` (opening size), `rda_set_title`, `rda_set_icon`, and the `rda_config_set_*` group below |
 | **How it opens** | `rda_config_set_icon`, `_decorated`, `_resizable`, `_maximized`, `_fullscreen`, `_always_on_top`, `_transparent`, `_opacity`, `_size_limits`, `_position` — read when the window is created, which is why they are on the config |
-| **What it does after** | signals, not calls: `rda.maximized`, `rda.minimized`, `rda.fullscreen` and `rda.open` read *and* write; `rda.width`, `rda.height` and `rda.focused` report. See [the window](../frontend/window.md) |
+| **What it does after** | signals, not calls: `rda.maximized`, `rda.minimized`, `rda.fullscreen` and `rda.open` read *and* write; `rda.width`, `rda.height`, `rda.focused`, `rda.dragging` and `rda.dragKind` report. See [the window](../frontend/window.md) |
 | **The clipboard** | `rda_clipboard_set`, `rda_clipboard_get` |
 | **Measuring** | `rda_measure_text` — what a string would be drawn at |
 | **The keyboard** | `rda_focus` — put the caret on a widget, by the id its layout gave it |
@@ -153,6 +154,13 @@ So both are queued and asked for: call `rda_poll_dropped_file` until it answers 
 same beat everything else is polled. Nothing is lost between one look and the next — the
 queue is bounded, and a backend that stops asking entirely loses the oldest with a line in
 the log.
+
+**What a command carries is JSON.** One array per call, `[3, "notes.txt"]`, read with
+`rda_command_args()` inside a bound callback or right after `rda_poll_command` returns that
+command. `rda_call(name, args_json)` returns its result the same way -- an action's value,
+`null` for a command a backend answers -- as a string the engine keeps until this thread's
+next `rda_call`, rather than in a buffer the caller sizes: the ask-twice shape the other
+readers use would run an action twice. A computed signal refuses `rda_signal_set_*`.
 
 **A drawing is written in one run too.** `rda_viewport_draw(name, commands, count)` takes
 the whole picture as an array of `rda_draw_cmd` — four ops (`CLEAR`, `RECT`, `LINE`,

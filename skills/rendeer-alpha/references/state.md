@@ -5,7 +5,8 @@ module, the JavaScript module, the C# class, and the TypeScript the layouts are 
 against. Add a name here first, then use it.
 
 It is TypeScript, but only four exports are read: `state`, `commands`, `tables`,
-`routes`. Anything else in the file is ignored.
+`routes`. Anything else in the file is ignored, unless a `compute` or a `run` uses it --
+then it ships with them.
 
 ```ts
 export const state = {
@@ -51,15 +52,54 @@ Python, Node and C#, `State::count()` in C++ — one signal, one spelling.
 
 ## Commands
 
-A name and a sentence saying what it does. **Commands take no arguments**: write what one
-needs into a signal first, then ask.
+A name and a sentence saying what it does -- or the long form, with what it is called with,
+declared by example and in order:
 
-```tsx
-onClick={() => { state.pending = item.id; commands.open() }}
+```ts
+export const commands = {
+  save: "write the notes somewhere",
+  open: { doc: "show one product", params: { id: 0 } },
+}
 ```
 
-The backend binds a handler per name. A command nothing is bound to is refused rather
-than ignored, and says so in the log.
+```tsx
+onClick={() => commands.open(item.id)}
+```
+
+**Pass what the command needs as arguments**, not through a signal written first. The
+backend's handler receives them typed: `onOpen([](double id) {...})`, `def on_open(id)`,
+`(id) => ...`, `Action<double>`. A command nothing answers is refused rather than ignored,
+and says so in the log.
+
+## Code in state.ts: computed values and actions
+
+Logic more than one layout or the backend needs belongs here, written once:
+
+```ts
+export const state = defineState({
+  price: 0,
+  qty:   1,
+  total: { compute: () => state.price * state.qty, doc: "what it costs" },   // computed
+})
+
+export const commands = defineCommands({
+  add: { doc: "one more", run: (n: number = 1) => { state.qty += n } },      // an action
+})
+```
+
+- **A computed field** is a real signal: bindings and backends read it, nothing writes it
+  (no setter is generated, and a write is refused). It is current the moment what it read
+  changes. Its type is what it returns when the build runs it once on the starting values,
+  tables empty -- give `value` too if it cannot run without data. It may read `state` and
+  `tables`; it may not write state or call commands.
+- **An action** is a command state.ts answers: called from a layout like any command,
+  run by `rda prototype`, callable from a backend with `call("add", 2)` (returns its result),
+  and bindable by a backend to hear of it after. It runs as a handler does.
+- **Wrap with `defineState`, `defineTables`, `defineCommands`** whenever the file has code:
+  they change nothing built, but without them the editor types `state.qty` as
+  `{ value, doc }`.
+- The code ships inside the generated backend module and loads in `define()`; regenerate
+  with `rda build` after changing it.
 
 ## Tables
 

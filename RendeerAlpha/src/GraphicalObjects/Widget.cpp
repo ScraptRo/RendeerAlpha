@@ -13,6 +13,14 @@
 
 namespace RDA {
 
+	namespace {
+		// Loop-thread only, like the tree it counts.
+		uint64_t gWidgetsDestroyed = 0;
+	}
+
+	Widget::~Widget() { ++gWidgetsDestroyed; }
+	uint64_t Widget::destroyedCount() { return gWidgetsDestroyed; }
+
 	Rect Widget::resolveRect(glm::vec2 origin, const Rect& parent) const {
 		// Start from the classic behaviour — a fixed rect at a fixed offset — and let the
 		// anchors override each axis. With Anchor::TopLeft this is exactly what the
@@ -75,6 +83,69 @@ namespace RDA {
 		                          visible ? 1.0f : 0.0f, seconds);
 	}
 
+	bool Widget::acceptsKind(std::string_view kind) const {
+		if (accepts.empty()) return true;
+		std::string_view rest(accepts);
+		while (!rest.empty()) {
+			const size_t bar = rest.find('|');
+			if (rest.substr(0, bar) == kind) return true;
+			if (bar == std::string_view::npos) break;
+			rest.remove_prefix(bar + 1);
+		}
+		return false;
+	}
+
+	std::string Widget::dragLabel() const {
+		for (const std::unique_ptr<Widget>& child : mChildren) {
+			if (!child || !child->visible) continue;
+			std::string found = child->dragLabel();
+			if (!found.empty()) return found;
+		}
+		return {};
+	}
+
+	void Widget::setShortcut(std::string_view text) {
+		shortcut = {};
+		if (text.empty()) return;
+		std::string error;
+		if (parseChord(text, shortcut, &error)) {
+			const char* refused = shortcutRefusal(shortcut);
+			if (!refused) return;
+			error = refused;
+			shortcut = {};
+		}
+		RDA_LOG_WARNING("shortcut '" << text << "' on '" << mId << "' " << error
+		                << " - it has no shortcut");
+	}
+
+	void Widget::offerShortcuts(std::vector<Widget*>& out) {
+		if (shortcut.valid()) out.push_back(this);
+		for (const std::unique_ptr<Widget>& child : mChildren) {
+			if (child && child->visible) child->offerShortcuts(out);
+		}
+	}
+
+	Widget* pickShortcut(const std::vector<Widget*>& offered, const Chord& chord,
+	                     Widget** alsoOffered) {
+		Widget* chosen = nullptr;
+		if (alsoOffered) *alsoOffered = nullptr;
+		for (auto it = offered.rbegin(); it != offered.rend(); ++it) {
+			if (!*it || (*it)->shortcut != chord) continue;
+			if (!chosen) { chosen = *it; if (!alsoOffered) break; continue; }
+			if (*it != chosen) { *alsoOffered = *it; break; }
+		}
+		return chosen;
+	}
+
+	void Button::offerShortcuts(std::vector<Widget*>& out) {
+		if (shortcut.valid()) out.push_back(this);
+	}
+
+	void ShortcutKey::paint(Gui& gui, glm::vec2 origin) {
+		(void)origin;
+		if (shortcut.valid() && gui.wantsShortcuts()) gui.offerShortcut(this);
+	}
+
 	Rect Widget::placement(Gui& gui, glm::vec2 origin) {
 		const Rect where = [&] {
 			if (mArrangedValid) {
@@ -103,6 +174,23 @@ namespace RDA {
 		// Declared before this widget's children paint, so a button sitting on the bar
 		// wins the press over the bar itself.
 		if (dragWindow) gui.windowGrip(mId.c_str(), where);
+		if (maximizeButton) gui.noteMaximizeButton(where);
+
+		// Being drawn is being reachable. The cheap half of the question first: on a frame
+		// with no key in it, this is one empty check.
+		if (shortcut.valid() && gui.wantsShortcuts()) gui.offerShortcut(this);
+
+		// Dragging and dropping, each as cheap as the shortcut above on a frame that has
+		// nothing to do with it: a press, a drag in progress and a drop of files are all
+		// rare, and each is asked about before anything else is looked at.
+		const GuiInput& in = gui.input();
+		if (!drag.empty() && in.lPressed && where.contains(in.pointer)) gui.notePickUp(this, where);
+		if (onDrop && gui.dragging() && acceptsKind(gui.dragKind())) gui.offerDropTarget(this, where);
+		if (onFiles && !in.droppedFiles.empty() && where.contains(in.pointer)) gui.noteFileTarget(this);
+
+		// Described for a screen reader, when one is listening. Not from a subtree that
+		// takes no input -- a screen on its way out is not somewhere the reader can go.
+		if (gui.accessibilityWanted() && !gui.inert()) gui.noteAccessible(this, where);
 
 		// The right button. Claimed rather than answered: a child drawn after this one
 		// overwrites the claim, so the deepest widget that wanted it is the one that
@@ -422,7 +510,12 @@ namespace RDA {
 			// is being scrolled, clipped by a dock panel, or clipped by anything else
 			// that has not been written yet. Arranged first regardless, so measuring
 			// and scroll-into-view still work on a child that was not drawn.
-			if (slot.overlaps(gui.currentClipRect())) {
+			if (!slot.overlaps(gui.currentClipRect())) {
+				// Not drawn, but still there: a Save button scrolled out of sight is still
+				// the Save button, and Ctrl+S should not depend on where the scroll bar is.
+				// Not while collapsing, which is on its way to not being there at all.
+				if (!collapsing) gui.offerShortcutsIn(*child);
+			} else {
 				if (collapsing) {
 					// Clipped to the room it has left, so what has already slid past the
 					// near edge is gone rather than drawn over its neighbour -- every
@@ -664,13 +757,18 @@ namespace RDA {
 		// Warns rather than asserts: a structural edit during the walk is now survivable
 		// (paintChildren re-reads its size), so this points at the cause without taking
 		// the application down over something that will merely look odd for a frame.
+		int gBuildDepth = 0;   // inside a WidgetBuildScope
+
 		void warnIfWalking(const char* what) {
-			if (gWalkDepth > 0) {
+			if (gWalkDepth > 0 && gBuildDepth == 0) {
 				RDA_LOG_WARNING("Widget tree edited during the paint walk (" << what
 					<< "). Queue it with Gui::tree() instead.");
 			}
 		}
 	}
+
+	WidgetBuildScope::WidgetBuildScope() { ++gBuildDepth; }
+	WidgetBuildScope::~WidgetBuildScope() { --gBuildDepth; }
 
 	WidgetWalkGuard::WidgetWalkGuard() { ++gWalkDepth; }
 	WidgetWalkGuard::~WidgetWalkGuard() { --gWalkDepth; }
@@ -836,7 +934,13 @@ namespace RDA {
 		if (open && !mWasOpen) mOpenedAt = gui.input().pointer;
 		mWasOpen = open;
 
-		if (!open) return;
+		// Shut, it is a menu whose entries still have their shortcuts -- that is most of
+		// what a shortcut beside a menu entry is for. Open, its children are painted in
+		// paintAbove and offer them the ordinary way.
+		if (!open) {
+			gui.offerShortcutsIn(*this);
+			return;
+		}
 
 		// Nothing is drawn here: a popup that drew in the tree would be clipped by
 		// whatever panel it happens to live in, and covered by whatever comes after it.
@@ -906,6 +1010,8 @@ namespace RDA {
 		x = std::clamp(x, 0.0f, (std::max)(0.0f, viewport.x - w));
 		y = std::clamp(y, 0.0f, (std::max)(0.0f, viewport.y - h));
 		mShown = Rect{ x, y, w, h };
+		// Open, it is a node of its own and what is inside it hangs off it.
+		if (gui.accessibilityWanted()) gui.noteAccessible(this, mShown);
 
 		gui.beginPanel(mId.c_str(), mShown, variant);
 		// Inside the padding, the way a button holds its children.
@@ -1499,9 +1605,49 @@ namespace RDA {
 		return { (std::max)(available.x, page.x), bar + page.y };
 	}
 
+	void Tabs::offerShortcuts(std::vector<Widget*>& out) {
+		if (shortcut.valid()) out.push_back(this);
+		// Counted the way paint counts them: by Tab, so anything else among the children
+		// does not shift which page `value` means.
+		int index = 0;
+		for (const auto& child : children()) {
+			Tab* tab = dynamic_cast<Tab*>(child.get());
+			if (!tab) continue;
+			if (index++ == value) {
+				if (tab->visible) tab->offerShortcuts(out);
+				return;
+			}
+		}
+	}
+
 	void Tabs::paint(Gui& gui, glm::vec2 origin) {
 		const Rect box = placement(gui, origin);
 		const float bar = barSize(gui);
+
+		// The titles, for a screen reader, before the page -- which is the order they are
+		// read in, even though the page is drawn first. Each is known by the same id its
+		// button is, so the keyboard's focus and the screen reader's are the same thing.
+		if (gui.accessibilityWanted()) {
+			float x = box.x;
+			int at = 0;
+			gui.pushId(mId.c_str());
+			for (const auto& child : children()) {
+				const Tab* tab = dynamic_cast<const Tab*>(child.get());
+				if (!tab) continue;
+				const float w = gui.measureText(tab->title.c_str()) + 22.0f;
+				AccessibleInfo item;
+				item.role = AccessibleRole::TabItem;
+				item.name = tab->title;
+				item.focusable = true;
+				item.selected = (at == value) ? 1 : 0;
+				item.actions = kCanSelect | kCanInvoke;
+				gui.noteAccessibleItem(this, gui.widgetId(tab->id().c_str()), at, nullptr,
+				                       { x, box.y, w, bar }, item, tab->id());
+				x += w + 2.0f;
+				++at;
+			}
+			gui.popId();
+		}
 
 		// ---- the page ----------------------------------------------------------------
 		//
@@ -1700,6 +1846,16 @@ namespace RDA {
 			if (gui.focusEscaped(wid)) { mOpen = false; mHighlight = -1; }
 		}
 
+		// Typing finds a choice by its first letters, open or shut: shut, it opens on the
+		// match, so nothing is chosen until Enter takes it and Escape still changes nothing.
+		if (gui.focused() == wid) {
+			gui.claimTyping();
+			mFindAge += gui.input().dt;
+			if (!gui.input().typed.empty() && options > 0) findTyped(gui.input().typed);
+		} else {
+			mFind.clear();
+		}
+
 		// How far open it is, which is what the list is drawn from -- and is the reason
 		// the list goes on being drawn after `mOpen` is false, since otherwise it would
 		// have nowhere to close from. Asked for every frame, open or shut: a value nobody
@@ -1743,6 +1899,74 @@ namespace RDA {
 
 		// The list has to escape whatever clips this widget, so it is not drawn here.
 		if (mOpenAmount > 0.004f && count > 0) gui.drawAbove(this, origin);
+	}
+
+	namespace {
+		// ASCII only, which is every letter a choice is likely to start with in a list
+		// somebody is scanning by keyboard; anything else compares exactly.
+		char foldCase(char c) {
+			return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+		}
+		bool startsWithFolded(std::string_view text, std::string_view prefix) {
+			if (prefix.size() > text.size()) return false;
+			for (size_t i = 0; i < prefix.size(); ++i) {
+				if (foldCase(text[i]) != foldCase(prefix[i])) return false;
+			}
+			return true;
+		}
+	}
+
+	void Select::findTyped(const std::string& typed) {
+		// About as long as anyone pauses inside a word and shorter than anyone waits
+		// between two -- the same second most list boxes on most systems settled on.
+		constexpr float kFindPause = 1.0f;
+		if (mFindAge > kFindPause) mFind.clear();
+		mFindAge = 0.0f;
+
+		// A space that would start a search is the key that opens the list, and arrives as
+		// a character as well; inside a search it is part of what is being looked for.
+		const std::string_view add = (mFind.empty() && typed == " ") ? std::string_view{} : typed;
+		if (add.empty()) return;
+		mFind += add;
+
+		const int options = static_cast<int>(choiceCount());
+		if (options <= 0) return;
+
+		// Shut, the search starts from what is chosen, the way it would have opened from
+		// the keyboard -- so B on a list showing "Bucharest" goes to the next B.
+		if (!mOpen) {
+			mHighlight = -1;
+			for (int at = 0; at < options; ++at) {
+				std::string_view text, oneValue;
+				if (choiceAt(static_cast<size_t>(at), text, oneValue) && oneValue == value) {
+					mHighlight = at;
+					break;
+				}
+			}
+		}
+
+		// The same letter again and again steps through everything starting with it, which
+		// is how a long list of names is walked by its initial. Anything else narrows: it
+		// looks from the row already found, so typing more of a word stays on that word.
+		bool repeated = mFind.size() > 1;
+		for (char c : mFind) if (foldCase(c) != foldCase(mFind[0])) { repeated = false; break; }
+		const std::string_view prefix = repeated ? std::string_view(mFind).substr(0, 1)
+		                                         : std::string_view(mFind);
+		const int from = (mHighlight < 0) ? 0
+		               : (repeated || mFind.size() == 1) ? mHighlight + 1 : mHighlight;
+
+		for (int step = 0; step < options; ++step) {
+			const int at = (from + step) % options;
+			std::string_view text, ignored;
+			if (!choiceAt(static_cast<size_t>(at), text, ignored)) continue;
+			if (!startsWithFolded(text, prefix)) continue;
+			mHighlight = at;
+			mOpen = true;
+			return;
+		}
+		// Nothing starts with that. Left where it was rather than jumping somewhere
+		// arbitrary, and the letters stay until the pause, so a typo has to be waited out
+		// -- which is what every list box does, and what readers already expect.
 	}
 
 	// What Enter does with the row the keyboard is on. Written once and called from the
@@ -1799,6 +2023,21 @@ namespace RDA {
 			std::string_view oneText, oneValue;
 			if (!choiceAt(index, oneText, oneValue)) continue;
 			const Rect row{ list.x, y, list.w, rowHeight };
+			// Each choice, for a screen reader, while the list is open: an item under the
+			// dropdown, chosen if it is the one chosen, and -- if the arrows have put the
+			// highlight on it -- where the reader is, so each arrow is read out as it moves.
+			if (!closing && gui.accessibilityWanted()) {
+				AccessibleInfo option;
+				option.role = AccessibleRole::ListItem;
+				option.name.assign(oneText);
+				option.selected = (oneValue == value) ? 1 : 0;
+				option.focusable = true;
+				option.actions = kCanSelect | kCanInvoke;
+				const uint32_t optionId = gui.widgetId(mId.c_str()) ^ (static_cast<uint32_t>(index + 1) * 2246822519u);
+				gui.noteAccessibleItem(this, optionId, static_cast<int>(index), nullptr, row, option,
+				                       mId + "#" + std::to_string(index),
+				                       static_cast<int>(index) == mHighlight);
+			}
 			// The keyboard's row looks exactly like the pointer's: there is one
 			// highlight in a list, however the reader is moving it.
 			const bool over = row.contains(gui.input().pointer) ||
@@ -2005,6 +2244,66 @@ namespace RDA {
 		}
 	}
 
+	void Viewport::trackPointer(Gui& gui, const Rect& area) {
+		const GuiInput& in = gui.input();
+
+		// Only what can be seen takes the pointer. Inside a scroll view the rest of the
+		// viewport is clipped away, and a press on the bar or a sibling drawn over that
+		// part must not land here.
+		const Rect clip = gui.currentClipRect();
+		const float x0 = (std::max)(area.x, clip.x), y0 = (std::max)(area.y, clip.y);
+		const float x1 = (std::min)(area.x + area.w, clip.x + clip.w);
+		const float y1 = (std::min)(area.y + area.h, clip.y + clip.h);
+		const Rect visible{ x0, y0, (std::max)(0.0f, x1 - x0), (std::max)(0.0f, y1 - y0) };
+		const Gui::PointerArea hit = gui.pointerArea(mId.c_str(), visible);
+
+		auto bits = [](bool left, bool right, bool middle) -> uint32_t {
+			return (left ? 1u : 0u) | (right ? 2u : 0u) | (middle ? 4u : 0u);
+		};
+		const uint32_t down = bits(in.lDown, in.rDown, in.mDown);
+
+		ViewportEvent event;
+		event.hasPointer = true;
+		event.x = in.pointer.x - area.x;
+		event.y = in.pointer.y - area.y;
+		event.hasSize = true;
+		event.width = area.w;
+		event.height = area.h;
+		event.inside = hit.hot;
+		event.mods = (in.shift ? 1u : 0u) | (in.ctrl ? 2u : 0u) | (in.alt ? 4u : 0u);
+		if (hit.hot) {
+			event.pressed = bits(in.lPressed, in.rPressed, in.mPressed);
+			if (event.pressed) event.clicks = in.clickCount;
+			// The wheel is the viewport's while somebody listens, ahead of a scroll view
+			// around it that would otherwise take it first -- a graph that zooms must not
+			// also scroll the page it is on.
+			if (in.scroll != 0.0f && !gui.scrollConsumed()) {
+				event.wheel = in.scroll;
+				gui.consumeScroll();
+			}
+		}
+
+		// A button belongs to this viewport from the press over it until it comes up,
+		// wherever the pointer is by then. A press and its release can land in one frame;
+		// that is a button that is tracked and is not down, which is a release.
+		const uint32_t tracked = mButtons | event.pressed;
+		event.released = tracked & ~down;
+		if (mButtons) {
+			event.dx = in.pointer.x - mLastPointer.x;
+			event.dy = in.pointer.y - mLastPointer.y;
+		}
+		mButtons = tracked & down;
+		event.held = mButtons;
+
+		const bool moved = in.pointer != mLastPointer;
+		const bool worthSaying = event.pressed || event.released || event.wheel != 0.0f ||
+		                         event.dx != 0.0f || event.dy != 0.0f ||
+		                         event.inside != mWasInside || (event.inside && moved);
+		mLastPointer = in.pointer;
+		mWasInside = event.inside;
+		if (worthSaying) viewports().events().report(name, event);
+	}
+
 	void Viewport::paint(Gui& gui, glm::vec2 origin) {
 		// With an explicit size use it; otherwise fill the container body (the clip rect).
 		const bool legacyFill = !mArrangedValid && rect.w <= 0.0f && rect.h <= 0.0f &&
@@ -2013,6 +2312,7 @@ namespace RDA {
 
 		Viewports& all = viewports();
 		all.reportPlacement(name, area); // the size a backend lays its drawing out to
+		if (all.listening(name)) trackPointer(gui, area);
 
 		if (const std::vector<DrawCommand>* commands = all.commands(name)) {
 			paintCommands(gui, area, *commands);
@@ -2035,5 +2335,199 @@ namespace RDA {
 
 		// A second viewport, with nothing of its own to draw.
 		gui.drawRect(area, rgba(18, 20, 26));
+	}
+
+	// ---- what each widget tells a screen reader -------------------------------------------
+	//
+	// One function per widget, saying what it is in the words it already has: a button is
+	// called what it says, a checkbox what its label says. `alt` wins wherever it is given,
+	// and is the only name a widget with no words of its own -- a slider, a picture -- has.
+
+	namespace {
+		// A number a screen reader sent, or false for one that is not.
+		bool readNumber(const std::string& text, double& out) {
+			try {
+				size_t used = 0;
+				out = std::stod(text, &used);
+				return used > 0;
+			} catch (...) {
+				return false;
+			}
+		}
+		const std::string& either(const std::string& first, const std::string& second) {
+			return first.empty() ? second : first;
+		}
+	}
+
+	bool Widget::describe(AccessibleInfo& out) const {
+		// A container is a node only when somebody named it. Otherwise it is layout, and
+		// what is inside it belongs to whatever is around it.
+		if (alt.empty()) return false;
+		out.role = AccessibleRole::Group;
+		out.name = alt;
+		return true;
+	}
+
+	bool Label::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::Text;
+		out.name = either(alt, text);
+		return !out.name.empty();
+	}
+
+	bool Button::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::Button;
+		out.name = !alt.empty() ? alt : (!text.empty() ? text : dragLabel());
+		out.focusable = true;
+		out.actions = kCanInvoke;
+		return true;
+	}
+	void Button::accessibleAction(AccessibleAction action, const std::string& value) {
+		(void)value;
+		if (action == AccessibleAction::Invoke) pressShortcut();
+	}
+
+	bool Checkbox::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::CheckBox;
+		out.name = either(alt, label);
+		out.focusable = true;
+		out.toggled = value ? 1 : 0;
+		out.actions = kCanToggle | kCanInvoke;
+		return true;
+	}
+	void Checkbox::accessibleAction(AccessibleAction action, const std::string& value) {
+		(void)value;
+		if (action == AccessibleAction::Toggle || action == AccessibleAction::Invoke) pressShortcut();
+	}
+
+	bool Slider::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::Slider;
+		out.name = alt;
+		out.focusable = true;
+		out.hasRange = true;
+		out.rangeMin = minValue;
+		out.rangeMax = maxValue;
+		out.rangeValue = value;
+		// What the arrow keys move it by, which is what a screen reader's own step should be.
+		out.rangeStep = (maxValue - minValue) / 20.0;
+		out.actions = kCanSetValue;
+		return true;
+	}
+	void Slider::accessibleAction(AccessibleAction action, const std::string& text) {
+		double wanted = 0.0;
+		if (action != AccessibleAction::SetValue || !readNumber(text, wanted)) return;
+		const float clamped = std::clamp(static_cast<float>(wanted), (std::min)(minValue, maxValue),
+		                                 (std::max)(minValue, maxValue));
+		if (clamped == value) return;
+		value = clamped;
+		if (onChange) onChange(value);
+	}
+
+	bool NumberField::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::Edit;
+		out.name = either(alt, label);
+		out.value = numberText(value, decimals);
+		out.focusable = true;
+		out.actions = kCanSetValue;
+		if (maxValue != minValue) {
+			out.hasRange = true;
+			out.rangeMin = minValue;
+			out.rangeMax = maxValue;
+			out.rangeValue = value;
+			out.rangeStep = step;
+		}
+		return true;
+	}
+	void NumberField::accessibleAction(AccessibleAction action, const std::string& text) {
+		double wanted = 0.0;
+		if (action != AccessibleAction::SetValue || !readNumber(text, wanted)) return;
+		if (maxValue != minValue) wanted = std::clamp(wanted, (std::min)(minValue, maxValue),
+		                                              (std::max)(minValue, maxValue));
+		if (wanted == value) return;
+		value = wanted;
+		if (onChange) onChange(value);
+	}
+
+	bool TextField::describe(AccessibleInfo& out) const {
+		out.role = (style.mode == TextFieldMode::Line) ? AccessibleRole::Edit : AccessibleRole::Document;
+		out.name = either(alt, mPlaceholder);
+		out.value = mText;
+		out.focusable = true;
+		out.readOnly = style.readOnly;
+		if (!style.readOnly) out.actions = kCanSetValue;
+		return true;
+	}
+	void TextField::accessibleAction(AccessibleAction action, const std::string& text) {
+		if (action != AccessibleAction::SetValue || style.readOnly || text == mText) return;
+		setText(text);
+		if (onChange) onChange(mText);
+	}
+
+	bool Select::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::ComboBox;
+		out.name = alt;
+		const size_t count = choiceCount();
+		for (size_t i = 0; i < count; ++i) {
+			std::string_view text, oneValue;
+			if (choiceAt(i, text, oneValue) && oneValue == value) { out.value.assign(text); break; }
+		}
+		out.focusable = true;
+		out.expanded = mOpen ? 1 : 0;
+		out.actions = kCanExpand | kCanSetValue;
+		return true;
+	}
+	void Select::accessibleAction(AccessibleAction action, const std::string& wanted) {
+		if (action == AccessibleAction::Expand)   { mOpen = true; return; }
+		if (action == AccessibleAction::Collapse) { mOpen = false; mHighlight = -1; return; }
+		if (action != AccessibleAction::SetValue) return;
+		// By what a choice says or by what it means, whichever matches -- a screen reader
+		// sends the words it read out.
+		const size_t count = choiceCount();
+		for (size_t i = 0; i < count; ++i) {
+			std::string_view text, oneValue;
+			if (!choiceAt(i, text, oneValue)) continue;
+			if (text != wanted && oneValue != wanted) continue;
+			if (value != oneValue) {
+				value.assign(oneValue);
+				if (onChange) onChange(value);
+			}
+			return;
+		}
+	}
+
+	void Select::accessibleItemAction(int item, AccessibleAction action, const std::string& text) {
+		(void)text;
+		if (action != AccessibleAction::Select && action != AccessibleAction::Invoke) return;
+		// Chosen from outside the way Enter chooses the highlighted row: the value, the
+		// handler, and the list shut.
+		mHighlight = item;
+		chooseHighlighted();
+	}
+
+	bool Tabs::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::TabList;
+		out.name = alt;
+		return true;
+	}
+	void Tabs::accessibleItemAction(int item, AccessibleAction action, const std::string& text) {
+		(void)text;
+		if (action != AccessibleAction::Select && action != AccessibleAction::Invoke) return;
+		if (item == value) return;
+		value = item;
+		if (onChange) onChange(item);
+	}
+
+	bool Image::describe(AccessibleInfo& out) const {
+		// A picture nobody described is decoration, and a screen reader saying "image"
+		// at every icon is noise rather than help.
+		if (alt.empty()) return false;
+		out.role = AccessibleRole::Image;
+		out.name = alt;
+		return true;
+	}
+
+	bool Popup::describe(AccessibleInfo& out) const {
+		out.role = AccessibleRole::Menu;
+		out.name = alt;
+		return true;
 	}
 }

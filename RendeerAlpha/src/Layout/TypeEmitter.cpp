@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
@@ -89,6 +90,7 @@ namespace RDA::Layout {
 			case PropType::Number:  return "number";
 			case PropType::Bool:    return "boolean";
 			case PropType::Size:    return "RdaSize";
+			case PropType::Chord:   return "RdaChord";
 			case PropType::Enum:    return unionFromList(prop.values);
 			case PropType::Align:   return alignUnion(prop.values);
 			case PropType::Variant:
@@ -115,6 +117,12 @@ namespace RDA::Layout {
 			// RdaVariantBound in the preamble for why.
 			else if (prop.type == PropType::Variant)
 				out << "RdaVariantBound<" << typeExpression(prop) << ">";
+			// The same bargain, for the same reason: a constant chord is checked, and a
+			// bound one comes out of a text signal -- a keymap the application keeps --
+			// which nothing at build time can see into. The loader reports one that does
+			// not parse.
+			else if (prop.type == PropType::Chord)
+				out << typeExpression(prop) << " | (() => string)";
 			else out << "RdaBound<" << typeExpression(prop) << ">";
 			out << ";\n";
 		}
@@ -170,6 +178,31 @@ namespace RDA::Layout {
 		       "\t| `content${\"+\" | \"-\"}${number}`\n"
 		       "\t| `fill${\"+\" | \"-\"}${number}`\n"
 		       "\t| `fill:${number}${\"+\" | \"-\"}${number}`;\n\n";
+
+		// Spelled out rather than left a string, so "Ctrl+Shfit+P" is an error where it is
+		// written instead of a warning when it loads. Up to three modifiers, which is every
+		// chord anyone presses on purpose -- and the cross product of a fourth would be a
+		// union big enough to slow every keystroke in the editor down.
+		out << "/** A key a shortcut can be made of. Letters are written in capitals. */\n"
+		       "type RdaKey =\n"
+		       "\t| \"A\" | \"B\" | \"C\" | \"D\" | \"E\" | \"F\" | \"G\" | \"H\" | \"I\" | \"J\" | \"K\" | \"L\" | \"M\"\n"
+		       "\t| \"N\" | \"O\" | \"P\" | \"Q\" | \"R\" | \"S\" | \"T\" | \"U\" | \"V\" | \"W\" | \"X\" | \"Y\" | \"Z\"\n"
+		       "\t| \"0\" | \"1\" | \"2\" | \"3\" | \"4\" | \"5\" | \"6\" | \"7\" | \"8\" | \"9\" | `F${number}`\n"
+		       "\t| \"Enter\" | \"Escape\" | \"Space\" | \"Tab\" | \"Backspace\" | \"Delete\" | \"Insert\"\n"
+		       "\t| \"Home\" | \"End\" | \"PageUp\" | \"PageDown\" | \"Up\" | \"Down\" | \"Left\" | \"Right\"\n"
+		       "\t| \"Plus\" | \"-\" | \"=\" | \",\" | \".\" | \"/\" | \";\" | \"'\" | \"`\" | \"[\" | \"]\" | \"\\\\\";\n\n"
+		       "/** A modifier. `Mod` is Ctrl -- the key this platform's shortcuts are made with. */\n"
+		       "type RdaModifier = \"Ctrl\" | \"Alt\" | \"Shift\" | \"Super\" | \"Mod\";\n\n"
+		       "/**\n"
+		       " * A key chord: `\"Ctrl+S\"`, `\"Ctrl+Shift+P\"`, `\"F5\"`. Pressing it does what\n"
+		       " * pressing the widget does. Tab and Shift+Tab alone are refused when the\n"
+		       " * layout loads: they move between widgets.\n"
+		       " */\n"
+		       "type RdaChord =\n"
+		       "\t| RdaKey\n"
+		       "\t| `${RdaModifier}+${RdaKey}`\n"
+		       "\t| `${RdaModifier}+${RdaModifier}+${RdaKey}`\n"
+		       "\t| `${RdaModifier}+${RdaModifier}+${RdaModifier}+${RdaKey}`;\n\n";
 
 		out << "/**\n"
 		       " * A property value: either a constant, or a binding that computes one.\n"
@@ -245,9 +278,9 @@ namespace RDA::Layout {
 		       " * window opened with no frame of its own gets buttons that do something.\n"
 		       " */\n"
 		       "interface RdaEngineState {\n"
-		       "\t/** the window's width in pixels, the same ones a widget is sized in */\n"
+		       "\t/** the window's width in layout units, the same ones a widget is sized in */\n"
 		       "\treadonly width: number;\n"
-		       "\t/** the window's height in pixels */\n"
+		       "\t/** the window's height in layout units */\n"
 		       "\treadonly height: number;\n"
 		       "\t/** whether the window fills the work area. Writable: setting it maximises or restores */\n"
 		       "\tmaximized: boolean;\n"
@@ -259,6 +292,10 @@ namespace RDA::Layout {
 		       "\treadonly focused: boolean;\n"
 		       "\t/** whether the window is open. Writing false closes it */\n"
 		       "\topen: boolean;\n"
+		       "\t/** whether something is being dragged in the interface */\n"
+		       "\treadonly dragging: boolean;\n"
+		       "\t/** the dragKind of what is being dragged; empty when nothing is */\n"
+		       "\treadonly dragKind: string;\n"
 		       "}\n\n";
 
 		if (state.ok && !state.empty()) {
@@ -270,8 +307,13 @@ namespace RDA::Layout {
 			       " */\n"
 			       "interface RdaState {\n";
 			for (const StateField& field : state.fields) {
-				if (!field.doc.empty()) out << "\t/** " << field.doc << " */\n";
-				out << "\t" << field.name << ": ";
+				if (!field.doc.empty() || field.computed) {
+					out << "\t/** " << field.doc << (field.doc.empty() || !field.computed ? "" : " -- ")
+					    << (field.computed ? "computed by state.ts; read-only" : "") << " */\n";
+				}
+				// Computed by state.ts: nothing else writes it, and the type says so where the
+				// assignment is written.
+				out << "\t" << (field.computed ? "readonly " : "") << field.name << ": ";
 				if (!field.choices.empty()) {
 					// A field that can only hold certain words is typed as those words, so
 					// `state.route = "setings"` is an error where it is written rather than
@@ -400,26 +442,129 @@ namespace RDA::Layout {
 			       "type RdaRow = Record<string, any>;\n\n";
 		}
 
+		// Tables as run-time code reads them: a function the layout defines may walk one --
+		// sum a column, find a row -- and gets the row type of the table it named.
+		out << "/**\n"
+		       " * A table as code that runs reads it: its rows in order, read where they\n"
+		       " * are rather than copied, and never written. A binding that reads one runs\n"
+		       " * again when the table changes.\n"
+		       " */\n"
+		       "interface RdaTable<Row> extends Iterable<Row> {\n"
+		       "\treadonly length: number;\n"
+		       "\tat(index: number): Row | undefined;\n"
+		       "\ttoArray(): Row[];\n"
+		       "\tforEach(fn: (row: Row, index: number) => void): void;\n"
+		       "\tmap<T>(fn: (row: Row, index: number) => T): T[];\n"
+		       "\tfilter(fn: (row: Row, index: number) => unknown): Row[];\n"
+		       "\tfind(fn: (row: Row, index: number) => unknown): Row | undefined;\n"
+		       "\tfindIndex(fn: (row: Row, index: number) => unknown): number;\n"
+		       "\tsome(fn: (row: Row, index: number) => unknown): boolean;\n"
+		       "\tevery(fn: (row: Row, index: number) => unknown): boolean;\n"
+		       "\treduce<T>(fn: (total: T, row: Row, index: number) => T, start: T): T;\n"
+		       "}\n\n";
+		if (state.ok && !state.tables.empty()) {
+			out << "/** The tables " << statePath << " declares, for code that runs. */\n"
+			       "declare const tables: {\n";
+			for (const StateTable& table : state.tables) {
+				if (!table.doc.empty()) out << "\t/** " << table.doc << " */\n";
+				out << "\treadonly " << table.name << ": RdaTable<" << rowTypeName(table.name) << ">;\n";
+			}
+			out << "};\n\n";
+		} else {
+			out << "/** No table is declared, so there is none to read. */\n"
+			       "declare const tables: {};\n\n";
+		}
+
 		// Commands are declared only when there are some. A layout that calls one nothing
 		// declared is then a type error naming an undefined `commands`, which is the same
 		// answer the compiler gives and better than a loosely typed object that accepts
 		// anything and fails at run time.
 		if (state.ok && !state.commands.empty()) {
+			// An action's signature is its function's, which TypeScript knows and nothing here
+			// does -- so it is read from state.ts itself, through an import type.
+			bool anyAction = false;
+			for (const StateCommand& command : state.commands) anyAction = anyAction || command.action;
+			if (anyAction) {
+				std::string from = statePath;
+				std::error_code ec;
+				const std::filesystem::path base = std::filesystem::path(outputPath).parent_path();
+				const std::filesystem::path relative = std::filesystem::absolute(statePath, ec)
+					.lexically_relative(std::filesystem::absolute(base.empty() ? "." : base, ec));
+				if (!relative.empty()) from = relative.generic_string();
+				const size_t dot = from.rfind('.');
+				if (dot != std::string::npos && from.find('/', dot) == std::string::npos) from.resize(dot);
+				if (from.rfind("../", 0) != 0 && from.rfind("./", 0) != 0) from = "./" + from;
+				out << "/** state.ts, as TypeScript sees it: where an action's signature comes from. */\n"
+				       "type RdaStateModule = typeof import(\"" << from << "\");\n"
+				       "type RdaActionOf<D> = D extends { run: infer F extends (...args: any[]) => any } ? F\n"
+				       "\t: D extends (...args: any[]) => any ? D : (...args: any[]) => unknown;\n\n";
+			}
 			out << "/**\n"
 			       " * Work the application can be asked to do, from " << statePath << ".\n"
 			       " *\n"
 			       " * Only callable from an event handler -- a value binding is evaluated\n"
-			       " * whenever the interface is drawn, and a command changes something. They\n"
-			       " * take no arguments: write what one needs into state first.\n"
+			       " * whenever the interface is drawn, and a command changes something. What\n"
+			       " * one is called with travels with it: what the event meant, as the\n"
+			       " * declaration's `params` say. One state.ts answers -- an action -- takes\n"
+			       " * what its function takes, and returns what it returns.\n"
 			       " */\n"
 			       "interface RdaCommands {\n";
 			for (const StateCommand& command : state.commands) {
-				if (!command.doc.empty()) out << "\t/** " << command.doc << " */\n";
-				out << "\t" << command.name << "(): void;\n";
+				if (!command.doc.empty() || command.action) {
+					out << "\t/** " << command.doc << (command.doc.empty() || !command.action ? "" : " -- ")
+					    << (command.action ? "answered by state.ts" : "") << " */\n";
+				}
+				if (command.action) {
+					out << "\t" << command.name << ": RdaActionOf<RdaStateModule[\"commands\"][\""
+					    << command.name << "\"]>;\n";
+					continue;
+				}
+				out << "\t" << command.name << "(";
+				for (size_t i = 0; i < command.params.size(); ++i) {
+					const StateField& param = command.params[i];
+					if (i) out << ", ";
+					out << param.name << ": ";
+					switch (param.type) {
+					case StateType::Number: out << "number"; break;
+					case StateType::Bool:   out << "boolean"; break;
+					case StateType::Text:   out << "string"; break;
+					}
+				}
+				out << "): void;\n";
 			}
 			out << "}\n\n"
 			       "declare const commands: RdaCommands;\n\n";
 		}
+
+		// What state.ts is written with. Declared whatever the state says, because they are
+		// for writing state.ts in the first place: identities as far as the build cares,
+		// typed so that code in state.ts reads `state`, `tables` and `commands` as they are
+		// when it runs rather than as they were declared.
+		out << "/**\n"
+		       " * In state.ts: wraps the state declaration so that code in the file -- a\n"
+		       " * `compute`, a command's `run` -- reads `state` as it is when it runs, every\n"
+		       " * field its value. Changes nothing that is built; it is for the editor.\n"
+		       " *\n"
+		       " *     export const state = defineState({\n"
+		       " *       price: 0,\n"
+		       " *       total: { compute: () => state.price * 2 },\n"
+		       " *     })\n"
+		       " */\n"
+		       "declare function defineState<T>(declaration: T): RdaLive<T>;\n"
+		       "/** In state.ts: the same for tables, which code there reads row by row. */\n"
+		       "declare function defineTables<T>(declaration: T): { readonly [K in keyof T]: RdaTable<RdaLive<T[K]>> };\n"
+		       "/**\n"
+		       " * In state.ts: the same for commands, so code there can call one -- an\n"
+		       " * action with its own function's signature.\n"
+		       " */\n"
+		       "declare function defineCommands<T>(declaration: T & { [K in keyof T]: string | RdaCommandDeclaration }): RdaCallable<T>;\n"
+		       "type RdaLive<T> = { [K in keyof T]:\n"
+		       "\tT[K] extends { compute: () => infer R } ? R :\n"
+		       "\tT[K] extends { value: infer V } ? V : T[K] };\n"
+		       "/** A command, declared: { doc, params } for the backend's, { doc, run } for state.ts's. */\n"
+		       "type RdaCommandDeclaration = { doc?: string; params?: Record<string, unknown>; run?: (...args: any[]) => unknown };\n"
+		       "type RdaCallable<T> = { [K in keyof T]:\n"
+		       "\tT[K] extends { run: infer F extends (...args: any[]) => any } ? F : (...args: any[]) => void };\n\n";
 
 		out << "/**\n"
 		       " * Declares a signal this layout owns: a panel being open, which tab is\n"
@@ -461,6 +606,71 @@ namespace RDA::Layout {
 		       "declare function darken(colour: string, amount: number): string;\n"
 		       "/** The alpha of a colour, 0 to 1. */\n"
 		       "declare function alphaOf(colour: string): number;\n\n";
+
+		// What QuickJS lacks and an interface wants: formatting, and timers. Both exist at run
+		// time only in a module whose code names them; `format` exists while building too.
+		out << "/** Options every number-shaped format takes. */\n"
+		       "interface RdaNumberFormat {\n"
+		       "\t/** Exactly this many decimals. Left out, up to three, with trailing zeros dropped. */\n"
+		       "\tdecimals?: number;\n"
+		       "\t/** Group the whole part in thousands. On unless false. */\n"
+		       "\tgrouping?: boolean;\n"
+		       "\t/** What separates the groups; \",\" unless given. */\n"
+		       "\tgroup?: string;\n"
+		       "\t/** What separates the decimals; \".\" unless given. */\n"
+		       "\tpoint?: string;\n"
+		       "\t/** A + in front of a positive number. */\n"
+		       "\tsign?: boolean;\n"
+		       "}\n\n"
+		       "/** How a date is written, for names that are not English. */\n"
+		       "interface RdaDateFormat {\n"
+		       "\t/** In UTC rather than local time. */\n"
+		       "\tutc?: boolean;\n"
+		       "\t/** Twelve month names, January first. */\n"
+		       "\tmonths?: string[];\n"
+		       "\t/** Seven day names, Sunday first. */\n"
+		       "\tdays?: string[];\n"
+		       "\tam?: string;\n"
+		       "\tpm?: string;\n"
+		       "}\n\n"
+		       "/**\n"
+		       " * Formatting, because QuickJS has no Intl and toLocaleString is not much use.\n"
+		       " * The same code at build time and at run time.\n"
+		       " */\n"
+		       "interface RdaFormatters {\n"
+		       "\t/** 1234567.891 -> \"1,234,567.891\". */\n"
+		       "\tnumber(value: number, options?: RdaNumberFormat): string;\n"
+		       "\t/** 0.256 -> \"26%\". A fraction of one; no decimals unless asked. */\n"
+		       "\tpercent(fraction: number, options?: RdaNumberFormat): string;\n"
+		       "\t/** 1536 -> \"1.5 KB\". Kilo is 1024 unless { si: true }. */\n"
+		       "\tbytes(count: number, options?: { decimals?: number; si?: boolean }): string;\n"
+		       "\t/** 3723000 -> \"1:02:03\", or \"1h 2m\" with { style: \"short\" }. Milliseconds. */\n"
+		       "\tduration(milliseconds: number, options?: { style?: \"clock\" | \"short\" }): string;\n"
+		       "\t/**\n"
+		       "\t * A date by pattern: yyyy yy, M MM MMM MMMM, d dd, E EEE EEEE, H HH, h hh, m mm,\n"
+		       "\t * s ss, S SSS, a, and 'quoted text'. \"yyyy-MM-dd HH:mm\" unless given. Local time.\n"
+		       "\t */\n"
+		       "\tdate(when: number | string | Date, pattern?: string, options?: RdaDateFormat): string;\n"
+		       "\t/**\n"
+		       "\t * \"just now\", \"5 minutes ago\", \"in 2 hours\", \"yesterday\" -- against now\n"
+		       "\t * unless given. Worked out when the binding runs; read a signal a timer moves to\n"
+		       "\t * keep it current.\n"
+		       "\t */\n"
+		       "\trelative(when: number | string | Date, now?: number | string | Date): string;\n"
+		       "}\n\n"
+		       "declare const format: RdaFormatters;\n\n"
+		       "/**\n"
+		       " * Timers, on the frame clock: a callback goes off on the loop thread at the first\n"
+		       " * frame at or after its time, as a handler does -- it may write state and call\n"
+		       " * commands. Only from a handler, an action or what they call: a value binding\n"
+		       " * and a computed value cannot start one. A timer goes when the layout or state.ts\n"
+		       " * that started it is unloaded or reloaded.\n"
+		       " */\n"
+		       "declare function setTimeout<A extends any[]>(handler: (...args: A) => void, ms?: number, ...args: A): number;\n"
+		       "/** As setTimeout, again every `ms` -- once a frame at most. */\n"
+		       "declare function setInterval<A extends any[]>(handler: (...args: A) => void, ms?: number, ...args: A): number;\n"
+		       "declare function clearTimeout(id: number | undefined): void;\n"
+		       "declare function clearInterval(id: number | undefined): void;\n\n";
 
 		out << "/** A function that returns one element: <Card title=\"x\" />.\n"
 		       " *\n"
@@ -607,7 +817,7 @@ namespace RDA::Layout {
 			}
 			out << " & {\n";
 			for (size_t p = 0; p < widget.propCount; ++p) writeProp(out, widget.props[p], "\t\t\t");
-			if (std::string(widget.name) == "list") {
+			if (std::string(widget.name) == "list" || std::string(widget.name) == "tree") {
 				// Not in the widget schema because it is not a property: it is called once
 				// when the layout is compiled, and what it returns becomes the template.
 				// A function so that `item` is a real parameter with a real type.

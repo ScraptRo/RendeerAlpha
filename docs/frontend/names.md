@@ -37,12 +37,17 @@ application supplies what it is.
 <button text="Save" onClick={() => commands.save()} />
 ```
 
-Declared in `res/state.ts`, so a command that does not exist does not compile. Commands
-take no arguments — write what one needs into state first, in the same handler:
+Declared in `res/state.ts`, so a command that does not exist does not compile. What one
+needs travels with it, as its arguments -- declared by example in its `params`, and typed in
+the editor from them:
 
 ```tsx
-onClick={() => { state.exportPath = "out.csv"; commands.exportAll() }}
+onClick={() => commands.exportAll("out.csv")}
+onClick={() => commands.rename(item.id, state.draft)}
 ```
+
+A command state.ts answers itself -- an action -- is called the same way, and returns what
+its function returns. See [functions](functions.md#in-statets-computed-values-and-actions).
 
 ## `row`, inside a `<list>`
 

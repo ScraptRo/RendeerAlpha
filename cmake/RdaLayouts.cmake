@@ -97,6 +97,13 @@ function(rda_add_layouts target)
 		return()
 	endif()
 
+	# RDA_RUNTIME_CODE off: a layout that would need a function at run time is a build
+	# error rather than a blueprint carrying bytecode.
+	set(runtime_flag "")
+	if(DEFINED RDA_RUNTIME_CODE AND NOT RDA_RUNTIME_CODE)
+		set(runtime_flag "--no-runtime-code")
+	endif()
+
 	set(outputs "")
 	foreach(source IN LISTS ARGN)
 		get_filename_component(absolute "${source}" ABSOLUTE)
@@ -106,7 +113,7 @@ function(rda_add_layouts target)
 
 		add_custom_command(
 			OUTPUT  "${blueprint}"
-			COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> layout "${absolute}" "${blueprint}"
+			COMMAND ${RDA_TOOL_ENV} $<TARGET_FILE:rda> layout ${runtime_flag} "${absolute}" "${blueprint}"
 			DEPENDS "${absolute}" rda
 			COMMENT "Compiling layout ${stem}.tsx"
 			VERBATIM

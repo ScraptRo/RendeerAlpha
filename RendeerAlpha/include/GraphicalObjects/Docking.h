@@ -80,6 +80,7 @@ namespace RDA {
 	public:
 		DockContainer(std::string id, std::string title)
 			: Widget(std::move(id)), title(std::move(title)) {}
+		bool describe(AccessibleInfo& out) const override;
 
 		std::string title;
 		// Which dock style draws this panel's tab and title bar. The space's own chrome
@@ -325,6 +326,11 @@ namespace RDA {
 		DockContainer* mPressTab = nullptr;      // a tab pressed, maybe about to detach
 		glm::vec2      mPressPos{ 0.0f };
 		glm::vec2      mDragOffset{ 0.0f };
+		// Where a floating panel was taken hold of, and whether it has gone anywhere since.
+		// Until it has, a release is a click on its bar -- which brings it to the front and
+		// must not also drop it into whatever pane happens to be underneath.
+		glm::vec2      mDragFrom{ 0.0f };
+		bool           mDragTravelled = false;
 	};
 
 	// A dock space as a widget: docking scoped to a rectangle instead of to the window.

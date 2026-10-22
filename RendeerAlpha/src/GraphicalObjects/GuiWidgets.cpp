@@ -28,7 +28,7 @@ namespace RDA {
 		uint32_t wid = scopedId(id);
 		bool inside = rect.contains(mInput.pointer);
 		if (inside) mHot = wid;
-		if (mHot == wid && mInput.lPressed) mActive = wid;
+		if (mHot == wid && mInput.lPressed) { mActive = wid; mClickPress = wid; }
 
 		bool clicked = false;
 		if (mActive == wid && mInput.lReleased) {
@@ -107,6 +107,19 @@ namespace RDA {
 	}
 
 	// ---- splitter -------------------------------------------------------------------
+	Gui::PointerArea Gui::pointerArea(const char* id, const Rect& rect) {
+		const uint32_t wid = scopedId(id);
+		if (rect.contains(mInput.pointer)) mHot = wid;
+		const bool hot = (mHot == wid);
+		const bool anyPressed = mInput.lPressed || mInput.rPressed || mInput.mPressed;
+		if (hot && anyPressed) mActive = wid;
+
+		const bool held = (mActive == wid);
+		const bool anyDown = mInput.lDown || mInput.rDown || mInput.mDown;
+		if (held && !anyDown) mActive = 0;
+		return { hot, held };
+	}
+
 	bool Gui::splitter(const char* id, float& size, float minSize, float maxSize,
 	                   const Rect& rect, bool vertical) {
 		uint32_t wid = scopedId(id);
@@ -392,6 +405,9 @@ namespace RDA {
 		focusable(wid, rect);
 		bool focused = (mFocused == wid);
 		if (outFocused) *outFocused = focused;
+		// Read-only too: it still moves a caret and selects with the arrows, and still
+		// copies with Ctrl+C.
+		if (focused) mTextFocus = true;
 
 		// --- editing ---
 		// A reference to the frame-scoped flag, so what the edits below report is still
@@ -930,7 +946,88 @@ namespace RDA {
 				addText(gx, gy + mFont->ascent(), oneLine.c_str(), style.suggestion);
 			}
 
-			if (focused && caretAlpha > 0.004f) {
+			// For a screen reader: where the caret and the selection are, where each line
+			// starts, and where each character is on the lines on screen -- in characters,
+			// which is what a screen reader counts in. Only while one is listening.
+			if (mA11yThisFrame && mFont) {
+				AccessibleText info;
+				info.present = true;
+				// Bytes to characters, once, in one pass: every offset asked for below is
+				// a byte offset this walk passes.
+				std::vector<int> charAt(text.size() + 1, 0);
+				int characters = 0;
+				for (size_t b = 0; b < text.size(); ++b) {
+					charAt[b] = characters;
+					if ((static_cast<unsigned char>(text[b]) & 0xC0) != 0x80) ++characters;
+				}
+				charAt[text.size()] = characters;
+				auto chars = [&](int bytes) { return charAt[static_cast<size_t>(std::clamp(bytes, 0, static_cast<int>(text.size())))]; };
+				info.caret = chars(st.caret);
+				info.anchor = st.selectAnchor >= 0 ? chars(st.selectAnchor) : info.caret;
+				info.lineStarts.reserve(starts.size());
+				for (const int start : starts) info.lineStarts.push_back(chars(start));
+				const int firstShown = (std::max)(0, static_cast<int>(st.scrollY / lineH));
+				const int lastShown = (std::min)(lineCount - 1, firstShown + static_cast<int>(rect.h / lineH) + 1);
+				for (int ln = firstShown; ln <= lastShown; ++ln) {
+					AccessibleText::Line line;
+					line.first = chars(starts[static_cast<size_t>(ln)]);
+					line.y = contentTop + static_cast<float>(ln) * lineH - st.scrollY;
+					line.h = lineH;
+					float x = contentLeft - st.scrollX;
+					line.x.push_back(x);
+					const int begin = starts[static_cast<size_t>(ln)];
+					const int end = begin + lineLength(starts, text, ln);
+					for (int b = begin; b < end;) {
+						uint32_t cp = 0;
+						const size_t step = Utf8::decode(text.data() + b, text.data() + end, cp);
+						if (step == 0) break;
+						x += mFont->advance(cp);
+						line.x.push_back(x);
+						b += static_cast<int>(step);
+					}
+					info.lines.push_back(std::move(line));
+				}
+				noteAccessibleText(wid, std::move(info));
+			}
+
+			// Where the caret is, for an input method: its candidates open under this. The
+			// real caret rather than the eased one, so the list does not chase it.
+			if (focused) {
+				mTextEntry = true;
+				mTextCaret = Rect{ contentLeft + caretX - st.scrollX,
+				                   contentTop + static_cast<float>(caretLine) * lineH - st.scrollY,
+				                   style.caretWidth, lineH };
+			}
+
+			// What an input method is composing, which is not text yet: drawn over the field
+			// at the caret, underlined the way every system underlines it, with the method's
+			// own cursor inside it in place of the field's. Over rather than in, because it
+			// can still turn into anything -- splicing it into the text would move every line
+			// and wrap after it for a string that may be gone a keystroke later.
+			const bool composing = focused && !mInput.preedit.empty();
+			if (composing) {
+				const float px = contentLeft + caretX - st.scrollX;
+				const float py = contentTop + static_cast<float>(caretLine) * lineH - st.scrollY;
+				const float pw = measureText(mInput.preedit.c_str());
+				addRect({ px, py, pw + style.caretWidth, lineH }, style.background | 0xFF000000u);
+				addText(px, py + mFont->ascent(), mInput.preedit.c_str(), style.text);
+				addRect({ px, py + lineH - 2.0f, pw, 1.0f }, style.text);
+				// The method's cursor, in characters, turned into a width.
+				std::string before;
+				int left = mInput.preeditCaret;
+				for (size_t i = 0; i < mInput.preedit.size() && left > 0; --left) {
+					uint32_t cp = 0;
+					const size_t step = Utf8::decode(mInput.preedit.data() + i,
+					                                 mInput.preedit.data() + mInput.preedit.size(), cp);
+					if (step == 0) break;
+					before.append(mInput.preedit, i, step);
+					i += step;
+				}
+				const float at = px + measureText(before.c_str());
+				addRect({ at, py + 1.0f, style.caretWidth, lineH - 2.0f }, style.caret);
+			}
+
+			if (focused && !composing && caretAlpha > 0.004f) {
 				float cx = contentLeft + drawnCaretX - st.scrollX;
 				float cy = contentTop + drawnCaretY - st.scrollY;
 				addRect({ cx, cy + 1.0f, style.caretWidth, lineH - 2.0f },

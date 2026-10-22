@@ -8,7 +8,9 @@
 #include <GraphicalObjects/Input.h>
 #include <GraphicalObjects/Gui.h>
 #include <atomic>
+#include <memory>
 struct GLFWwindow;
+struct GLFWcursor;
 namespace RDA {
 	// A window owns its GLFW handle, the Vulkan surface, the swapchain, and a surface
 	// FrameBuffer built over that swapchain — its default render target. The renderer
@@ -32,6 +34,16 @@ namespace RDA {
 		// Held by value, so in an App build every window carries the whole interface
 		// layer. That is exactly why a Renderer build must not merely skip it, but omit it.
 		Gui mGui;
+		// What a screen reader is told, and who tells it. The bridge is shared because the
+		// platform layer's providers outlive a frame and may outlive the window; the host
+		// is detached before the window it hooks into is destroyed.
+		std::shared_ptr<AccessibleBridge>  mA11yBridge;
+		std::unique_ptr<class AccessibilityHost> mA11yHost;
+		AccessibleWindow mA11yWindowSeen;   // what the bridge was last told
+		// An input method's say in this window: on over a field, off elsewhere, its
+		// candidates at the caret. Attached after the accessibility host, detached before it,
+		// because both hook the same window procedure and each puts back what it found.
+		std::unique_ptr<class TextInputHost> mTextInput;
 
 		bool     mFramebufferResized = false;
 		bool     mShouldClose = false;
@@ -46,6 +58,27 @@ namespace RDA {
 		// `dragWindow` region is held. See followGrip.
 		bool   mGripping = false;
 		double mGripX = 0.0, mGripY = 0.0;
+		// A grip taken on a maximised window: it restores once the pointer has gone
+		// somewhere, under the pointer, and then carries on as an ordinary drag.
+		bool   mGripFromMaximized = false;
+		// The platform's frame, where it has one to lend (Windows): snapping, the layouts
+		// flyout, native edges. See Platform/WindowFrame.h.
+		std::unique_ptr<class WindowFrameHost> mFrame;
+
+
+		// An edge of a frameless window being dragged (see followEdges), and the window
+		// and the pointer, in screen coordinates, as they were when it was taken hold of.
+		uint8_t mResizeEdge = 0;
+		int     mResizeStartX = 0, mResizeStartY = 0, mResizeStartW = 0, mResizeStartH = 0;
+		double  mResizeFromX = 0.0, mResizeFromY = 0.0;
+		// The resize cursors, made the first time one is wanted, and which one is showing
+		// -- set on the change only. 0xFF is "never set", so the first frame sets one.
+		GLFWcursor* mCursorH = nullptr;
+		GLFWcursor* mCursorV = nullptr;
+		GLFWcursor* mCursorNWSE = nullptr;
+		GLFWcursor* mCursorNESW = nullptr;
+		uint8_t mCursorEdge = 0xFF;
+		void showEdgeCursor(uint8_t edge);
 		// Where a fullscreen window came from, so leaving it puts it back rather than
 		// leaving it the size of the monitor with a frame around it.
 		int mWindowedX = 0, mWindowedY = 0, mWindowedW = 0, mWindowedH = 0;
@@ -128,6 +161,30 @@ namespace RDA {
 		// it -- dragging one somewhere would leave it maximised and in the wrong place.
 		void followGrip(bool held);
 
+		// Resize a frameless window by its edges, the way a framed one is.
+		//
+		// Called every frame before the interface sees the pointer, with the left button's
+		// state and, on the frame it went down, where it went down -- in the window's
+		// cursor coordinates, as the pointer arrives. Where it *went down*, rather than
+		// where the pointer is by the frame that hears of it: a quick drag has already
+		// moved by then, and the edge would trail the hand by that much for the whole
+		// resize. A thin band inside the window's edges belongs to the window: over it the
+		// pointer shows which way it would resize, and a press there resizes until the
+		// button comes up. Returns true while the pointer is the window's -- over the band
+		// with nothing held, or resizing -- so the caller keeps it from the interface, and
+		// a button drawn at the very edge does not light up or click under a resize.
+		//
+		// Does nothing for a framed window (the OS does this), one that is not resizable,
+		// or one that is maximised or fullscreen, which have no edges to move.
+		bool followEdges(bool pressed, bool down, double pressX, double pressY);
+
+		// After the walk: tells the platform frame where the layout's maximise button is
+		// (see `maximizeButton`), whether the pointer is on a bare stretch of title bar,
+		// and how deep the resize band is. On Windows that is what offers snap layouts
+		// over the button, hands the bar to the OS's caption, and resizes natively.
+		void frameDone();
+
+
 		GLFWwindow*    getGLFW() const { return mWindow; }
 		VkSurfaceKHR   getSurface() const { return mSurface.Get(); }
 		Swapchain&     getSwapchain() { return mSwapchain; }
@@ -139,6 +196,13 @@ namespace RDA {
 		// interface layer to hand back, and calling this is meant to fail at compile
 		// time rather than hand out something inert.
 		Gui&           gui() { return mGui; }
+		// After the frame: let the screen reader know what changed. A no-op until one asks.
+		void           accessibilityFrameDone();
+		// After the frame: tell the input method whether a field has the keyboard, and where.
+		void           textInputFrameDone();
+		// Describe the interface whether or not a screen reader has asked -- for a tool
+		// that wants to read the tree itself.
+		void           describeForAccessibility() { if (mA11yBridge) mA11yBridge->want(); }
 		const WindowInfo& getInfo() const { return mInfo; }
 
 		static Window* getRefFromNode(stack_element&);

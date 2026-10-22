@@ -64,6 +64,12 @@ foreign thread, and the engine reaches a C# delegate **on its own loop thread**.
 handler is an ordinary delegate invoked inside the frame the interface asked in — which
 means it should be quick, and must not block on anything the loop is responsible for.
 
+A command declared with `params` takes a delegate typed from them --
+`Commands.rename((double id, string name) => ...)` -- so a handler with the wrong arguments
+is a build error. One state.ts answers takes `Action<JsonElement[]>`, called after the
+action. `Rda.Call("validate", "ABC-1234")` runs any command and returns its result as a
+`JsonElement`. A computed signal has `get` and no `set`.
+
 ## Threading
 
 `Init()` returns once the engine is up, so set-up is flat top-level code. Every call is

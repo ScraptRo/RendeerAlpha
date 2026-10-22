@@ -174,6 +174,27 @@ static class Check {
 		Refused("invoking a command nothing is bound to is refused", () => Rda.Invoke("unused"));
 		Refused("invoking a command that does not exist is refused", () => Rda.Invoke("nope"));
 
+		// ---- what state.ts computes and answers (ABI 1.8) ----
+		// A computed value has no setter here: assigning one is a build error, which is the
+		// refusal C# gets for free. The engine's own refusal is checked underneath it.
+		Console.WriteLine("state.ts's code");
+		State.count = 3;
+		Report("a computed value is current as soon as what it reads is", State.doubled, 6.0);
+		Refused("and the engine refuses a write to it", () => Engine.SetNumber("doubled", 1));
+		var renamed = new List<string>();
+		Commands.rename((id, name) => renamed.Add(id + " " + name));
+		Report("calling a backend's command returns null",
+			Rda.Call("rename", 5, "five \u00e9").ValueKind.ToString(), "Null");
+		Report("its arguments reach the handler, typed", renamed.Count == 1 ? renamed[0] : "", "5 five \u00e9");
+		Report("an action answers Call with its result", Rda.Call("add", 2).GetDouble(), 5.0);
+		Report("its writes landed", State.count, 5.0);
+		Report("and what they are computed into", State.doubled, 10.0);
+		var watched = new List<string>();
+		Commands.add(a => watched.Add(a[0].GetRawText()));
+		Rda.Call("add", 1);
+		Report("a backend that binds an action watches it", watched.Count == 1 ? watched[0] : "", "1");
+		Refused("calling a command that does not exist is refused", () => Rda.Call("nope"));
+
 		// ---- the window, the clipboard, and measuring (ABI 1.2) ----
 		Console.WriteLine("window and clipboard");
 		Rda.SetTitle("binding test \u2014 renamed");

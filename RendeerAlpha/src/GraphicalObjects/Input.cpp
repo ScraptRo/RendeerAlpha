@@ -39,6 +39,8 @@ namespace RDA {
 		mMousePrev = mMousePos;
 		mScroll = glm::vec2(0.0f);
 		mEvents.clear();
+		mDropped.clear();
+		mImeCommitted.clear();
 	}
 
 	// ---- GLFW trampoline entry points ---------------------------------------------
@@ -107,6 +109,7 @@ namespace RDA {
 		// event struct, and an application that misses the frame it landed on has lost
 		// the files. So it goes straight to whoever asked, and to the queue the C ABI
 		// drains at its own pace.
+		mDropped.insert(mDropped.end(), paths.begin(), paths.end());
 		if (mCallbacks.onFilesDropped) mCallbacks.onFilesDropped(paths);
 	}
 }

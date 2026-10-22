@@ -82,8 +82,49 @@ namespace RDA {
 			if (observer >= mQueued.size()) mQueued.resize(observer + 1, false);
 			if (mQueued[observer]) continue;
 			mQueued[observer] = true;
-			mDirty.push_back(observer);
+			if (observer < mEager.size() && mEager[observer]) mEagerQueue.push_back(observer);
+			else mDirty.push_back(observer);
 		}
+		runEager();
+	}
+
+	void Signals::setEager(ObserverId observer, bool eager) {
+		if (observer == kNoObserver) return;
+		if (observer >= mEager.size()) mEager.resize(observer + 1, false);
+		mEager[observer] = eager;
+	}
+
+	void Signals::runEager() {
+		// Only the outermost write runs the loop. A recompute writes its own signal, which
+		// lands back in markDirty; queuing there and returning keeps one loop, in order,
+		// instead of a recursion as deep as the chain of computed values.
+		if (mRunningEager || mEagerQueue.empty() || !mEagerHandler) return;
+		mRunningEager = true;
+		// Generous: a chain of computed values that settles takes one run each. Past this,
+		// two of them are changing each other, and stopping is the only way out.
+		constexpr size_t kMostRuns = 10000;
+		size_t runs = 0;
+		size_t next = 0;
+		while (next < mEagerQueue.size()) {
+			const ObserverId observer = mEagerQueue[next++];
+			if (observer == kNoObserver) continue;   // forgotten while it waited
+			if (observer < mQueued.size()) mQueued[observer] = false;
+			if (++runs > kMostRuns) {
+				RDA_LOG_ERROR("state: computed values keep changing each other and were stopped "
+				              "after " << kMostRuns << " recomputations -- one of them reads "
+				              "another that reads it back");
+				for (size_t i = next; i < mEagerQueue.size(); ++i)
+					if (mEagerQueue[i] < mQueued.size()) mQueued[mEagerQueue[i]] = false;
+				break;
+			}
+			mEagerHandler(observer);
+		}
+		mEagerQueue.clear();
+		mRunningEager = false;
+	}
+
+	void Signals::setComputed(uint32_t signal, bool computed) {
+		if (valid(signal)) mSignals[signal].computed = computed;
 	}
 
 	void Signals::set(uint32_t signal, double value) {
@@ -121,6 +162,12 @@ namespace RDA {
 		if (observer >= mQueued.size()) mQueued.resize(observer + 1, false);
 	}
 
+	void Signals::unobserve(uint32_t signal, ObserverId observer) {
+		if (!valid(signal)) return;
+		std::vector<ObserverId>& observers = mSignals[signal].observers;
+		observers.erase(std::remove(observers.begin(), observers.end(), observer), observers.end());
+	}
+
 	void Signals::forget(ObserverId observer) {
 		for (Signal& signal : mSignals) {
 			std::vector<ObserverId>& observers = signal.observers;
@@ -131,6 +178,10 @@ namespace RDA {
 		// exactly the use-after-free this is meant to prevent.
 		mDirty.erase(std::remove(mDirty.begin(), mDirty.end(), observer), mDirty.end());
 		if (observer < mQueued.size()) mQueued[observer] = false;
+		// And out of the eager queue, but by marking rather than erasing: the loop that
+		// runs it may be walking that queue further up the stack right now.
+		for (ObserverId& queued : mEagerQueue) if (queued == observer) queued = kNoObserver;
+		if (observer < mEager.size()) mEager[observer] = false;
 	}
 
 	void Signals::clearDirty() {
@@ -145,5 +196,7 @@ namespace RDA {
 		mByName.clear();
 		mDirty.clear();
 		mQueued.clear();
+		mEager.clear();
+		mEagerQueue.clear();
 	}
 }

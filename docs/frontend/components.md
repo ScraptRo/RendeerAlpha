@@ -30,7 +30,9 @@ Two things follow from that:
   component can wrap something reactive without knowing what it reads.
 - **A binding written inside a component still closes over nothing** — `props` included.
   `text={props.label}` works because it is substituted before there is an expression to
-  parse. `text={() => props.label}` does not, for exactly the reason `() => step` does not.
+  parse. `text={() => props.label}` does not, for exactly the reason `() => step` does not
+  when `step` is a local: a binding sees the file's top level, never the inside of the
+  function it was written in.
 
 An `id` given at the call site wins over the one the component gave its own root, which is
 what makes two of them two widgets rather than one name used twice.

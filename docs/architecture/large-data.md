@@ -140,16 +140,9 @@ driven by signals like any other, and goes on working as the row is reused.
 
 ### What it does not do yet
 
-- **Variable row heights.** Every row is `rowHeight` tall, which is what makes the visible
-  range fall out of the scroll offset with no search. Variable rows need a running total
-  maintained on every edit.
-- **A pool that grows.** `poolSize` defaults to 40 copies, built when the layout loads. A
-  taller view says so in the log rather than leaving a gap nobody can explain.
 - **Narrowing `item` across several tables.** With one table declared its type is exact.
   With several, `RdaRow` is a union and a template annotates its parameter, because the
   element cannot be generic over a string prop.
-- **Sorting and filtering.** The application owns the order. A view of indices into the
-  table is the natural next step.
 
 ---
 

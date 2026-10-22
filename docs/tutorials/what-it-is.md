@@ -1,6 +1,6 @@
 ## The idea
 
-RendeerAlpha is glue between an application’s backend and its interface. The interface is written in TypeScript with JSX and compiled **ahead of time** into a flat binary blueprint — a `.rdab` file. The program that loads that file contains no parser and no JavaScript engine: it reads a buffer and builds widgets.
+RendeerAlpha is glue between an application’s backend and its interface. The interface is written in TypeScript with JSX and compiled **ahead of time** into a flat binary blueprint — a `.rdab` file. The program that loads that file parses nothing: it reads a buffer and builds widgets, and the functions a layout defines arrive as bytecode compiled when it was built.
 
 ```tsx title="res/layouts/home.tsx"
 export default function Hello() {
@@ -47,5 +47,5 @@ Everything the layout language allows has to survive being turned into data at b
 - **Installing the engine** — what you need, and the one bring-up script that builds it.
 - **Adding it to a project** — the four project shapes: C++ through CMake, and Python, Node or C# pointing at `bin/`.
 - **Your first interface** — the three files under `res/` that every interface starts from.
-- **The layout language** — constants, bindings and handlers, the expression grammar, sizing, and the nineteen elements.
+- **The layout language** — constants, bindings and handlers, the expression grammar, sizing, and the twenty-seven elements.
 - **State and backends** — one declaration, four generated sides, and the same application written in each language.

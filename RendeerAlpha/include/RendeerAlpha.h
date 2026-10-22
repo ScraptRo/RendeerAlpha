@@ -236,11 +236,34 @@ bool rendeerCaptureFrame(std::vector<unsigned char>& rgba,
 // and up on the next, the way a real one is.
 void rendeerSetSyntheticPointer(float x, float y, bool down);
 void rendeerClearSyntheticPointer();
+// Ctrl and Shift held by nobody, until set otherwise -- what a click with them held needs,
+// since a chord holds its modifiers for one frame and a click is a press on one frame and
+// a release on the next. Cleared with the pointer.
+void rendeerSetSyntheticModifiers(bool ctrl, bool shift);
 
 // The wheel, turned by nobody. Set, it is applied on every frame until it is cleared, so
 // a large number scrolls whatever is under the pointer to its end -- which is what a
 // capture of "the bottom of this list" wants. Negative is downward, as a real wheel is.
 void rendeerSetSyntheticScroll(float notches);
+
+// A key chord pressed by nobody -- "Ctrl+S", "F5" -- delivered once, on the next frame,
+// to every window, as though it had been typed. For exercising a layout's shortcuts
+// without a keyboard. False, and the reason in the log, for a chord that does not parse.
+bool rendeerSyntheticChord(const char* chord);
+
+// Text nobody typed, delivered once, on the next frame, as what the keyboard typed: into a
+// focused field, or a dropdown finding a choice by its first letters. UTF-8.
+void rendeerSyntheticText(const char* utf8);
+
+// Files let go over the window by nobody, on the next frame, wherever the pointer is: what
+// an element's onFiles hears. The application's own onFilesDropped is not called -- this
+// is for exercising an interface, not for feeding a backend.
+void rendeerSyntheticDrop(const std::vector<std::string>& paths);
+
+// An input method part way through a word, held until it is set to "" -- what the focused
+// field draws at its caret while a Chinese, Japanese or Korean word is being composed.
+// `caret` is the method's cursor inside it, in characters.
+void rendeerSyntheticComposition(const char* utf8, int caret);
 
 // The same, for one window. Prefer it whenever the caller knows which window changed:
 // each window earns its frames separately, so waking all of them makes an application

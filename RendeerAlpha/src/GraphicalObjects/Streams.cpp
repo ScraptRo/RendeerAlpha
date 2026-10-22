@@ -1,5 +1,6 @@
 #include <GraphicalObjects/Streams.h>
 #include <GraphicalObjects/Texture.h>
+#include <RendeerAlpha.h>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/DeviceHandler.h>
 #include <GraphicalSrc/MemoryBuffer.h>
@@ -51,6 +52,9 @@ namespace RDA {
 				                << height << " surface");
 				return false;
 			}
+			// The surface it replaces may still be read by a frame in flight, and its
+			// sampler by a descriptor set the GUI holds: retired, not destroyed here.
+			if (live.texture) rendeerRetireTexture(std::move(live.texture));
 			live.texture = std::move(built);
 			live.width = width;
 			live.height = height;
@@ -138,6 +142,7 @@ namespace RDA {
 			                << height << " surface to write into");
 			return nullptr;
 		}
+		if (live.texture) rendeerRetireTexture(std::move(live.texture));   // as in upload()
 		live.texture = std::move(built);
 		live.width = width;
 		live.height = height;
@@ -263,7 +268,13 @@ namespace RDA {
 
 	void Streams::close(const std::string& name) {
 		std::lock_guard<std::mutex> held(mLock);
-		if (mByName.erase(name) > 0) ++mRevision;
+		const auto at = mByName.find(name);
+		if (at == mByName.end()) return;
+		// Retired for the same reason a replaced surface is: the last frame may still be
+		// drawing it.
+		if (at->second.texture) rendeerRetireTexture(std::move(at->second.texture));
+		mByName.erase(at);
+		++mRevision;
 	}
 
 	const Texture* Streams::find(const std::string& name) const {
