@@ -29,6 +29,54 @@ namespace RDA::Layout {
 		return *this;
 	}
 
+	namespace {
+		// Everything that has opened and not yet closed, for the way out. Weak, because the
+		// hosts are the application's and one may simply go. Never destroyed, for the reason
+		// bindings() is not: a global LayoutHost goes after statics here would have.
+		using OpenList = std::vector<std::weak_ptr<LayoutInstance::ObserverSink>>;
+		OpenList& openLayouts() {
+			static OpenList* open = new OpenList;
+			return *open;
+		}
+
+		void closeSink(const std::shared_ptr<LayoutInstance::ObserverSink>& sink) {
+			if (!sink->announced) return;
+			sink->announced = false;
+			if (sink->onClose) sink->onClose(nullptr);
+		}
+	}
+
+	void LayoutInstance::markAnnounced() {
+		mObservers->announced = true;
+		OpenList& open = openLayouts();
+		open.erase(std::remove_if(open.begin(), open.end(),
+		                          [](const std::weak_ptr<ObserverSink>& one) { return one.expired(); }),
+		           open.end());
+		open.push_back(mObservers);
+	}
+
+	void LayoutInstance::announceOpen() {
+		if (mObservers->announced) return;
+		// Held, because a handler can reach a command that replaces this very layout.
+		const std::shared_ptr<ObserverSink> sink = mObservers;
+		markAnnounced();
+		if (sink->onOpen) sink->onOpen(nullptr);
+	}
+
+	void LayoutInstance::announceClose() {
+		const std::shared_ptr<ObserverSink> sink = mObservers;
+		closeSink(sink);
+	}
+
+	void closeOpenLayouts() {
+		// Taken first: a handler may open something, and this is walking the list.
+		const OpenList open = std::move(openLayouts());
+		openLayouts().clear();
+		for (const std::weak_ptr<LayoutInstance::ObserverSink>& one : open) {
+			if (const std::shared_ptr<LayoutInstance::ObserverSink> sink = one.lock()) closeSink(sink);
+		}
+	}
+
 	void LayoutInstance::release() {
 		for (const ObserverId observer : mObservers->ids) bindings().remove(observer);
 		mObservers->ids.clear();
@@ -302,9 +350,16 @@ namespace RDA::Layout {
 					// In a row, handed the list and this copy's slot, so `item` means
 					// something inside a handler as well as inside a value binding.
 					const size_t slot = site.list ? site.list->currentSlot() : 0;
-					if (!attachEvent(kind, *target, property,
-					                 makeRunner(std::move(program), std::move(ids), property,
-					                            site.list, slot)) && site.report) {
+					EventRunner run = makeRunner(std::move(program), std::move(ids), property,
+					                             site.list, slot);
+					// The widget first, so a root <popup> keeps the onClose it means.
+					if (attachEvent(kind, *target, property, run)) continue;
+					// Node 0 of a layout, never of a row: a row's walk carries its list.
+					if (!site.list && record.node == 0 && isLayoutEvent(property)) {
+						(property == "onOpen" ? site.observers.onOpen : site.observers.onClose) = std::move(run);
+						continue;
+					}
+					if (site.report) {
 						RDA_LOG_WARNING("layout: nothing answers '" << property << "' on '"
 						                << target->id() << "'");
 					}

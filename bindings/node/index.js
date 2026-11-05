@@ -192,8 +192,10 @@ export function run({ intervalMs = 8 } = {}) {
 			engine.poll()
 			if (!running()) {
 				clearInterval(timer)
-				engine.poll()   // whatever arrived on the last frame still runs
+				// Joined first: a closing layout's onClose runs on the way out, after `running`
+				// has turned false, and what it asked for has to be collected too.
 				wait()
+				engine.poll()   // whatever arrived on the last frame still runs
 				started = false
 				resolve()
 			}

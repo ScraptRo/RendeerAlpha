@@ -1,0 +1,22 @@
+# What `rda build` makes from res/. Rebuilt on demand, so not worth keeping.
+*.rdab
+*.rdth
+*.rdam
+res/layouts/rda.d.ts
+
+# The state modules it generates, one per language.
+state.py
+state.mjs
+state.cs
+RdaState.h
+
+# What the engine writes while it runs.
+RDA_DEBUG.txt
+shader_cache/
+
+# Each language's own leavings.
+__pycache__/
+node_modules/
+build/
+bin/
+obj/

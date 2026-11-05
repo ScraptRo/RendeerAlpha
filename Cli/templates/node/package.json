@@ -1,0 +1,7 @@
+{
+  "name": "@SLUG@",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "rda build . --node && node app.mjs" },
+  "dependencies": { "rda": "file:@ENGINE@/bindings/node" }
+}

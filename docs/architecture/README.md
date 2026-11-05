@@ -38,7 +38,7 @@ and [backend/](../backend/README.md) are the reference.
 | [Screens](screens.md) | routes as state, params as signals, and where the swap happens |
 | [Asking the application to do something](commands.md) | commands, and why a binding may not call one |
 | [Code that runs: functions in a layout](runtime-code.md) | what runs at build time and what at run time, decided by where it is reached from -- built: functions, logic in state.ts, format and timers |
-| [Reacting to change](watch-and-on-open.md) | running code when a value changes or a screen opens -- `watch` is built; `onOpen`, `onClose` and a backend's `Watch` are proposed |
+| [Reacting to change](watch-and-on-open.md) | running code when a value changes or a screen opens -- `watch`, `onOpen` and `onClose` are built; a backend's `Watch` is proposed |
 
 ## Drawing
 

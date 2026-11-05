@@ -101,7 +101,7 @@ namespace RDA {
 	void Viewport::paint(Gui& gui, glm::vec2 origin) {
 		// With an explicit size use it; otherwise fill the container body (the clip rect).
 		const bool legacyFill = !mArrangedValid && rect.w <= 0.0f && rect.h <= 0.0f &&
-		                        anchor == Anchor::TopLeft;
+		                        anchor == Anchor::TopLeft && width.silent() && height.silent();
 		Rect area = legacyFill ? gui.currentClipRect() : placement(gui, origin);
 
 		Viewports& all = viewports();

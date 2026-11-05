@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <Core/Datatypes.h>
 #include <GraphicalSrc/GlyphRanges.h>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -110,10 +111,24 @@ namespace RDA {
 		int  bakedCodepoints()   const { return kGlyphCount; }
 		int  missingCodepoints() const;
 
-		// The baked size to draw `px` at. Zero, or anything the atlas does not hold,
-		// resolves to the nearest one it does -- nothing is ever scaled, so a size that
-		// was not asked for at startup is drawn slightly wrong rather than blurrily.
+		// The size to draw `px` at; zero is the base size.
+		//
+		// A size that is not here yet is added. It starts with nothing in it, and its glyphs
+		// are baked as they are drawn, the way everything outside GlyphRanges.h already is.
+		// So what a theme writes is what it gets, from any language, and bake() only decides
+		// which sizes start with the whole table ready.
+		//
+		// A size the atlas will not take is drawn at the nearest one it holds, and the log
+		// says so once. Nothing is ever scaled, so that is slightly wrong rather than blurry.
 		int indexForSize(float px) const;
+
+		// How many sizes can arrive after the bake, and how many pixels tall one can be. Both
+		// protect the spare rows, which every added size spends and which are all a character
+		// outside the table has. The count is for a size that changes every frame -- text in
+		// a <viewport> that zooms -- and the height is for one enormous heading: past 192
+		// pixels, half a dozen glyphs fill a shelf.
+		static constexpr int   kMaxAddedSizes = 32;
+		static constexpr float kMaxAddedHeight = 192.0f;
 
 		float pixelHeight(int index = 0) const { return at(index).pixelHeight; }
 		float ascent(int index = 0)      const { return at(index).ascent; }      // top -> baseline
@@ -152,6 +167,10 @@ namespace RDA {
 			float pixelHeight = 0.0f;
 			float ascent = 0.0f;
 			float lineAdvance = 0.0f;
+			// False for a size added after the bake. Its table holds only the space and the
+			// replacement box, which is everything that is asked for by slot; every other
+			// glyph of that size is in onDemand.
+			bool preloaded = true;
 			std::vector<BakedGlyph> glyphs; // index = glyphSlot(codepoint)
 			// Everything outside GlyphRanges.h that has actually been asked for, baked
 			// when it was. Kept per size, because a glyph is a picture at one size.
@@ -172,11 +191,20 @@ namespace RDA {
 		// that has it. False when no face does, or when the room has run out.
 		bool bakeOnDemand(uint32_t cp, int index) const;
 
+		// Adds a size to the atlas and returns its index, or -1 when it will not take it.
+		int addSize(float px) const;
+
+		// Finds room for a w by h picture in the rows below the baked bands. False when they
+		// have run out. The picture is then the caller's to draw, and to markDirty.
+		bool claimShelf(int w, int h, int& x, int& y) const;
+		void markDirty(int top, int bottom) const;
+
 		void noteMissing(uint32_t cp) const;
 
-		// Sizes asked for that were not baked, so each is complained about once rather
-		// than every frame it is drawn. A theme naming a size nobody baked is a real
-		// mistake -- it silently draws at the wrong one -- and silence would hide it.
+		// Sizes the atlas would not take, so each is complained about once rather than every
+		// frame it is drawn. Text at a size nobody wrote is a real mistake, and silence would
+		// hide it. Capped like mMissing, because the size that is refused most is one that
+		// changes every frame.
 		mutable std::vector<float> mUnbaked;
 
 		// Codepoints asked for that this atlas cannot draw, on the same terms and for the
@@ -185,7 +213,10 @@ namespace RDA {
 		mutable std::vector<uint32_t> mMissing;
 
 		std::vector<uint8_t> mPresent; // per slot: does the font actually have this glyph
-		std::vector<Size>    mSizes;   // [0] is the base size
+		// [0] is the base size. A deque because a size can arrive while text is being
+		// measured, and whoever is holding an existing one must not notice.
+		mutable std::deque<Size> mSizes;
+		mutable int          mAddedSizes = 0; // how many of them came after the bake
 		float                mAtlasW = 0.0f;
 		float                mAtlasH = 0.0f;
 		float                mScale = 1.0f;  // physical pixels per layout unit; see setScale

@@ -95,8 +95,10 @@ namespace RDA::Layout {
 		// negative when there is none. An idle loop waits no longer than this, so a timer
 		// goes off on time rather than whenever something else wakes the window.
 		double secondsToNextTimer() const;
-		// How many timers are waiting, for whoever wants to know.
+		// How many timers are waiting, for whoever wants to know: all of them, or one
+		// module's, which are the ones that go when it does.
 		size_t timerCount() const;
+		size_t timerCount(const ScriptModule& module) const;
 
 		// What run-time code is allowed to do, decided by whoever runs it.
 		enum class Mode : uint8_t {

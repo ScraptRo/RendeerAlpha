@@ -27,7 +27,7 @@ namespace RDA::Layout {
 		// Text on anything that draws it. Repeated rather than shared, because a struct
 		// that only some elements have is a footnote every reader has to carry.
 		#define FONT_FIELDS \
-			NUMBER(fontSize, "one of the sizes baked at startup; omitted, the base size"), \
+			NUMBER(fontSize, "the size of the text, in units; omitted, the base size"), \
 			ENUM(weight, "regular|bold", "bold is synthesised, and does not change metrics")
 
 		constexpr ThemeFieldDesc kCommon[] = {

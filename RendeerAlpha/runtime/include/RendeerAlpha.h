@@ -33,8 +33,8 @@ namespace RDA {
 		//
 		// They are baked rather than scaled, so a heading is as crisp as a caption, and
 		// they all share one atlas texture, so text of every size still batches into a
-		// single draw. A theme that names a size not listed here is drawn at the
-		// nearest one that is -- and says so once, in the log, naming both.
+		// single draw. A theme can name a size that is not listed here: it is added the
+		// first time it is drawn, and listing it only saves baking its glyphs in that frame.
 		//
 		// The default is a type scale rather than a range: sizes far enough apart to
 		// read as different, which is what a scale is for.

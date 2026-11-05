@@ -1,8 +1,8 @@
 # Reacting to change: `watch`, `onOpen` and `onClose`
 
-**Status: `watch` in state.ts is built. `onOpen`, `onClose` and a backend's `Watch` are proposed,
-and nothing of them is built yet.** Written on 2026-11-05 against the code as it stood, and what
-it says about the engine was read out of the source. [Decided](#decided) records the three
+**Status: `watch` in state.ts, `onOpen` and `onClose` are built. A backend's `Watch` is proposed,
+and nothing of it is built yet.** Written on 2026-11-05 against the code as it stood, and what it
+says about the engine was read out of the source. [Decided](#decided) records the three
 questions it raised and their answers.
 
 Code in an interface runs today because something happened to a widget, or a timer went off.
@@ -35,7 +35,7 @@ same wish two places where effects are safe.
 | a value depends on others | `compute` in `res/state.ts`, which may not have effects |
 | the application starts, turns or stops | the backend's start, update and shutdown callbacks |
 | a value changes | `watch` on a field in `res/state.ts`, from this page |
-| **a screen opens or closes** | **nothing yet: this page's `onOpen` and `onClose`** |
+| a screen opens or closes | `onOpen` and `onClose` on a layout's root, from this page |
 
 ## `watch`
 
@@ -180,10 +180,13 @@ So `LayoutHost` separates building from announcing:
 
 1. Build the new screen. If that fails, stop: neither handler runs.
 2. The old screen's `onClose`.
-3. The new screen's `onOpen`.
+3. The new screen's `onOpen`, last of all, once the `route` signal is right. Going back arrives
+   with that signal still on the old name, and `onOpen` has to see where it is.
 
 With a cross-fade, `onClose` runs when the screen starts leaving, not when the fade ends, so the
-order holds. Its bindings and timers carry on until it is retired.
+order holds. Its bindings and timers carry on until it is retired. By `onClose` the move is
+already decided: `state.route` holds the next screen, and going back the route's params are
+already restored, because the new screen has to be built from them to know it will load.
 
 No first-frame trick is needed. The swap happens in `onUpdate`, after this frame's walk, so
 what either handler writes is applied by the next frame's `applyDirty`, before the new tree is
@@ -216,7 +219,7 @@ then, or the call reports "nothing answers commands.x". C++ and Python already b
 Node and C# samples in [the tutorial](../tutorials/backends.md) bind after `loadInterface`, and
 they would be reordered, with the rule stated in the backend docs.
 
-### How it would be built
+### How it was built
 
 - **`WidgetSchema`:** two `PROP_EVENT`s in the common properties, so they autocomplete. The test
   holding the registry to the schema learns that these two belong to the layout, not to a widget.
@@ -295,7 +298,7 @@ Each step stands alone and is useful without the next.
 | | Touches | Tested by |
 | --- | --- | --- |
 | **1. `watch` in state.ts: built** | toolchain, `Signals`, `ScriptHost`. No ABI or blueprint change | unit cases for batching, a value that comes back, `(now, was)`, not running on load, declared order, a clamp settling, a runaway stopped and logged once, a table through `compute`; a ctest driving a click through `rda shot` |
-| **2. `onOpen` and `onClose`** | schema, compiler, loader, `LayoutHost`, `Router`, exit. No ABI or blueprint change | a ctest refusing them off the root; `rda shot` reading what `onOpen` wrote; the close-then-open order, with and without a transition; a failed load running neither; a reload running neither; exit running `onClose` once |
+| **2. `onOpen` and `onClose`: built** | schema, compiler, loader, `LayoutHost`, `Router`, exit. No ABI or blueprint change | a ctest refusing them off the root; `rda shot` reading what `onOpen` wrote; the close-then-open order, with and without a transition; a failed load running neither; a reload running neither; exit running `onClose` once |
 | **3. `Watch` from a backend** | codegen in four languages, C ABI 1.9 | the three binding tests, plus a generated-code case per language |
 
 Each step also updates what it changes: `docs/frontend/functions.md`,

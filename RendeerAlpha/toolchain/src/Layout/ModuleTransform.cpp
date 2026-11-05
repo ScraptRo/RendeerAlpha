@@ -205,7 +205,7 @@ namespace RDA::Layout {
 	                  std::string& js, std::string& sourceMap, std::string& error) {
 		if (!runEsbuild(sourcePath, esbuildPath,
 		                std::string("--jsx-factory=h --jsx-fragment=Fragment --bundle --format=esm "
-		                            "--target=es2020") + kInlineMap,
+		                            "--target=es2020 --charset=utf8") + kInlineMap,
 		                js, error))
 			return false;
 		takeInlineMap(js, sourceMap);
@@ -231,7 +231,7 @@ namespace RDA::Layout {
 		// It resolves node_modules too. That is not encouraged and not supported: a
 		// package written for a browser or for node will evaluate here and fail in ways
 		// that have nothing to do with this engine. Import your own files.
-		command += " --bundle --format=iife --global-name=__module --target=es2020";
+		command += " --bundle --format=iife --global-name=__module --target=es2020 --charset=utf8";
 		command += kInlineMap;
 
 		std::string diagnostics;

@@ -33,6 +33,10 @@ namespace Cli {
 		bool        still = true;
 		bool        stillSet = false;
 		Pointer     pointer;                 // --hover, --press
+		// --hover or --press given a widget's id instead of a point; resolved once the layout
+		// is built, and then it is `pointer` like any other.
+		std::string pointerTarget;
+		bool        pointerTargetPressed = false;
 		float       scrolling = 0.0f;        // --scroll
 		// What to do before the picture, in order: --key, --type, --drag, --click,
 		// --compose, --files.

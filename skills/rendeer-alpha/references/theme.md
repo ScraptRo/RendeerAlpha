@@ -125,9 +125,10 @@ hollow box and is named once in the log.
 
 ## Font sizes
 
-`fontSize` must be **one of the sizes baked into the atlas at startup**: by default 12,
-15, 18, 22, 28, 36. A size that was not baked is drawn at the nearest one that was, and
-the log says so, naming both. An application can change the list in its startup config.
+`fontSize` can be any size, and nothing has to be declared first. 12, 15, 18, 22, 28 and
+36 are baked at startup; any other is added the first time it is drawn. Only a size over
+192 pixels tall, or more than 32 sizes beyond those, is drawn at the nearest one the atlas
+holds, and the log says so, naming both.
 
 `weight: "bold"` is synthesised and does not change metrics. There is one body face;
 `config.font` may name fallback faces after a `;`, used only for codepoints the body face

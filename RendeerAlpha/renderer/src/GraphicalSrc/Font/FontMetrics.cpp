@@ -14,6 +14,10 @@ namespace RDA {
 
 	static constexpr size_t kMaxReportedMissing = 8;
 
+	// Two sizes closer than this are one size. It is far below what could show, and it is
+	// here so that a number arrived at by arithmetic does not become a size of its own.
+	static constexpr float kSameSize = 0.01f;
+
 	const FontAtlas::Size& FontAtlas::at(int index) const {
 		static const Size empty;
 		if (mSizes.empty()) return empty;
@@ -28,21 +32,30 @@ namespace RDA {
 	}
 
 	int FontAtlas::indexForSize(float px) const {
-		if (px <= 0.0f || mSizes.empty()) return 0;
+		// Written this way round so that NaN, which a <viewport> can send, is turned away too:
+		// every comparison with it is false, and it would otherwise become a size.
+		if (!(px > 0.0f) || mSizes.empty()) return 0;
 		int best = 0;
 		float bestDelta = std::fabs(mSizes[0].pixelHeight - px);
 		for (int i = 1; i < static_cast<int>(mSizes.size()); ++i) {
 			const float delta = std::fabs(mSizes[i].pixelHeight - px);
 			if (delta < bestDelta) { best = i; bestDelta = delta; }
 		}
-		// Nothing is scaled, so a size that was not baked is drawn at the nearest one that
-		// was. That is a decision the author did not make, and it is worth one line in the
+		if (bestDelta < kSameSize) return best;
+		if (std::find(mUnbaked.begin(), mUnbaked.end(), px) != mUnbaked.end()) return best;
+
+		const int added = addSize(px);
+		if (added >= 0) return added;
+
+		// Nothing is scaled, so a size the atlas will not take is drawn at the nearest one it
+		// holds. That is a decision the author did not make, and it is worth one line in the
 		// log naming both numbers -- once per size, not once per frame.
-		if (std::fabs(mSizes[best].pixelHeight - px) > 0.5f
-		    && std::find(mUnbaked.begin(), mUnbaked.end(), px) == mUnbaked.end()) {
+		if (mUnbaked.size() < kMaxReportedMissing) {
 			mUnbaked.push_back(px);
-			RDA_LOG_WARNING("Theme asks for " << px << "px text, which was not baked; drawing at "
-			                << mSizes[best].pixelHeight << "px. Add it to GuiConfig::fontSizes.");
+			RDA_LOG_WARNING("The font atlas cannot take " << px << "px text, so it is drawn at "
+			                << mSizes[best].pixelHeight << "px. It holds sizes up to "
+			                << kMaxAddedHeight << " pixels tall, and " << kMaxAddedSizes
+			                << " beyond the ones baked at startup.");
 		}
 		return best;
 	}
@@ -85,7 +98,7 @@ namespace RDA {
 
 		// The preloaded table: an array index, and what almost every character hits.
 		const int slot = glyphSlot(cp);
-		if (slot >= 0 && static_cast<size_t>(slot) < mPresent.size()
+		if (size.preloaded && slot >= 0 && static_cast<size_t>(slot) < mPresent.size()
 		    && mPresent[static_cast<size_t>(slot)]) {
 			return &size.glyphs[static_cast<size_t>(slot)];
 		}

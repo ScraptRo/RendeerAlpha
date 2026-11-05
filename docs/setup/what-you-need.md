@@ -10,14 +10,14 @@
 | **.NET 8+** | only for a C# backend. Nothing to install beyond the SDK |
 
 The first three build the engine, once. The bring-up script for your platform checks for
-each and prints the `winget` line or the `apt` package for whatever is missing —
+each and prints the `winget` line or the package name for your package manager, for whatever is missing —
 [Windows](after-cloning/windows.md), [Linux](after-cloning/linux.md).
 
 Nothing is vendored that you have to fetch by hand. On Windows the Vulkan SDK supplies
 Vulkan, shaderc and glm as a matched set — one installer, so the headers and the libraries
 cannot drift apart — and GLFW, the one thing it does not ship, is built from source the
 first time a build tree is configured. On Linux the four are ordinary packages
-(`libvulkan-dev`, `libshaderc-dev`, `libglm-dev`, `libglfw3-dev`), and the bring-up
+(`libvulkan-dev`, `libshaderc-dev`, `libglm-dev`, `libglfw3-dev` on Debian and Ubuntu, and the same libraries under other names elsewhere), and the bring-up
 installs them. Configuring prints which copy of each it picked, because "which one did it
 find" is the first question when a build works on one machine and not another.
 

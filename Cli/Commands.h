@@ -23,4 +23,20 @@ namespace Cli {
 	// CmdBuild.cpp: a whole project by convention. The preview calls it too, so a picture is
 	// never of a layout that was edited since it was last compiled.
 	int cmdBuild(const Args& args);
+
+	// CmdInit.cpp: the files a project starts from, then the build of them.
+	int cmdInit(const Args& args);
+
+	// CmdAdd.cpp: a screen, as a layout and the route that reaches it.
+	int cmdAdd(const Args& args);
+
+	// CmdElements.cpp: what the widget schema says, for a person to read.
+	int cmdElements(const Args& args);
+
+	// CmdDoctor.cpp: what was found, and what to do about what was not.
+	int cmdDoctor(const Args& args);
+
+	// CmdDev.cpp: build, run the backend, and run it again when state.ts changes. Only `rda`
+	// has it: it starts programs, which is Forward.cpp's, and `rda-preview` has none to start.
+	int cmdDev(const Args& args);
 }

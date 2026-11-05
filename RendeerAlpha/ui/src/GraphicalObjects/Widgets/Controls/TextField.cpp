@@ -32,7 +32,7 @@ namespace RDA {
 		// wins over it, so a filled-but-inset layout is expressible.
 		// A layout parent's decision always wins over both.
 		const bool legacyFill = !mArrangedValid && rect.w <= 0.0f && rect.h <= 0.0f &&
-		                        anchor == Anchor::TopLeft;
+		                        anchor == Anchor::TopLeft && width.silent() && height.silent();
 		Rect abs = legacyFill ? gui.currentClipRect() : placement(gui, origin);
 		// A named variant supplies the whole style; otherwise the per-instance one.
 		const TextFieldStyle& used = (variant != kDefaultVariant) ? gui.theme().textField(variant) : style;

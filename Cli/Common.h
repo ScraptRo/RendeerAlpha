@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,11 @@ namespace Cli {
 		// shipped binary evaluates no JavaScript" to stay true.
 		bool noRuntimeCode = false;
 
+		// --strict, anywhere on the line: a name the widget schema does not know is a build
+		// error instead of a warning. `build` and `layout` read it; it is global only so that
+		// it can be written where the person is already typing.
+		bool strict = false;
+
 		// --mesh <file.ts>, repeatable: meshes whose parameters `theme` and `types` accept.
 		std::vector<std::string> meshes;
 	};
@@ -50,6 +56,10 @@ namespace Cli {
 	void takeGlobalOptions(Args& args);
 
 	RDA::Layout::CompileOptions compileOptions();
+
+	// A layout's misspelt names, one `rda: warning:` line each, for a compile that went through.
+	// Under --strict they are the error instead, and there is nothing to print here.
+	void printNameWarnings(const std::string& source, const RDA::Layout::CompileResult& result);
 
 	// ---- numbers off the command line ---------------------------------------------------
 
@@ -74,6 +84,40 @@ namespace Cli {
 	// The files in a directory with this extension, alphabetical; none for a directory that
 	// is not there.
 	std::vector<fs::path> filesIn(const fs::path& directory, const std::string& extension);
+
+	// Which of these files are imported by another one of them.
+	//
+	// A folder of layouts holds screens and the components they are built from, and a
+	// folder of themes holds the theme and whatever palette it reads. Only the ones
+	// nothing imports are compiled: a component has props and no meaning on its own, and
+	// a palette styles nothing, so compiling either produces an error about a file that
+	// was never wrong. Nobody should have to name their shared file specially to be left
+	// alone by a build. `add screen` asks the same question to know which layouts are screens.
+	std::set<fs::path> importedByAnother(const std::vector<fs::path>& candidates);
+	bool isImported(const std::set<fs::path>& imported, const fs::path& candidate);
+
+	// ---- which backend a project has ----------------------------------------------------
+
+	// What the project root says about the language of the backend, each the file that said
+	// so -- empty when it did not. More than one may be set: a project with an app.py and a
+	// package.json is two backends until somebody says otherwise, and guessing between them
+	// would be the one wrong answer.
+	struct Languages {
+		std::string python;   // app.py, any other *.py
+		std::string node;     // package.json, any *.mjs
+		std::string csharp;   // a *.csproj, an existing state.cs
+		std::string cpp;      // CMakeLists.txt
+
+		bool any() const { return !python.empty() || !node.empty() || !csharp.empty() || !cpp.empty(); }
+		// Whether anything but C++ was found: C++ is a project's build system's to generate for.
+		bool wantsModule() const { return !python.empty() || !node.empty() || !csharp.empty(); }
+		// "Python (app.py), Node (package.json)".
+		std::string described() const;
+	};
+
+	// Looks at the project root only, never below it: res/ and node_modules/ hold plenty
+	// that would answer and none of it is the backend.
+	Languages detectLanguages(const fs::path& project);
 
 	// ---- meshes and the theme schema ----------------------------------------------------
 

@@ -145,6 +145,13 @@ when you go back to that screen — a selected row's id, a scroll position.
 
 There are no URLs and no deep links, and history starts empty every run.
 
+## Opening and closing a screen
+
+`onOpen` and `onClose` go on a layout's root element and nowhere else. They are ordinary
+handlers. Every `onOpen` gets exactly one `onClose`, the application exiting included, and a
+saved edit runs neither. Bind a command's handler before loading a layout whose `onOpen`
+calls it. On a root `<popup>`, `onClose` is the popup's own event.
+
 ## After changing this file
 
 Build again. The state module is regenerated, and a backend that was running has to be

@@ -90,6 +90,9 @@ TEST(a_property_the_schema_calls_constant_has_no_setter) {
 TEST(every_event_the_schema_declares_can_be_listened_to) {
 	const std::string gaps = everyProp([](const WidgetKind& kind, const PropDesc& prop) {
 		if (prop.type != PropType::Event) return true;
+		// onOpen and onClose are the layout's, and the loader answers them for a root of
+		// any kind. A <popup>'s own onClose reaches here as its own, and is checked.
+		if (isLayoutEvent(prop.name) && !hasEvent(kind, prop.name)) return true;
 		return hasEvent(kind, prop.name);
 	});
 	CHECK_STR(gaps, "");

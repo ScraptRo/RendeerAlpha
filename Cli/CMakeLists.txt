@@ -15,12 +15,42 @@ add_library(rda_commands STATIC
 	Common.cpp
 	CmdCompile.cpp
 	CmdState.cpp
-	CmdBuild.cpp)
+	CmdBuild.cpp
+	CmdInit.cpp
+	CmdAdd.cpp
+	CmdElements.cpp
+	CmdDoctor.cpp)
 target_link_libraries(rda_commands PUBLIC rendeer)
+# `rda doctor` opens the Vulkan loader by name at run time, so that this tool still links no
+# GPU code. dlopen is in libdl on older glibc; the list is empty where it is part of libc.
+target_link_libraries(rda_commands PRIVATE ${CMAKE_DL_LIBS})
+# Which engine this is, for `rda doctor`: the project's version, so it is never a second
+# number to keep in step.
+target_compile_definitions(rda_commands PRIVATE RDA_VERSION_STRING="${RendeerAlpha_VERSION}")
+
+# What `rda init` writes, as the files themselves under templates/ so that each reads and
+# edits as what it is -- a Program.cs, a CMakeLists.txt -- and not as a string inside a
+# .cpp. They are embedded with the same function the JavaScript preludes are: it takes
+# the bytes of any file and does not care that the name says js. Only the commands need
+# them, and the one command at that, so the include directory is theirs and not the tools'.
+rda_embed_js(InitState        "${CMAKE_CURRENT_SOURCE_DIR}/templates/common/state.ts")
+rda_embed_js(InitTheme        "${CMAKE_CURRENT_SOURCE_DIR}/templates/common/theme.ts")
+rda_embed_js(InitLayout       "${CMAKE_CURRENT_SOURCE_DIR}/templates/common/main.tsx")
+rda_embed_js(InitTsconfig     "${CMAKE_CURRENT_SOURCE_DIR}/templates/common/tsconfig.json")
+rda_embed_js(InitGitignore    "${CMAKE_CURRENT_SOURCE_DIR}/templates/common/gitignore")
+rda_embed_js(InitPython       "${CMAKE_CURRENT_SOURCE_DIR}/templates/python/app.py")
+rda_embed_js(InitNode         "${CMAKE_CURRENT_SOURCE_DIR}/templates/node/app.mjs")
+rda_embed_js(InitNodePackage  "${CMAKE_CURRENT_SOURCE_DIR}/templates/node/package.json")
+rda_embed_js(InitCSharp       "${CMAKE_CURRENT_SOURCE_DIR}/templates/csharp/Program.cs")
+rda_embed_js(InitCSharpProject "${CMAKE_CURRENT_SOURCE_DIR}/templates/csharp/project.csproj")
+rda_embed_js(InitCppMain      "${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp/main.cpp")
+rda_embed_js(InitCppCMake     "${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp/CMakeLists.txt")
+target_include_directories(rda_commands PRIVATE "${RDA_GENERATED_DIR}")
 
 add_executable(rda
 	main.cpp
-	Forward.cpp)
+	Forward.cpp
+	CmdDev.cpp)
 target_link_libraries(rda PRIVATE rda_commands)
 
 add_executable(rda-preview

@@ -1,3 +1,7 @@
+## Skipping the typing
+
+This page writes the files out so you can see what each is for. To get a smaller version of them on disk, run `rda init myapp --python` (or `--node`, `--csharp`, `--cpp`, or no flag for the interface alone) and then `rda prototype .` inside the folder. The project it makes is a counter and a command, in a layout called `main.tsx`; everything below applies to it unchanged, and it is a better start than a blank file once you have read how the pieces fit.
+
 ## res/state.ts — what both sides agree on
 
 ```ts title="res/state.ts"
@@ -87,7 +91,7 @@ Three kinds of value, and this file has all of them. `text="Reset"` is a **const
 }
 ```
 
-Nothing emits from it, and it is worth more than it looks. `<div>` and `colour="#fff"` both produce a perfectly valid blueprint — the loader then skips the element and ignores the property with a line in `RDA_DEBUG.txt`. This file plus the generated `rda.d.ts` is what catches that typo while you are still typing it.
+Nothing emits from it, and it is worth more than it looks. `<div>` and `colour="#fff"` both produce a blueprint, with a warning from the build (`<div> ... is not an element; did you mean <container>?`) — and the loader then skips the element and ignores the property, so `rda build --strict` makes the warning an error. This file plus the generated `rda.d.ts` is what catches that typo while you are still typing it, and `rda elements` lists what each element accepts.
 
 ## The backend
 

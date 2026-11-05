@@ -11,6 +11,59 @@
 using namespace RDA;
 using namespace RDA::Layout;
 
+// The same question for a widget nothing arranges, which a stack never gets to answer.
+TEST(a_widget_nothing_arranges_is_the_size_it_wrote) {
+	CHECK(freeExtent(SizeSpec::fixed(120.0f), 0.0f, 640.0f, 0.0f) == 120.0f);
+	// Past the edge of the parent is the parent's clip to deal with, as it is for `w`.
+	CHECK(freeExtent(SizeSpec::fixed(900.0f), 0.0f, 640.0f, 0.0f) == 900.0f);
+}
+
+TEST(a_widget_nothing_arranges_keeps_the_w_it_was_placed_with) {
+	CHECK(freeExtent(SizeSpec::fixed(120.0f), 80.0f, 640.0f, 0.0f) == 80.0f);
+	CHECK(freeExtent(SizeSpec::fill(), 80.0f, 640.0f, 0.0f) == 80.0f);
+	CHECK(freeExtent(SizeSpec{}, 80.0f, 640.0f, 0.0f) == 80.0f);
+}
+
+TEST(saying_nothing_is_left_for_the_fallback_to_answer) {
+	CHECK(SizeSpec{}.silent());
+	CHECK(SizeSpec::fixed(0.0f).silent());
+	CHECK(freeExtent(SizeSpec{}, 0.0f, 640.0f, 0.0f) == 0.0f);
+
+	CHECK(!SizeSpec::fixed(1.0f).silent());
+	CHECK(!SizeSpec::fill().silent());
+	CHECK(!SizeSpec::content().silent());
+	SizeSpec bounded;
+	bounded.max = 200.0f;
+	CHECK(!bounded.silent());
+}
+
+TEST(a_fill_with_nobody_to_share_with_is_all_of_the_room) {
+	CHECK(freeExtent(SizeSpec::fill(), 0.0f, 640.0f, 0.0f) == 640.0f);
+	CHECK(freeExtent(SizeSpec::fill(3.0f), 0.0f, 640.0f, 0.0f) == 640.0f);
+
+	SizeSpec inset;
+	CHECK(SizeSpec::parse("fill-40", inset));
+	CHECK(freeExtent(inset, 0.0f, 640.0f, 0.0f) == 600.0f);
+}
+
+TEST(content_outside_a_stack_is_what_measuring_said) {
+	CHECK(freeExtent(SizeSpec::content(), 0.0f, 640.0f, 75.0f) == 75.0f);
+
+	SizeSpec padded;
+	CHECK(SizeSpec::parse("content+8", padded));
+	CHECK(freeExtent(padded, 0.0f, 640.0f, 75.0f) == 83.0f);
+}
+
+TEST(bounds_alone_apply_to_the_room_a_widget_would_have_taken) {
+	SizeSpec capped;
+	capped.max = 200.0f;
+	CHECK(freeExtent(capped, 0.0f, 640.0f, 0.0f) == 200.0f);
+
+	SizeSpec floored;
+	floored.min = 300.0f;
+	CHECK(freeExtent(floored, 0.0f, 100.0f, 0.0f) == 300.0f);
+}
+
 namespace {
 	SizeSpec unstated() { return SizeSpec{}; } // what a widget has when the layout said nothing
 }

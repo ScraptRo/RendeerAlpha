@@ -1,6 +1,7 @@
 ﻿#include "Common.h"
 
 #include <Core/FileStamp.h>
+#include <Layout/ModuleTransform.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -19,6 +20,9 @@ namespace Cli {
 			if (args[i] == "--no-runtime-code") {
 				gGlobal.noRuntimeCode = true;
 				args.erase(args.begin() + static_cast<ptrdiff_t>(i));
+			} else if (args[i] == "--strict") {
+				gGlobal.strict = true;
+				args.erase(args.begin() + static_cast<ptrdiff_t>(i));
 			} else if (args[i] == "--mesh" && i + 1 < args.size()) {
 				gGlobal.meshes.push_back(args[i + 1]);
 				args.erase(args.begin() + static_cast<ptrdiff_t>(i),
@@ -32,7 +36,14 @@ namespace Cli {
 	RDA::Layout::CompileOptions compileOptions() {
 		RDA::Layout::CompileOptions options;
 		options.allowRuntimeCode = !gGlobal.noRuntimeCode;
+		options.strict = gGlobal.strict;
 		return options;
+	}
+
+	void printNameWarnings(const std::string& source, const RDA::Layout::CompileResult& result) {
+		for (const std::string& one : result.nameWarnings) {
+			std::printf("rda: warning: %s: %s\n", source.c_str(), one.c_str());
+		}
 	}
 
 	bool number(const std::string& text, float& into) {
@@ -69,6 +80,62 @@ namespace Cli {
 		}
 		// Alphabetical, so "the first theme" means the same thing on every filesystem.
 		std::sort(found.begin(), found.end());
+		return found;
+	}
+
+	std::set<fs::path> importedByAnother(const std::vector<fs::path>& candidates) {
+		std::set<fs::path> imported;
+		for (const fs::path& source : candidates) {
+			const std::vector<std::string> files = RDA::Layout::importedFiles(source.string());
+			// [0] is the file itself; everything after it is something it pulled in.
+			for (size_t i = 1; i < files.size(); ++i) {
+				std::error_code ec;
+				fs::path resolved = fs::weakly_canonical(files[i], ec);
+				imported.insert(ec ? fs::path(files[i]) : resolved);
+			}
+		}
+		return imported;
+	}
+
+	bool isImported(const std::set<fs::path>& imported, const fs::path& candidate) {
+		std::error_code ec;
+		const fs::path resolved = fs::weakly_canonical(candidate, ec);
+		return imported.count(ec ? candidate : resolved) != 0;
+	}
+
+	std::string Languages::described() const {
+		std::string out;
+		const auto add = [&](const char* name, const std::string& because) {
+			if (because.empty()) return;
+			out += (out.empty() ? "" : ", ") + std::string(name) + " (" + because + ")";
+		};
+		add("Python", python);
+		add("Node", node);
+		add("C#", csharp);
+		add("C++", cpp);
+		return out;
+	}
+
+	Languages detectLanguages(const fs::path& project) {
+		Languages found;
+		std::error_code ec;
+		const auto exists = [&](const char* name) { return fs::is_regular_file(project / name, ec); };
+
+		// The conventional names first, so that what is said is the file a person expects to
+		// hear about; the rest of the folder after.
+		if (exists("app.py")) found.python = "app.py";
+		if (exists("package.json")) found.node = "package.json";
+		if (exists("CMakeLists.txt")) found.cpp = "CMakeLists.txt";
+		if (exists("state.cs")) found.csharp = "state.cs";
+
+		for (const fs::directory_entry& entry : fs::directory_iterator(project, ec)) {
+			if (!entry.is_regular_file(ec)) continue;
+			const fs::path extension = entry.path().extension();
+			const std::string name = entry.path().filename().string();
+			if (extension == ".py" && found.python.empty()) found.python = name;
+			else if (extension == ".mjs" && found.node.empty()) found.node = name;
+			else if (extension == ".csproj" && (found.csharp.empty() || found.csharp == "state.cs")) found.csharp = name;
+		}
 		return found;
 	}
 

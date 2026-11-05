@@ -133,8 +133,11 @@ add_test(NAME rendeer_tests COMMAND rendeer_tests)
 # The blueprint layer's records, checked against the schema they implement. Linked against
 # the engine rather than compiled from its sources: a record reaches every widget type, and
 # none of them needs a device until it is painted -- so this runs anywhere the engine links.
-add_executable(rendeer_engine_tests Main.cpp RegistryTests.cpp)
+add_executable(rendeer_engine_tests Main.cpp RegistryTests.cpp LifecycleTests.cpp FontTests.cpp
+	PlacementTests.cpp)
 target_include_directories(rendeer_engine_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(rendeer_engine_tests PRIVATE
+	RDA_TEST_FONT="${CMAKE_CURRENT_SOURCE_DIR}/../RendeerAlpha/res/fonts/CascadiaMono.ttf")
 target_link_libraries(rendeer_engine_tests PRIVATE rendeer)
 add_test(NAME rendeer_engine_tests COMMAND rendeer_engine_tests)
 
@@ -168,6 +171,34 @@ if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
 		PASS_REGULAR_EXPRESSION "is declared by the code around this binding")
 	set_tests_properties(rda_value_binding_write PROPERTIES
 		PASS_REGULAR_EXPRESSION "a value binding cannot write state")
+	# The same layout written twice, in JSX and as an object. What they compile to has to be
+	# the same bytes: that is the whole of what the object form promises, and it checks every
+	# kind of node and binding in the file at once.
+	add_test(NAME rda_layout_as_jsx
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/same_as_jsx.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/same.rdab")
+	add_test(NAME rda_layout_as_object
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/same_as_object.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/same-object.rdab")
+	add_test(NAME rda_layout_forms_agree
+		COMMAND "${CMAKE_COMMAND}" -E compare_files "${CMAKE_CURRENT_BINARY_DIR}/same.rdab"
+		                                            "${CMAKE_CURRENT_BINARY_DIR}/same-object.rdab")
+	set_tests_properties(rda_layout_as_jsx rda_layout_as_object PROPERTIES TIMEOUT 120)
+	set_tests_properties(rda_layout_forms_agree PROPERTIES
+		DEPENDS "rda_layout_as_jsx;rda_layout_as_object")
+	# Text between tags: named for what it is, rather than guessed at as a fragment.
+	add_test(NAME rda_text_between_tags
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/text_between_tags.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/text-between-tags.rdab")
+	set_tests_properties(rda_text_between_tags PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "\"English\" is text between the tags of")
+	# onOpen anywhere but on the root. Compiled, it would be dropped with a line in the log,
+	# and what the author wrote would quietly never run.
+	add_test(NAME rda_on_open_off_root
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/on_open_off_root.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/on-open-off-root.rdab")
+	set_tests_properties(rda_on_open_off_root PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "belongs on the layout's root element")
 	# A component that throws while the layout is built, through a helper it imports: the
 	# error names the helper's line and then the component's, as they are in the two files.
 	# Read off esbuild's bundle, both frames said throws.tsx, at lines 4 and 10 -- the first
@@ -265,6 +296,58 @@ else()
 	message(STATUS "Mesh test: esbuild was not found, skipping rda_mesh")
 endif()
 
+# `rda init`: a project made from nothing, in each of the five shapes, and then built by the
+# same `rda build` a person would run next -- the point of the command is that what it writes
+# compiles with no edits, so a template that drifts from the tool is caught here and not by
+# the next newcomer. Made into the build tree with --force, so a second run of the suite
+# overwrites rather than being refused; the refusal has a test of its own, which runs after
+# a project exists. The folder names are not all valid package names as they stand, on
+# purpose: `Py_App` has to come out as `py-app`.
+#
+# A kind is its folder, the flag that makes it, the flag `rda build` needs to write the same
+# state module, and how many files init says it wrote.
+if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
+	set(init_dir "${CMAKE_CURRENT_BINARY_DIR}/init")
+	set(init_kinds    interface   Py_App     node-app    CSharpApp   cpp.app)
+	set(init_flags    ""          --python   --node      --csharp    --cpp)
+	set(init_builds   ""          --python   --node      --csharp    "")
+	set(init_files    5           6          7           7           7)
+	list(LENGTH init_kinds init_count)
+	math(EXPR init_last "${init_count} - 1")
+	foreach(i RANGE ${init_last})
+		list(GET init_kinds  ${i} kind)
+		list(GET init_flags  ${i} flag)
+		list(GET init_builds ${i} build_flag)
+		list(GET init_files  ${i} count)
+		string(TOLOWER "${kind}" id)
+		string(REGEX REPLACE "[^a-z0-9]" "_" id "${id}")
+		add_test(NAME rda_init_${id}
+			COMMAND rda init "${init_dir}/${kind}" ${flag} --force)
+		set_tests_properties(rda_init_${id} PROPERTIES TIMEOUT 120
+			PASS_REGULAR_EXPRESSION "project [^\n]*${kind}, ${count} files")
+		# Already built by init itself, so what this proves is that a separate `rda build`
+		# agrees: nothing left to write, and nothing that fails.
+		add_test(NAME rda_init_build_${id}
+			COMMAND rda build "${init_dir}/${kind}" ${build_flag})
+		set_tests_properties(rda_init_build_${id} PROPERTIES TIMEOUT 120
+			DEPENDS rda_init_${id}
+			PASS_REGULAR_EXPRESSION "rda: 0 written, [0-9]+ up to date")
+	endforeach()
+
+	# Refused, and says which files and what to do. The project is there because the test
+	# above made it.
+	add_test(NAME rda_init_refuses_overwrite
+		COMMAND rda init "${init_dir}/Py_App" --python)
+	set_tests_properties(rda_init_refuses_overwrite PROPERTIES TIMEOUT 120
+		DEPENDS rda_init_py_app
+		PASS_REGULAR_EXPRESSION "nothing was changed[^\n]*\n(  [^\n]+\n)+Use --force")
+	# Two backends is a mistake and not a request for both.
+	add_test(NAME rda_init_one_backend
+		COMMAND rda init "${init_dir}/two" --python --node)
+	set_tests_properties(rda_init_one_backend PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "a project has one backend")
+endif()
+
 # `rda shot` and `rda prototype` are run by rda-preview, which rda hands the whole command line
 # to and whose output and exit code it passes back. The project here is not there, so what
 # comes back is the refusal printed before any window or device is asked for: the test needs
@@ -274,6 +357,233 @@ if(TARGET rda AND TARGET rda-preview)
 		COMMAND rda shot "${CMAKE_CURRENT_SOURCE_DIR}/no-such-project")
 	set_tests_properties(rda_preview_forwarded PROPERTIES TIMEOUT 120
 		PASS_REGULAR_EXPRESSION "rda: no res/ directory in [^\n]*no-such-project")
+endif()
+
+# What `rda build` makes of a folder with nothing said about it: the language of the backend is
+# read off the files in the project root, and the state module of each one written. The five
+# projects `rda init` made above are the five kinds, so they are what is asked; a folder with
+# two backends in it and one with none are made here, at configure time, because init makes
+# neither. Each test names the files it matched, which is the line a person reads.
+if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
+	set(detect_dir "${CMAKE_CURRENT_BINARY_DIR}/detect")
+	foreach(kind both none)
+		file(MAKE_DIRECTORY "${detect_dir}/${kind}/res/layouts")
+		configure_file("${CMAKE_SOURCE_DIR}/Cli/templates/common/state.ts"
+		               "${detect_dir}/${kind}/res/state.ts" COPYONLY)
+	endforeach()
+	file(WRITE "${detect_dir}/both/app.py" "print('hello')\n")
+	file(WRITE "${detect_dir}/both/package.json" "{}\n")
+
+	add_test(NAME rda_detect_python COMMAND rda build "${init_dir}/Py_App")
+	add_test(NAME rda_detect_node   COMMAND rda build "${init_dir}/node-app")
+	add_test(NAME rda_detect_csharp COMMAND rda build "${init_dir}/CSharpApp")
+	add_test(NAME rda_detect_cpp    COMMAND rda build "${init_dir}/cpp.app")
+	add_test(NAME rda_detect_none   COMMAND rda build "${init_dir}/interface")
+	add_test(NAME rda_detect_several COMMAND rda build "${detect_dir}/both")
+	# --force, so that the modules are written on every run of the suite and not only the first.
+	add_test(NAME rda_detect_several_writes COMMAND rda build "${detect_dir}/both" --force)
+	# A flag is the whole of the answer: nothing is looked for, so nothing is announced.
+	add_test(NAME rda_detect_flag_wins COMMAND rda build "${detect_dir}/both" --node)
+	set_tests_properties(rda_detect_python PROPERTIES DEPENDS rda_init_py_app
+		PASS_REGULAR_EXPRESSION "rda: detected Python \\(app\\.py\\)")
+	set_tests_properties(rda_detect_node PROPERTIES DEPENDS rda_init_node_app
+		PASS_REGULAR_EXPRESSION "rda: detected Node \\(package\\.json\\)")
+	set_tests_properties(rda_detect_csharp PROPERTIES DEPENDS rda_init_csharpapp
+		PASS_REGULAR_EXPRESSION "rda: detected C# \\([^)]*\\.csproj\\)")
+	set_tests_properties(rda_detect_cpp PROPERTIES DEPENDS rda_init_cpp_app
+		PASS_REGULAR_EXPRESSION "rda: detected C\\+\\+ \\(CMakeLists\\.txt\\)\n[^\n]*generated by CMake")
+	set_tests_properties(rda_detect_none PROPERTIES DEPENDS rda_init_interface
+		PASS_REGULAR_EXPRESSION "rda: no backend found in [^\n]*so no state module is written -- pass --python, --node or --csharp")
+	set_tests_properties(rda_detect_several PROPERTIES
+		PASS_REGULAR_EXPRESSION "rda: detected Python \\(app\\.py\\), Node \\(package\\.json\\)")
+	set_tests_properties(rda_detect_several_writes PROPERTIES DEPENDS rda_detect_several
+		PASS_REGULAR_EXPRESSION "state\\.ts -> [^\n]*both/state\\.py[^\n]*\n[^\n]*state\\.ts -> [^\n]*both/state\\.mjs")
+	set_tests_properties(rda_detect_flag_wins PROPERTIES DEPENDS rda_detect_several_writes
+		FAIL_REGULAR_EXPRESSION "detected")
+	set_tests_properties(rda_detect_python rda_detect_node rda_detect_csharp rda_detect_cpp
+		rda_detect_none rda_detect_several rda_detect_several_writes rda_detect_flag_wins
+		PROPERTIES TIMEOUT 120)
+endif()
+
+# Names the widget schema does not know. A typo used to compile and be ignored when the layout
+# was loaded; now it is a warning with what was probably meant, and an error under --strict.
+# misspelt.tsx has one of each kind, every_name.tsx has only names that are valid -- the
+# structural ones the compiler reads itself, a component's own props, an object-form element --
+# and must come out silent, because a warning on a valid name is the one way this does harm.
+# A test that passes on a regular expression does not look at the exit code, so the ones that
+# are about exit codes are separate and have none.
+if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
+	set(names_src "${CMAKE_CURRENT_SOURCE_DIR}/script")
+	set(names_out "${CMAKE_CURRENT_BINARY_DIR}/names")
+	add_test(NAME rda_names_element COMMAND rda layout "${names_src}/misspelt.tsx" "${names_out}-1.rdab")
+	add_test(NAME rda_names_property COMMAND rda layout "${names_src}/misspelt.tsx" "${names_out}-2.rdab")
+	add_test(NAME rda_names_known_guess COMMAND rda layout "${names_src}/misspelt.tsx" "${names_out}-3.rdab")
+	add_test(NAME rda_names_nothing_close COMMAND rda layout "${names_src}/misspelt.tsx" "${names_out}-4.rdab")
+	add_test(NAME rda_names_still_builds COMMAND rda layout "${names_src}/misspelt.tsx" "${names_out}-5.rdab")
+	add_test(NAME rda_names_strict_fails COMMAND rda layout --strict "${names_src}/misspelt.tsx" "${names_out}-6.rdab")
+	add_test(NAME rda_names_strict_says COMMAND rda layout --strict "${names_src}/misspelt.tsx" "${names_out}-7.rdab")
+	add_test(NAME rda_names_clean COMMAND rda layout "${names_src}/every_name.tsx" "${names_out}-8.rdab")
+	add_test(NAME rda_names_clean_strict COMMAND rda layout --strict "${names_src}/every_name.tsx" "${names_out}-9.rdab")
+	add_test(NAME rda_names_strict_build COMMAND rda build --strict "${init_dir}/interface")
+	set_tests_properties(rda_names_element PROPERTIES
+		PASS_REGULAR_EXPRESSION "warning: [^\n]*<buton> 'root/go' is not an element; did you mean <button>\\?")
+	set_tests_properties(rda_names_property PROPERTIES
+		PASS_REGULAR_EXPRESSION "warning: [^\n]*<button> 'root/again' has no property 'widht'; did you mean 'width'\\?")
+	set_tests_properties(rda_names_known_guess PROPERTIES
+		PASS_REGULAR_EXPRESSION "<checkbox> 'root/remember' has no property 'text'; did you mean 'label'\\?")
+	set_tests_properties(rda_names_nothing_close PROPERTIES
+		PASS_REGULAR_EXPRESSION "<label> 'root/title' has no property 'zebra'; it takes text, wrap, spans")
+	# Warnings do not fail the build: no expression, so the exit code is what is checked.
+	# --strict does, and says that it was --strict that did.
+	set_tests_properties(rda_names_strict_fails PROPERTIES WILL_FAIL TRUE)
+	set_tests_properties(rda_names_strict_says PROPERTIES
+		PASS_REGULAR_EXPRESSION "has no property 'widht'[^\n]*\n[^\n]*\n[^\n]*\n\\(--strict: without it these are warnings")
+	set_tests_properties(rda_names_clean rda_names_clean_strict PROPERTIES
+		FAIL_REGULAR_EXPRESSION "warning:|is not an element|has no property")
+	set_tests_properties(rda_names_strict_build PROPERTIES DEPENDS rda_init_interface
+		FAIL_REGULAR_EXPRESSION "has no property|is not an element")
+	set_tests_properties(rda_names_element rda_names_property rda_names_known_guess
+		rda_names_nothing_close rda_names_still_builds rda_names_strict_fails rda_names_strict_says
+		rda_names_clean rda_names_clean_strict rda_names_strict_build PROPERTIES TIMEOUT 120)
+endif()
+
+# `rda elements`: the widget schema read back, from the table the loader and the .d.ts are
+# written from. No esbuild: it compiles nothing.
+if(TARGET rda)
+	add_test(NAME rda_elements_list COMMAND rda elements)
+	add_test(NAME rda_elements_one COMMAND rda elements checkbox)
+	add_test(NAME rda_elements_events COMMAND rda elements checkbox)
+	add_test(NAME rda_elements_json COMMAND rda elements checkbox --json)
+	add_test(NAME rda_elements_unknown COMMAND rda elements chekbox)
+	set_tests_properties(rda_elements_list PROPERTIES
+		PASS_REGULAR_EXPRESSION "elements\\. `rda elements <name>` lists the properties[^\n]*\n\n  container  groups children")
+	set_tests_properties(rda_elements_one PROPERTIES
+		PASS_REGULAR_EXPRESSION "<checkbox>\n  a labelled boolean toggle\n\nProperties\n  label  \\[string\\]  \\(can be bound\\)\n      the text beside the box")
+	set_tests_properties(rda_elements_events PROPERTIES
+		PASS_REGULAR_EXPRESSION "Events\n  onChange  \\[event with a boolean\\]")
+	set_tests_properties(rda_elements_json PROPERTIES
+		PASS_REGULAR_EXPRESSION "\"name\": \"label\", \"type\": \"string\", \"bindable\": true, \"common\": false")
+	set_tests_properties(rda_elements_unknown PROPERTIES
+		PASS_REGULAR_EXPRESSION "there is no element called `chekbox`. The elements are: container, panel")
+endif()
+
+# `rda doctor`: says what it found. What it finds depends on the machine, so what is checked is
+# that each question is asked and answered in a line of its own -- not what the answer is.
+if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
+	add_test(NAME rda_doctor COMMAND rda doctor)
+	add_test(NAME rda_doctor_project COMMAND rda doctor "${init_dir}/interface")
+	# A folder that is not a project: something it needs is missing, so it fails, and says what.
+	add_test(NAME rda_doctor_missing COMMAND rda doctor "${CMAKE_CURRENT_BINARY_DIR}/no-such-project")
+	add_test(NAME rda_doctor_missing_fails COMMAND rda doctor "${CMAKE_CURRENT_BINARY_DIR}/no-such-project")
+	set_tests_properties(rda_doctor PROPERTIES
+		PASS_REGULAR_EXPRESSION "rda doctor\n  ok  +rda +[^\n]*\\(engine [0-9.]+\\)\n  ok  +esbuild +[^\n]*\n  [^\n]*rda-preview")
+	set_tests_properties(rda_doctor_project PROPERTIES DEPENDS rda_init_interface
+		PASS_REGULAR_EXPRESSION "project [^\n]*interface\n  ok  +res/ [^\n]*\n  ok  +state\\.ts[^\n]*\n  ok  +themes +1 theme in res/themes/\n  ok  +layouts +1 file in res/layouts/\n  ok  +backend +none found")
+	set_tests_properties(rda_doctor_missing PROPERTIES
+		PASS_REGULAR_EXPRESSION "PROBLEM  project +no such folder\n +-> check the path")
+	set_tests_properties(rda_doctor_missing_fails PROPERTIES WILL_FAIL TRUE)
+	set_tests_properties(rda_doctor rda_doctor_project rda_doctor_missing rda_doctor_missing_fails
+		PROPERTIES TIMEOUT 120)
+endif()
+
+# `rda dev`, without running anything that opens a window: what it would do, and -- with a
+# backend that is a script printing a line and ending -- that it builds, starts it, waits for it
+# and hands its exit code on. The script is Python, so the last two need one on the PATH.
+if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
+	add_test(NAME rda_dev_dry_run COMMAND rda dev "${init_dir}/Py_App" --dry-run)
+	add_test(NAME rda_dev_dry_run_prototype COMMAND rda dev "${init_dir}/interface" --dry-run)
+	add_test(NAME rda_dev_cpp COMMAND rda dev "${init_dir}/cpp.app" --dry-run)
+	set_tests_properties(rda_dev_dry_run PROPERTIES DEPENDS rda_init_py_app
+		PASS_REGULAR_EXPRESSION "rda: would build [^\n]*Py_App\nrda: would run: python3? app\\.py ")
+	set_tests_properties(rda_dev_dry_run_prototype PROPERTIES DEPENDS rda_init_interface
+		PASS_REGULAR_EXPRESSION "rda: would run: rda prototype [^\n]*interface")
+	set_tests_properties(rda_dev_cpp PROPERTIES DEPENDS rda_init_cpp_app
+		PASS_REGULAR_EXPRESSION "a C\\+\\+ project is its own program, and `dev` cannot start it")
+	set_tests_properties(rda_dev_dry_run rda_dev_dry_run_prototype rda_dev_cpp PROPERTIES TIMEOUT 120)
+
+	find_program(RDA_TEST_PYTHON NAMES python python3)
+	if(RDA_TEST_PYTHON)
+		set(dev_dir "${CMAKE_CURRENT_BINARY_DIR}/dev")
+		foreach(kind ok fails)
+			file(MAKE_DIRECTORY "${dev_dir}/${kind}/res/layouts")
+			configure_file("${CMAKE_SOURCE_DIR}/Cli/templates/common/state.ts"
+			               "${dev_dir}/${kind}/res/state.ts" COPYONLY)
+		endforeach()
+		file(WRITE "${dev_dir}/ok/app.py" "print('fake backend started')\n")
+		file(WRITE "${dev_dir}/fails/app.py" "import sys\nprint('fake backend failing')\nsys.exit(3)\n")
+		add_test(NAME rda_dev_runs_backend COMMAND rda dev "${dev_dir}/ok")
+		add_test(NAME rda_dev_passes_code_on COMMAND rda dev "${dev_dir}/fails")
+		add_test(NAME rda_dev_code_is_nonzero COMMAND rda dev "${dev_dir}/fails")
+		set_tests_properties(rda_dev_runs_backend PROPERTIES
+			PASS_REGULAR_EXPRESSION "rda: running python3? app\\.py[^\n]*\n[^\n]*fake backend started\nrda: the backend ended with code 0")
+		set_tests_properties(rda_dev_passes_code_on PROPERTIES
+			PASS_REGULAR_EXPRESSION "fake backend failing\nrda: the backend ended with code 3")
+		set_tests_properties(rda_dev_code_is_nonzero PROPERTIES WILL_FAIL TRUE)
+		set_tests_properties(rda_dev_runs_backend rda_dev_passes_code_on rda_dev_code_is_nonzero
+			PROPERTIES TIMEOUT 120)
+	endif()
+endif()
+
+# `rda add screen`, on a project of its own that every run of the suite makes again: a screen
+# in a project with no routes (which has to declare them, with the screen already there), one in
+# a project that has them, and the two refusals. Each step is a test of its own that depends on
+# the one before, because each is one command.
+if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
+	set(add_dir "${CMAKE_CURRENT_BINARY_DIR}/add")
+	add_test(NAME rda_add_clean COMMAND "${CMAKE_COMMAND}" -E remove_directory "${add_dir}")
+	add_test(NAME rda_add_init COMMAND rda init "${add_dir}/shop" --python --force)
+	add_test(NAME rda_add_screen_declares_routes COMMAND rda add screen about "${add_dir}/shop")
+	add_test(NAME rda_add_screen_with_routes COMMAND rda add screen settings "${add_dir}/shop")
+	add_test(NAME rda_add_screen_refuses_layout COMMAND rda add screen about "${add_dir}/shop")
+	add_test(NAME rda_add_remove_layout COMMAND "${CMAKE_COMMAND}" -E remove "${add_dir}/shop/res/layouts/settings.tsx")
+	add_test(NAME rda_add_screen_refuses_route COMMAND rda add screen settings "${add_dir}/shop")
+	set_tests_properties(rda_add_init PROPERTIES DEPENDS rda_add_clean
+		PASS_REGULAR_EXPRESSION "project [^\n]*shop, 6 files")
+	set_tests_properties(rda_add_screen_declares_routes PROPERTIES DEPENDS rda_add_init
+		PASS_REGULAR_EXPRESSION "route `about`, and a `routes` declaration holding the screens already here\\)\n\nrda: this project had no routes[^\n]*\n  Python  from state import ROUTES\n[^\n]*open_routes\\(ROUTES[^\n]*\n(.|\n)*rda: [0-9]+ written")
+	set_tests_properties(rda_add_screen_with_routes PROPERTIES DEPENDS rda_add_screen_declares_routes
+		PASS_REGULAR_EXPRESSION "state\\.ts  \\(route `settings`\\)\n\nrda: detected Python(.|\n)*rda: [0-9]+ written")
+	set_tests_properties(rda_add_screen_refuses_layout PROPERTIES DEPENDS rda_add_screen_with_routes
+		PASS_REGULAR_EXPRESSION "about\\.tsx already exists; nothing was changed")
+	set_tests_properties(rda_add_remove_layout PROPERTIES DEPENDS rda_add_screen_refuses_layout)
+	set_tests_properties(rda_add_screen_refuses_route PROPERTIES DEPENDS rda_add_remove_layout
+		PASS_REGULAR_EXPRESSION "state\\.ts already has a route called `settings` \\(it shows `settings`\\); nothing was changed")
+	set_tests_properties(rda_add_clean rda_add_init rda_add_screen_declares_routes
+		rda_add_screen_with_routes rda_add_screen_refuses_layout rda_add_remove_layout
+		rda_add_screen_refuses_route PROPERTIES TIMEOUT 120)
+endif()
+
+# `rda shot --click <id>`: a widget named instead of a point. What can be tested without a GPU is
+# the refusals, which happen before a window is asked for -- an id that is nothing, and an id that
+# is the end of two paths -- and so they run anywhere rda-preview is. That the click lands on the
+# widget needs a device, and was checked by hand: it is the one part this does not cover.
+if(TARGET rda AND TARGET rda-preview AND RDA_ESBUILD_EXECUTABLE)
+	set(click_dir "${CMAKE_CURRENT_BINARY_DIR}/click/dup")
+	file(MAKE_DIRECTORY "${click_dir}/res/layouts" "${click_dir}/res/themes")
+	configure_file("${CMAKE_SOURCE_DIR}/Cli/templates/common/theme.ts" "${click_dir}/res/themes/app.ts" COPYONLY)
+	file(WRITE "${click_dir}/res/layouts/dup.tsx" [=[
+export default function Dup() {
+  return (
+    <stack id="root" arrange="vertical">
+      <stack id="left"><button id="x" text="Left" /></stack>
+      <stack id="right"><button id="x" text="Right" /></stack>
+    </stack>
+  )
+}
+]=])
+	add_test(NAME rda_shot_click_unknown COMMAND rda shot "${click_dir}" --click nope)
+	add_test(NAME rda_shot_click_ambiguous COMMAND rda shot "${click_dir}" --click x)
+	add_test(NAME rda_shot_hover_unknown COMMAND rda shot "${click_dir}" --hover nope)
+	add_test(NAME rda_shot_click_refusal_fails COMMAND rda shot "${click_dir}" --click nope)
+	set_tests_properties(rda_shot_click_unknown PROPERTIES
+		PASS_REGULAR_EXPRESSION "rda: `nope` is not the id of any widget in [^\n]*dup\\.tsx\\. Its ids are: root, root/left, root/right, root/left/x, root/right/x")
+	set_tests_properties(rda_shot_click_ambiguous PROPERTIES
+		PASS_REGULAR_EXPRESSION "rda: `x` is the end of 2 widgets' ids in [^\n]*dup\\.tsx -- say more of the path: root/left/x, root/right/x")
+	set_tests_properties(rda_shot_hover_unknown PROPERTIES
+		PASS_REGULAR_EXPRESSION "rda: `nope` is not the id of any widget")
+	set_tests_properties(rda_shot_click_refusal_fails PROPERTIES WILL_FAIL TRUE)
+	set_tests_properties(rda_shot_click_unknown rda_shot_click_ambiguous rda_shot_hover_unknown
+		rda_shot_click_refusal_fails PROPERTIES TIMEOUT 120)
 endif()
 
 # Every test above that runs the tool is given the esbuild the build itself uses, the way the

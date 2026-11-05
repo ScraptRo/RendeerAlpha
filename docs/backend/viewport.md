@@ -67,9 +67,10 @@ Rda.Draw("chart", d);
 | `text(x, y, text, color, size)` | top-left at `x, y`; size 0 is the interface's own |
 
 Colours are what a theme takes — `"#RGB"`, `"#RRGGBB"`, `"#RRGGBBAA"` — and a colour here
-is the same pixels as the same colour in a theme. Font sizes that draw crisply are the
-ones the atlas was baked with (see [themes](../frontend/themes.md)); another size is drawn
-at the nearest baked one.
+is the same pixels as the same colour in a theme. Any font size draws crisply: one the
+atlas does not hold yet is added the first time it is used. A size that changes every frame
+is the exception, because after 32 added sizes text is drawn at the nearest one it has, so
+to zoom text, step through a few sizes rather than a continuous range.
 
 That is the whole list, and it is short on purpose. Five primitives cover a plot, a
 timeline, a Gantt chart, a seating plan, a waveform, a board — the drawings a backend

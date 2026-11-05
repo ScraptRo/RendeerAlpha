@@ -15,6 +15,7 @@ Accepted by every element above.
 | `x`, `y`, `w`, `h` | see [Absolute placement](../placement.md) |
 | `anchor`, `marginRight`, `marginBottom` | which parent edges it follows |
 | `onHover(boolean)` | true when the pointer arrives, false when it leaves |
+| `onOpen()`, `onClose()` | on a layout's root element only: it opened, or it closed — see [screens](../screens.md#opening-and-closing) |
 | `onContext()` | the right button went down on this — see [containers](containers.md#right-click-menus) |
 | `dragWindow` | dragging this moves the window — see [The window](../window.md) |
 | `maximizeButton` | this is the window's maximise button; on Windows 11 resting on it offers snap layouts — see [The window](../window.md) |

@@ -1,5 +1,7 @@
 ﻿// rda — the layout toolchain.
 //
+//   rda init   [<dir>] [--python|--node|--csharp|--cpp] [--force] [--no-build]
+//                                      a new project: an interface, and a backend if asked
 //   rda build  <project> [--python|--node|--csharp|--cpp <dir>] [--force]
 //                                      everything a project's res/ needs, by convention
 //   rda layout <file.tsx> [out.rdab]   compile a layout into a blueprint
@@ -9,18 +11,21 @@
 //   rda state  <state.ts>  <out.h>     generate the C++ for a state declaration
 //   rda python|node|csharp <state.ts> <out>   the same, for another language
 //   rda dump   <file.rdab>             print what a compiled layout contains
+//   rda add screen <name> [<project>]  a layout and its route
+//   rda elements [<name>] [--json]     the widget schema, readable
+//   rda dev    [<project>]             build, run the backend, run it again on a state.ts change
+//   rda doctor [<project>]             what was found, and what is missing
 //   rda prototype <project>            open the interface with placeholder state
 //   rda shot   <project>               the same with no window: writes a .png
 //
 // Options that apply to every command can be written anywhere on the line:
-// --no-runtime-code, and --mesh <mesh.ts> (repeatable) on `theme` and `types`.
+// --no-runtime-code, --strict, and --mesh <mesh.ts> (repeatable) on `theme` and `types`.
 //
 // Compilers, every one of them -- bar `prototype` and `shot`, which run what the compilers
 // made so that it can be looked at, and which are not here: they need Vulkan and a window,
 // and this program needs neither, so they are `rda-preview` (PreviewMain.cpp) and this
-// hands them over (Forward.cpp). Everything else this program used to do — scaffolding
-// a project, building it, running it — is a script's job and lives in scripts/. Those
-// tasks are shell work wearing a C++ coat; these are not, because they need the widget
+// hands them over (Forward.cpp). Building and running the engine itself is a
+// script's job and lives in scripts/: shell work wearing a C++ coat. These are not, because they need the widget
 // schema and a JavaScript engine to evaluate a layout once.
 //
 // `build` is the one a person runs. A C++ project has CMake to call the others one file
@@ -29,8 +34,14 @@
 // CMake rules would have: themes, the types, the layouts, and the state in whichever
 // language was asked for -- skipping whatever is already newer than its inputs.
 //
+// `init` writes the files a project starts from and then runs `build` over them, so it needs
+// what `build` needs and nothing more -- in particular no GPU, which is why it is here and
+// not behind `rda-preview` with the two commands that open a window.
+//
 // One file per command -- CmdCompile.cpp, CmdState.cpp, CmdBuild.cpp -- and this one only
-// chooses between them. What they share is in Common.h.
+// chooses between them. What they share is in Common.h. `dev` is the one that starts
+// programs and waits for them, which is Forward.cpp's business, so it is built into `rda`
+// itself and not into the library the preview shares.
 #include "Commands.h"
 #include "Forward.h"
 #include "PreviewUsage.h"
@@ -51,12 +62,36 @@ namespace {
 	};
 
 	const Command kCommands[] = {
+		// Nothing is required: no directory means this one.
+		{ "init", Cli::cmdInit, 0,
+			"  rda init   [<dir>] [--python] [--node] [--csharp] [--cpp] [--force] [--no-build]\n"
+			"                                     start a project: res/ and, with a language, its\n"
+			"                                     backend. Refuses to overwrite without --force\n" },
 		{ "build", Cli::cmdBuild, 0,
 			"  rda build  <project> [--python] [--node] [--csharp] [--cpp <dir>] [--force]\n"
-			"             [--no-runtime-code]\n"
-			"                                     compile everything under <project>/res/\n" },
+			"             [--no-runtime-code] [--strict]\n"
+			"                                     compile everything under <project>/res/, and write\n"
+			"                                     the state module of whatever backend the folder\n"
+			"                                     has (app.py, package.json, *.csproj); a flag\n"
+			"                                     overrides that. --strict makes a misspelt element\n"
+			"                                     or property an error instead of a warning\n" },
 		{ "layout", Cli::cmdLayout, 1,
-			"  rda layout <file.tsx> [out.rdab]   compile a layout into a blueprint\n" },
+			"  rda layout <file.tsx> [out.rdab] [--strict]\n"
+			"                                     compile a layout into a blueprint\n" },
+		{ "add", Cli::cmdAdd, 3,
+			"  rda add screen <name> [<project>] [--no-build]\n"
+			"                                     a new layout, and the route to it in state.ts\n" },
+		{ "elements", Cli::cmdElements, 0,
+			"  rda elements [<name>] [--json]     the elements a layout can use; with a name, its\n"
+			"                                     properties, their types, and its events\n" },
+		{ "dev", Cli::cmdDev, 0,
+			"  rda dev    [<project>] [--layout <name>] [--dry-run] [--python] [--node] [--csharp]\n"
+			"                                     build, run the project's backend, and build and\n"
+			"                                     run it again when res/state.ts changes; with no\n"
+			"                                     backend, the prototype\n" },
+		{ "doctor", Cli::cmdDoctor, 0,
+			"  rda doctor [<project>]             what rda found -- esbuild, the GPU loader, python,\n"
+			"                                     node, dotnet -- and, for a project, what it lacks\n" },
 		{ "types", Cli::cmdTypes, 1,
 			"  rda types  <out.d.ts> [theme] [state]  emit the TypeScript definitions\n" },
 		{ "theme", Cli::cmdTheme, 1,
@@ -91,7 +126,9 @@ namespace {
 			"`build` expects the layout every project has: res/state.ts, res/themes/*.ts and\n"
 			"res/layouts/*.tsx. It writes each theme's .rdth and each layout's .rdab beside\n"
 			"its source, res/layouts/rda.d.ts from the first theme and the state, and the\n"
-			"state module -- state.py, state.mjs or state.cs -- into the project directory.\n");
+			"state module -- state.py, state.mjs or state.cs -- into the project directory,\n"
+			"for each backend the folder has, or the one a flag names. A C++ project gets its\n"
+			"state header from CMake, so there is none to write for it.\n");
 	}
 
 	// Whether the line names enough for the command to start: each positional argument it

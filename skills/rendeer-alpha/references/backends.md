@@ -48,13 +48,13 @@ import { State, Commands, Tables, ROUTES, define } from './state.mjs'
 rda.init({ name: 'Requests', theme: 'res/themes/app.rdth' })
 define()
 rda.setTransitionMs(180)
-rda.openRoutes(ROUTES, 'res/layouts', 'res/layouts')
 
 Commands.refresh(async () => {           // may await: it runs on Node's loop
   State.status = 'read it again'
   Tables.log.fill([{ path: '/', code: 200 }])
 })
 
+rda.openRoutes(ROUTES, 'res/layouts', 'res/layouts')   // after binding: onOpen may call one
 await rda.run()                          // collects commands, resolves when the window closes
 ```
 
@@ -73,10 +73,10 @@ using RdaState;
 
 Rda.Init(new StartupConfig { Name = "My application", Theme = "res/themes/app.rdth" });
 Schema.Define();
-Rda.LoadInterface("res/layouts/home.rdab", "res/layouts/home.tsx");
 
 Commands.save(() => Console.WriteLine($"saving: {State.notes}"));
 
+Rda.LoadInterface("res/layouts/home.rdab", "res/layouts/home.tsx");
 Rda.Wait();
 ```
 

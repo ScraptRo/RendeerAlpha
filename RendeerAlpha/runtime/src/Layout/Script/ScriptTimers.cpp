@@ -142,4 +142,11 @@ namespace RDA::Layout {
 	}
 
 	size_t ScriptHost::timerCount() const { return runtime().timers.size(); }
+
+	size_t ScriptHost::timerCount(const ScriptModule& module) const {
+		const std::vector<Runtime::Timer>& timers = runtime().timers;
+		return static_cast<size_t>(std::count_if(timers.begin(), timers.end(), [&](const Runtime::Timer& timer) {
+			return timer.owner == module.id();
+		}));
+	}
 }

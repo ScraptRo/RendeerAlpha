@@ -830,7 +830,28 @@ namespace RDA::Layout {
 			}
 			out << "\t\t};\n";
 		}
-		out << "\t}\n}\n";
+		out << "\t}\n}\n\n";
+
+		// From the elements above, so a property added to the schema is here too, and a
+		// misspelt one is underlined in an object as it is in a tag. `type` is what tells the
+		// union apart. Children are not JSX.Element, which is an empty interface: anything
+		// is assignable to it, and a typo in a child would go unseen.
+		out << "/**\n"
+		       " * An element written as an object rather than in JSX: the same elements and\n"
+		       " * properties, with `type` naming the element and `children` what is inside it.\n"
+		       " *\n"
+		       " *     export default function Main(): Layout {\n"
+		       " *       return { type: \"stack\", children: [{ type: \"label\", text: \"Hello\" }] }\n"
+		       " *     }\n"
+		       " */\n"
+		       "type Layout = { [K in keyof JSX.IntrinsicElements]:\n"
+		       "\tOmit<JSX.IntrinsicElements[K], \"children\"> & { type: K; id?: string; children?: RdaLayoutChildren }\n"
+		       "}[keyof JSX.IntrinsicElements] | RdaLayoutComponent;\n"
+		       "/** A component in an object: `type` is the function, and the rest are its props. */\n"
+		       "type RdaLayoutComponent = { type: RdaComponent<any>; id?: string; children?: RdaLayoutChildren; "
+		       "[prop: string]: unknown };\n"
+		       "/** One element or a list of them. A false or a null is dropped, as in JSX. */\n"
+		       "type RdaLayoutChildren = Layout | false | null | undefined | RdaLayoutChildren[];\n";
 
 		const std::string text = out.str();
 		std::ofstream file(outputPath, std::ios::trunc);

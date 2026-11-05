@@ -9,7 +9,7 @@ cd RendeerAlpha
 ```
 
 The bring-up script is meant for a machine that has none of this yet. It installs what is
-missing (asking for `sudo` once, only for `apt`), fetches esbuild, builds the engine with
+missing (asking for `sudo` once, and only to install packages), fetches esbuild, builds the engine with
 `-j2` by default, runs the tests, lays the result out in `bin/`, registers the Python and
 Node packages with whatever interpreters it found, and reports what Vulkan device it
 found. Everything it prints is meant to be readable on its own, so the output can be
@@ -42,11 +42,29 @@ sudo apt install build-essential cmake ninja-build curl \
 cmake --build build/unix --config Debug --target stage
 ```
 
-GCC 11 or Clang 14 and newer; the engine is C++20. Other distributions want the same
-libraries under whatever names they use. The first four are what the engine links; the
+GCC 11 or Clang 14 and newer; the engine is C++20. The first four are what the engine links; the
 last three are what a Debug build wants at *run* time — the validation layer it turns on
 (it runs without, with a warning), a software Vulkan driver for a machine without a
 usable GPU, and `vulkaninfo` to see what the loader found.
+
+On Arch, Omarchy and Manjaro:
+
+```bash
+sudo pacman -S --needed gcc cmake ninja curl pkgconf vulkan-icd-loader vulkan-headers \
+                        glfw glm shaderc vulkan-validation-layers vulkan-swrast vulkan-tools
+```
+
+On Fedora:
+
+```bash
+sudo dnf install gcc-c++ cmake ninja-build curl pkgconf-pkg-config vulkan-loader-devel \
+                 vulkan-headers glfw-devel glm-devel libshaderc-devel \
+                 vulkan-validation-layers mesa-vulkan-drivers vulkan-tools
+```
+
+Other distributions use other names. `scripts/linux-bringup.sh` has the names for apt,
+pacman, dnf, zypper, apk and xbps, and `./scripts/linux-bringup.sh --check` prints what
+your machine is missing and the command it would run, without installing anything.
 
 Configuring prints where each dependency came from:
 

@@ -9,7 +9,7 @@
 | **Node 18+** | only for a Node backend |
 | **.NET 8+** | only for a C# backend. Nothing beyond the SDK |
 
-The first three build the engine, once. On Linux the four dependencies are ordinary packages — `libvulkan-dev`, `libshaderc-dev`, `libglm-dev`, `libglfw3-dev`. On Windows, GLFW is the one thing the Vulkan SDK does not ship, and it is built from source the first time a build tree is configured.
+The first three build the engine, once. On Linux the four dependencies are ordinary packages — `libvulkan-dev`, `libshaderc-dev`, `libglm-dev`, `libglfw3-dev` on Debian and Ubuntu, under other names on other distributions. On Windows, GLFW is the one thing the Vulkan SDK does not ship, and it is built from source the first time a build tree is configured.
 
 ## The bring-up script
 
@@ -20,10 +20,11 @@ cd RendeerAlpha
 scripts\windows-bringup.bat        # or ./scripts/linux-bringup.sh
 ```
 
-The script is written for a machine that has none of this yet. It checks what is installed, and when something is missing it prints the `winget` line or the `apt` package and stops — install it, run the script again. Then it fetches esbuild, builds the engine, runs its tests, lays the result out in `bin/`, and registers the Python and Node packages with whatever interpreters it found.
+The script is written for a machine that has none of this yet. It checks what is installed, and when something is missing it prints the `winget` line or the package name for your package manager, and stops — install it, run the script again. Then it fetches esbuild, builds the engine, runs its tests, lays the result out in `bin/`, and registers the Python and Node packages with whatever interpreters it found.
 
 - `--jobs N` limits the parallel compile.
 - `--release` stages a Release engine instead of Debug.
+- `--check` prints what it found and what it would install, then stops without installing anything.
 - A **Debug** engine is the one to develop against: it recompiles a layout you edit while the application is running, and it turns the Vulkan validation layer on.
 
 > It installs nothing itself. The one thing it writes outside the checkout is a `.pth` file in your Python user site-packages, which is how `import rda` finds the checkout.

@@ -678,7 +678,7 @@ function emit(plan) {
   chunk("return {\n  f: {" + plan.calls.map(function (n) { return JSON.stringify(n) + ": " + n; }).join(", ") +
         "},\n  b: [\n");
   plan.bindings.forEach(function (b) {
-    chunk("    (" + (b.row || "__rdaNoRow") + ") => (" + b.src + "),\n", bundle.indexOf(b.src), true);
+    chunk("    (" + (b.row || "__rdaNoRow") + ") => (" + normal(b.src) + "),\n", bundle.indexOf(b.src), true);
   });
   chunk("  ],\n  c: {\n");
   computed.forEach(function (c) {

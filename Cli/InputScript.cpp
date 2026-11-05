@@ -5,6 +5,7 @@
 
 #include "Common.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace Cli {
@@ -49,6 +50,8 @@ namespace Cli {
 				pointer.pressed = step.down;
 				rendeerSetSyntheticPointer(pointer.x, pointer.y, pointer.pressed);
 			}
+			// Turned into a PointerStep once it is known where the widget is; see sendNext.
+			void operator()(const TargetStep&) const {}
 			void operator()(const ReleaseStep&) const {
 				pointer.pressed = holdDrag;
 				rendeerSetSyntheticPointer(pointer.x, pointer.y, pointer.pressed);
@@ -125,9 +128,19 @@ namespace Cli {
 			else break;
 		}
 		float x = 0.0f, y = 0.0f;
+		// A widget's id, or the end of its path, in place of a point: `add`, `root/buttons/add`.
+		// Which widget it is cannot be known until the layout is built, so the pointer is put
+		// at its centre when the step is sent.
+		if (namesAWidget(spec)) {
+			mSteps.push_back(ModifiersStep{ ctrl, shift });
+			mSteps.push_back(TargetStep{ spec, true });
+			mSteps.push_back(TargetStep{ spec, false });
+			mSteps.push_back(ModifiersStep{ false, false });
+			return {};
+		}
 		if (!coordinates(spec, x, y)) {
-			return "--click wants X,Y in layout units, Ctrl+ and Shift+ in front "
-			       "if they are held, like Ctrl+120,340";
+			return "--click wants X,Y in layout units or a widget's id, Ctrl+ and Shift+ in "
+			       "front if they are held, like Ctrl+120,340 or Ctrl+add";
 		}
 		mSteps.push_back(ModifiersStep{ ctrl, shift });
 		mSteps.push_back(pointerAt(x, y, true));
@@ -162,7 +175,28 @@ namespace Cli {
 		mSteps.push_back(std::move(drop));
 	}
 
-	void InputScript::sendNext(Pointer& pointer) {
-		std::visit(Sender{ pointer, mHoldDrag }, mSteps[mSent++]);
+	std::vector<std::string> InputScript::targets() const {
+		std::vector<std::string> named;
+		for (const InputStep& step : mSteps) {
+			if (const TargetStep* target = std::get_if<TargetStep>(&step)) {
+				if (std::find(named.begin(), named.end(), target->target) == named.end()) named.push_back(target->target);
+			}
+		}
+		return named;
+	}
+
+	Found InputScript::sendNext(Pointer& pointer, const Resolver& resolve, std::string& problem) {
+		const Sender send{ pointer, mHoldDrag };
+		if (const TargetStep* target = std::get_if<TargetStep>(&mSteps[mSent])) {
+			float x = 0.0f, y = 0.0f;
+			if (!resolve) { problem = "no layout to find " + target->target + " in"; return Found::No; }
+			const Found found = resolve(target->target, x, y, problem);
+			if (found != Found::Yes) return found;
+			send(pointerAt(x, y, target->down));
+			++mSent;
+			return Found::Yes;
+		}
+		std::visit(send, mSteps[mSent++]);
+		return Found::Yes;
 	}
 }

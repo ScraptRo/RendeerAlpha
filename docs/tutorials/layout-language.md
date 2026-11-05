@@ -123,6 +123,8 @@ Every `text` property is UTF-8, from the `.tsx` through the blueprint to the scr
 ## Beyond one layout
 
 - **Screens** — more than one layout, with `route` as ordinary state. Declaring `routes` in `state.ts` adds a `route` signal and `back` / `forward` as commands for free.
+- **Opening and closing** — `onOpen` and `onClose` on a layout’s root element run when it opens and closes, the application exiting included, and not when a saved edit reloads it.
+- **Without JSX** — a layout may return a plain object instead, `{ type: "label", text: "Hello", children: [...] }`, typed as `Layout`. It compiles to the same thing. See [a layout as an object](../frontend/objects.md).
 - **Components** — plain functions expanded at build time, which is how a layout splits across files without anything expanding at run time.
 - **Themes and variants** — `variant="..."` on a widget picks an entry from the theme; everything left out inherits from `default`.
 - **Motion** — `animate` is inherited down the tree, and `visible` collapses a child of a stack rather than leaving a hole.

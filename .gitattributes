@@ -15,6 +15,10 @@
 # different prelude there than on Linux.
 RendeerAlpha/toolchain/src/Layout/js/*.js text eol=lf
 
+# What `rda init` writes into a new project, embedded as the bytes of the file. LF so the
+# same project comes out on every platform; the command drops any CR it finds regardless.
+Cli/templates/**  text eol=lf
+
 # Binary, so git never tries to "fix" them.
 *.png    binary
 *.jpg    binary

@@ -29,6 +29,7 @@ nothing but its own interface — one command, no build system.
 
 | | |
 | --- | --- |
+| [The rda commands](commands.md) | `build`, `dev`, `add screen`, `elements`, `doctor` -- what each is for, and what `build` works out by itself |
 | [Seeing it before there is a backend](prototyping.md) | `rda prototype` — the interface in a window, with placeholder state |
 | [Seeing it without watching it](seeing-it.md) | `rda shot` — the same with no window: a `.png` of a screen, a hover, or a transition frame by frame |
 | [Editor support](editor-support.md) | red squiggles in a layout, before the build sees it |

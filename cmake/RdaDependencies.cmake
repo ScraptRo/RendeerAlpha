@@ -54,7 +54,7 @@ else()
 		"No Vulkan found.\n"
 		"  Windows: install the Vulkan SDK from https://vulkan.lunarg.com/sdk/home\n"
 		"           (it also supplies shaderc and glm, below)\n"
-		"  Linux:   install libvulkan-dev, or run scripts/linux-bringup.sh")
+		"  Linux:   install the Vulkan loader and headers, or run scripts/linux-bringup.sh")
 endif()
 
 # ---- shaderc ------------------------------------------------------------------------
@@ -73,14 +73,18 @@ endif()
 # and linking it statically leaves every one of their symbols undefined. A shared library
 # swallows that -- the holes are left for dlopen -- so the engine's own .so linked, and
 # the first executable to link the engine failed with a page of `glslang::TShader`.
-# Their libshaderc.so is the complete one, eight megabytes with everything inside, so
-# on Linux the plain name goes first and the misleading one last.
+# Their libshaderc.so is the complete one, eight megabytes with everything inside.
+#
+# Arch has no such file: it ships libshaderc_shared.so, and beside it a static libshaderc.a
+# that a search for the plain name would stop at, because find_library tries each name in
+# turn across every directory. So on Linux the shared name goes first, which Debian and
+# Ubuntu simply do not have, then the plain one, and the misleading one last.
 if(WIN32)
 	set(_rda_shaderc_release shaderc_combined shaderc_shared shaderc)
 	set(_rda_shaderc_debug   shaderc_combinedd shaderc_sharedd shadercd shaderc_combined shaderc_shared shaderc)
 else()
-	set(_rda_shaderc_release shaderc shaderc_shared shaderc_combined)
-	set(_rda_shaderc_debug   shaderc shaderc_shared shaderc_combined)
+	set(_rda_shaderc_release shaderc_shared shaderc shaderc_combined)
+	set(_rda_shaderc_debug   shaderc_shared shaderc shaderc_combined)
 endif()
 find_library(RDA_SHADERC_RELEASE
 	NAMES ${_rda_shaderc_release}
@@ -94,7 +98,7 @@ if(NOT RDA_SHADERC_RELEASE)
 	message(FATAL_ERROR
 		"No shaderc found.\n"
 		"  Windows: install the Vulkan SDK, which ships it\n"
-		"  Linux:   install libshaderc-dev, or run scripts/linux-bringup.sh")
+		"  Linux:   install shaderc (its library and headers), or run scripts/linux-bringup.sh")
 endif()
 if(NOT RDA_SHADERC_DEBUG)
 	set(RDA_SHADERC_DEBUG "${RDA_SHADERC_RELEASE}")
@@ -118,7 +122,7 @@ else()
 	message(FATAL_ERROR
 		"No glm found.\n"
 		"  Windows: install the Vulkan SDK, which ships it under Include/glm\n"
-		"  Linux:   install libglm-dev, or run scripts/linux-bringup.sh")
+		"  Linux:   install glm, or run scripts/linux-bringup.sh")
 endif()
 
 # ---- GLFW ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <memory>
 #include <Core/Signals.h>
 #include <Layout/Blueprint.h>
@@ -48,6 +49,16 @@ namespace RDA::Layout {
 		// Stops every binding this instance created. Safe to call twice.
 		void release();
 
+		// A layout's onOpen and onClose. Every open is answered by exactly one close, unless
+		// the process dies, so each runs at most once whatever calls it. Separate from
+		// building, because a Router builds the next screen before it lets go of the last
+		// and the two have to be heard in the other order.
+		void announceOpen();
+		void announceClose();
+		bool announced() const { return mObservers->announced; }
+		// Open already, with nothing said: a reload is the same layout, not a new one.
+		void markAnnounced();
+
 		// Used by instantiate(); public so the loader is not a friend of everything.
 		void adopt(RDA::Widget* root) { mRoot = root; }
 		void track(ObserverId observer) { mObservers->ids.push_back(observer); }
@@ -61,6 +72,11 @@ namespace RDA::Layout {
 			// The layout's functions, when it has any. Held here because everything that
 			// can still run one -- a list building a row late -- holds this too.
 			std::shared_ptr<ScriptModule> module;
+			// Here rather than on a widget, because no widget answers them, and because a
+			// host moves and this moves with it.
+			std::function<void(const Value*)> onOpen;
+			std::function<void(const Value*)> onClose;
+			bool                              announced = false;
 		};
 		std::shared_ptr<ObserverSink> sink() const { return mObservers; }
 
@@ -68,6 +84,11 @@ namespace RDA::Layout {
 		RDA::Widget*                  mRoot = nullptr;
 		std::shared_ptr<ObserverSink> mObservers = std::make_shared<ObserverSink>();
 	};
+
+	// Runs onClose on every layout still open. Called by the engine on its way out, before
+	// the application's onShutdown, and not from a destructor: an application's LayoutHost
+	// is often a global, and those go after everything a handler needs.
+	void closeOpenLayouts();
 
 	// Builds `blueprint` under `parent`.
 	//

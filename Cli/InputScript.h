@@ -7,6 +7,7 @@
 // no longer two halves of a text format that have to agree about its punctuation.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -24,6 +25,11 @@ namespace Cli {
 	// so it stays where the last step left it.
 	struct PointerStep { float x = 0.0f; float y = 0.0f; bool down = false; };
 
+	// The pointer at the centre of a widget somebody named, with the button down or up. Which
+	// widget, and so where, is not known until the layout is built, so it is worked out when the
+	// step is sent rather than when the option is read.
+	struct TargetStep { std::string target; bool down = false; };
+
 	// The end of a drag: the button is let go, unless --hold said to take the picture while
 	// it is still being carried.
 	struct ReleaseStep {};
@@ -37,8 +43,20 @@ namespace Cli {
 	// An input method part way through a word, with its own cursor inside it, in characters.
 	struct CompositionStep { std::string text; int caret = 0; };
 
-	using InputStep = std::variant<ChordStep, TextStep, PointerStep, ReleaseStep, DropStep,
+	using InputStep = std::variant<ChordStep, TextStep, PointerStep, TargetStep, ReleaseStep, DropStep,
 	                               ModifiersStep, CompositionStep>;
+
+	// Where a named widget is, once the layout is built. NotYet is a layout that has not been
+	// walked (wait a frame); No is a refusal, with `problem` saying what to do about it.
+	enum class Found { Yes, NotYet, No };
+	using Resolver = std::function<Found(const std::string& target, float& x, float& y,
+	                                     std::string& problem)>;
+
+	// A widget named on the command line, not a point: anything that is not X,Y. A comma is the
+	// mark of a point, so a typo in one is said to be one and not looked for as a widget.
+	inline bool namesAWidget(const std::string& text) {
+		return !text.empty() && text.find(',') == std::string::npos;
+	}
 
 	// Where the synthetic pointer stands. The shot holds it there frame after frame, and the
 	// pointer steps move it, so it is kept by whoever drives rather than by the script.
@@ -67,8 +85,13 @@ namespace Cli {
 		// Whether every step has been sent.
 		bool finished() const { return mSent >= mSteps.size(); }
 
+		// The widgets the steps aim at, by the name they were written with.
+		std::vector<std::string> targets() const;
+
 		// Sends the next step to the engine, and moves `pointer` if it was a pointer step.
-		void sendNext(Pointer& pointer);
+		// Found::Yes when it went; NotYet leaves the step for the next frame, and No leaves
+		// `problem` saying why it never will.
+		Found sendNext(Pointer& pointer, const Resolver& resolve, std::string& problem);
 
 	private:
 		std::vector<InputStep> mSteps;

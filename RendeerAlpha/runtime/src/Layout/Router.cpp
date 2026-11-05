@@ -285,12 +285,17 @@ namespace RDA::Layout {
 		Widget* arriving = mParent->addChild(std::move(fader));
 
 		LayoutHost host;
-		if (!host.open(*arriving, blueprint, source)) {
+		if (!host.open(*arriving, blueprint, source, LayoutHost::Announce::Later)) {
 			mLastError = "route '" + route.name + "' could not load " + blueprint;
 			RDA_LOG_ERROR("Router: " << mLastError);
 			mParent->remove(arriving->id());
 			return false;
 		}
+
+		// Built, so the move is certain, and the screen being left is told while it is all
+		// still there. With a transition that is as it starts to leave, not when it has gone,
+		// so that a screen saving on close always comes before one reading on open.
+		mHost.announceClose();
 
 		// Only now is the old one let go of. With no transition asked for it goes at once,
 		// exactly as it did before any of this; with one, it joins the list of screens
@@ -318,6 +323,9 @@ namespace RDA::Layout {
 		if (std::string(signals().text(mRouteSignal)) != mCurrent) {
 			signals().set(mRouteSignal, std::string_view(mCurrent));
 		}
+		// Last, with the route and its params as they will stay: `back` arrives here with
+		// the signal still on the old name until the lines above put it right.
+		mHost.announceOpen();
 		RDA_LOG_INFO("Router: " << route.name << " (" << blueprint << ")");
 		return true;
 	}

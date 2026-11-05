@@ -72,7 +72,7 @@ These all **build cleanly**. The log is the only place they appear.
 | `binding: nothing named 'text' on this widget to drive` | the binding is dropped | that element has no such property |
 | `Router: nothing routes to 'x'; opening 'home'` | the wrong screen | `state.route` was set to a name not in `routes` |
 | `list 'rows': 900 rows fit but a list builds at most 512; is rowHeight what was meant?` | the bottom of the list is blank | `rowHeight` is far smaller than intended |
-| `Validation layer … is not installed; running without it` | nothing; it still runs | Linux: `sudo apt install vulkan-validationlayers` |
+| `Validation layer … is not installed; running without it` | nothing; it still runs | Linux: install the validation layers (`vulkan-validationlayers` on Debian and Ubuntu, `vulkan-validation-layers` on Arch and Fedora) |
 
 ## Starting up
 

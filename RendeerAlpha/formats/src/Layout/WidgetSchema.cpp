@@ -60,6 +60,10 @@ namespace RDA::Layout {
 				PROP_EVENT(onContext, "runs when the right button goes down on this; open a "
 			                      "<popup anchor=\"pointer\"> in it for a context menu"),
 			PROP_EVENT_OF(onHover, "boolean", "runs when the pointer arrives or leaves, with which"),
+			PROP_EVENT(onOpen, "on a layout's root element: runs when the layout opens, and not "
+			                   "when a saved edit reloads it"),
+			PROP_EVENT(onClose, "on a layout's root element: runs when the layout closes, the "
+			                    "application exiting included, and not when a saved edit reloads it"),
 
 			PROP_ENUM(live, "off|polite|assertive",
 			          "read out by a screen reader when what this says changes, without the "

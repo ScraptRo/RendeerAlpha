@@ -24,6 +24,7 @@ namespace Cli {
 				std::printf("rda: %s\n%s\n", source.c_str(), result.error.c_str());
 				return 1;
 			}
+			printNameWarnings(source, result);
 			std::printf("rda: %s -> %s\n"
 			            "     %zu nodes, %zu bindings, %zu bytes%s  (transform %.1f ms, evaluate %.1f ms)\n",
 			            source.c_str(), target.c_str(), result.nodeCount, result.bindingCount,

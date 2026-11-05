@@ -27,7 +27,7 @@ decisions a layout cannot express, such as changing a stack's direction.
 | `route` | string | the shape it travels when it moves, as an SVG path; fitted to wherever it is going |
 | `pace` | string | how fast it travels it: `linear` `in` `out` `inOut` or `cubic-bezier(x1,y1,x2,y2)` |
 | `hAlignSelf` `vAlignSelf` | `auto` `stretch` `start` `center` `end`, each with an optional offset | this child's answer to its container, per axis |
-| `x` `y` `w` `h` | number | absolute placement inside the parent's content box |
+| `x` `y` `w` `h` | number | absolute placement inside the parent's content box; `w` and `h` win over `width` and `height`, which also work here |
 | `marginRight` `marginBottom` | number | distance kept from that parent edge when anchored |
 | `anchor` | `fill` `stretchX` `stretchY` `bottomLeft` `bottomRight` | which parent edges this follows |
 | `onHover` | handler(boolean) | true when the pointer arrives, false when it leaves |
@@ -663,3 +663,11 @@ export default function Home() {
 An `id` at the call site wins over the one the component gave its own root, which is what
 makes two calls two widgets rather than one name twice. A component may live in another
 file and be imported; the compiler bundles it.
+
+## Without JSX
+
+A layout may return objects instead of JSX, annotated `: Layout` so the editor checks them:
+`{ type: "stack", spacing: 8, children: [{ type: "label", text: "Hello" }] }`. `type` is the
+element or a component, `children` is one element or a list, and everything else is a
+property, written as it would be after the `=`. It compiles to the same bytes as the JSX, and
+the file still ends in `.tsx`. Prefer JSX unless the person asked for objects.

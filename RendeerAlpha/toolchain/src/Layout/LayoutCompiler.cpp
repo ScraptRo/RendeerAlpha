@@ -9,7 +9,10 @@
 #include <Logger/Logger.h>
 #include <vendor/quickjs/quickjs.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <functional>
@@ -104,6 +107,50 @@ namespace RDA::Layout {
 			return node;
 		}
 
+		// An element written as an object rather than in JSX: { type: "label", text: "Hi" },
+		// its properties beside `type`. h() keeps them under `props`, so having none is what
+		// tells the two apart, and this turns the one into the other before anything reads
+		// it, so that nothing after here knows which was written. A new object rather than
+		// a change to that one: a constant shared by two parents is read twice.
+		void normaliseElement(JSContext* ctx, JSValue& node) {
+			if (!JS_IsObject(node) || JS_IsArray(node) || JS_IsFunction(ctx, node)) return;
+			JSValue existing = JS_GetPropertyStr(ctx, node, "props");
+			const bool fromJsx = !JS_IsUndefined(existing);
+			JS_FreeValue(ctx, existing);
+			if (fromJsx) return;
+
+			JSValue element = JS_NewObject(ctx);
+			JS_SetPropertyStr(ctx, element, "type", JS_GetPropertyStr(ctx, node, "type"));
+
+			JSValue props = JS_NewObject(ctx);
+			JSPropertyEnum* names = nullptr;
+			uint32_t count = 0;
+			if (JS_GetOwnPropertyNames(ctx, &names, &count, node,
+			                           JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+				for (uint32_t i = 0; i < count; ++i) {
+					const char* key = JS_AtomToCString(ctx, names[i].atom);
+					const bool structure = !key || std::string_view(key) == "type" ||
+					                       std::string_view(key) == "children";
+					if (key) JS_FreeCString(ctx, key);
+					if (structure) continue;
+					JS_SetProperty(ctx, props, names[i].atom, JS_GetProperty(ctx, node, names[i].atom));
+				}
+				JS_FreePropertyEnum(ctx, names, count);
+			}
+			JS_SetPropertyStr(ctx, element, "props", props);
+
+			// One element or a list of them, with a false or a null dropped, as in JSX.
+			JSValue children = JS_NewArray(ctx);
+			uint32_t childCount = 0;
+			JSValue given = JS_GetPropertyStr(ctx, node, "children");
+			flattenInto(ctx, children, given, childCount);
+			JS_FreeValue(ctx, given);
+			JS_SetPropertyStr(ctx, element, "children", children);
+
+			JS_FreeValue(ctx, node);
+			node = element;
+		}
+
 		// ---- step 3: flatten ---------------------------------------------------------
 
 		// One signal a layout declared for itself. `name` is what it will be called once
@@ -158,6 +205,197 @@ namespace RDA::Layout {
 		bool namesAnEvent(const std::string& key) {
 			return key.size() > 2 && key.compare(0, 2, "on") == 0 &&
 			       std::isupper(static_cast<unsigned char>(key[2]));
+		}
+
+		// ---- names the schema does not know -------------------------------------------------
+		//
+		// `<buton widht={1}>` used to compile and be ignored when the layout loaded, with a line
+		// in a log that nobody was reading yet. The schema already says what every element takes,
+		// so the compiler can say so too, at the moment the author is looking: with the closest
+		// name it does know, because a typo is nearly always one.
+		//
+		// A warning, not an error, for the reason the loader's is: a layout compiled against a
+		// newer engine should still build against this one. `strict` is for the build that wants
+		// the other answer.
+
+		// Where the compile in progress collects them: the walk is several functions deep and
+		// they are not all in a position to hand a list back.
+		thread_local std::vector<std::string>* gNaming = nullptr;
+		struct NamingScope {
+			std::vector<std::string>* previous;
+			explicit NamingScope(std::vector<std::string>* now) : previous(gNaming) { gNaming = now; }
+			~NamingScope() { gNaming = previous; }
+		};
+
+		char lowered(char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+
+		// Edit distance with a swap counting as one edit, because widht for width is the commonest
+		// mistake there is. Case is ignored: onclick is onClick with a different hand on the shift
+		// key, and should come back as a suggestion rather than as a stranger.
+		size_t nameDistance(std::string_view a, std::string_view b) {
+			const size_t n = a.size(), m = b.size();
+			std::vector<std::vector<size_t>> d(n + 1, std::vector<size_t>(m + 1, 0));
+			for (size_t i = 0; i <= n; ++i) d[i][0] = i;
+			for (size_t j = 0; j <= m; ++j) d[0][j] = j;
+			for (size_t i = 1; i <= n; ++i) {
+				for (size_t j = 1; j <= m; ++j) {
+					const size_t cost = lowered(a[i - 1]) == lowered(b[j - 1]) ? 0 : 1;
+					d[i][j] = (std::min)({ d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost });
+					if (i > 1 && j > 1 && lowered(a[i - 1]) == lowered(b[j - 2]) &&
+					    lowered(a[i - 2]) == lowered(b[j - 1])) {
+						d[i][j] = (std::min)(d[i][j], d[i - 2][j - 2] + 1);
+					}
+				}
+			}
+			return d[n][m];
+		}
+
+		// How far off a name may be and still be offered: a short name has little room to be
+		// wrong in, and offering `x` for `h` is noise.
+		size_t nameTolerance(size_t length) { return length <= 3 ? 1 : (length + 1) / 3; }
+
+		// Names that people write because another toolkit taught them, and that are too far from
+		// the right one for a distance to find. `element` is empty for any element.
+		struct KnownGuess {
+			const char* element;
+			const char* name;
+			const char* instead;   // what it is called here; null when nothing is
+			const char* note;
+		};
+		constexpr KnownGuess kPropertyGuesses[] = {
+			{ "checkbox", "text",       "label",   "a <checkbox> calls the text beside its box its label" },
+			{ "checkbox", "checked",    "value",   "a <checkbox> is ticked when its value is true" },
+			{ "checkbox", "onClick",    "onChange", "a <checkbox> reports being toggled, with the new state" },
+			{ "button",   "label",      "text",    "a <button> calls the text drawn on it its text" },
+			{ "button",   "onPress",    "onClick", nullptr },
+			{ "button",   "onChange",   "onClick", nullptr },
+			{ "label",    "label",      "text",    nullptr },
+			{ "label",    "content",    "text",    nullptr },
+			{ "label",    "value",      "text",    nullptr },
+			{ "textfield", "value",     "text",    "a <textfield> holds its contents in text" },
+			{ "textfield", "onInput",   "onChange", nullptr },
+			{ "slider",   "onInput",    "onChange", nullptr },
+			{ "image",    "source",     "src",     nullptr },
+			{ "image",    "href",       "src",     nullptr },
+			{ "image",    "url",        "src",     nullptr },
+			{ "stack",    "direction",  "arrange", "arrange is horizontal or vertical" },
+			{ "stack",    "orientation", "arrange", "arrange is horizontal or vertical" },
+			{ "stack",    "gap",        "spacing", "the gap between a stack's children is its spacing" },
+			{ "scroll",   "gap",        "spacing", nullptr },
+			{ "select",   "options",    nullptr,   "choices are <option> children, or a table named by `of`" },
+			{ "",         "hidden",     nullptr,   "a widget is hidden with visible={false}" },
+			{ "",         "disabled",   nullptr,   "nothing takes a disabled flag; visible={false} takes a widget away" },
+			{ "",         "size",       nullptr,   "set width and height" },
+			{ "",         "margin",     nullptr,   "a widget has no margin: space comes from its container's spacing and padding" },
+			{ "",         "className",  nullptr,   "there are no classes: look comes from a theme, chosen with variant" },
+			{ "",         "class",      nullptr,   "there are no classes: look comes from a theme, chosen with variant" },
+			{ "",         "style",      nullptr,   "there is no inline style: look comes from a theme, chosen with variant" },
+			{ "",         "color",      nullptr,   "colours come from the theme: choose them with variant" },
+			{ "",         "background", nullptr,   "colours come from the theme: choose them with variant" },
+			{ "",         "backgroundColor", nullptr, "colours come from the theme: choose them with variant" },
+			{ "",         "align",      "hAlign",  "alignment is named for its axis: hAlign or vAlign" },
+			{ "",         "valign",     "vAlign",  nullptr },
+			{ "",         "alignSelf",  "hAlignSelf", "or vAlignSelf, whichever axis you meant" },
+			{ "",         "justify",    "spread",  "spread shares out room left over; hAlign and vAlign place" },
+			{ "",         "key",        nullptr,   "a layout has no keys: id names a node" },
+		};
+		constexpr KnownGuess kElementGuesses[] = {
+			{ "", "scrollview", "scroll",    "one element scrolls, down by default and sideways with horizontal" },
+			{ "", "div",        "container", "or <panel> for one that draws a background" },
+			{ "", "span",       "label",     nullptr },
+			{ "", "text",       "label",     nullptr },
+			{ "", "p",          "label",     nullptr },
+			{ "", "input",      "textfield", nullptr },
+			{ "", "textbox",    "textfield", nullptr },
+			{ "", "img",        "image",     nullptr },
+			{ "", "picture",    "image",     nullptr },
+			{ "", "toggle",     "checkbox",  nullptr },
+			{ "", "switch",     "checkbox",  nullptr },
+			{ "", "dropdown",   "select",    nullptr },
+			{ "", "combobox",   "select",    nullptr },
+			{ "", "listview",   "list",      nullptr },
+			{ "", "treeview",   "tree",      nullptr },
+			{ "", "table",      "grid",      nullptr },
+			{ "", "hstack",     "stack",     "with arrange=\"horizontal\"" },
+			{ "", "vstack",     "stack",     "with arrange=\"vertical\"" },
+			{ "", "row",        "stack",     "with arrange=\"horizontal\"" },
+			{ "", "popover",    "popup",     nullptr },
+			{ "", "tooltip",    "popup",     "with blocking={false}" },
+		};
+
+		const KnownGuess* knownGuess(const KnownGuess* table, size_t count, std::string_view element,
+		                             std::string_view name) {
+			for (size_t i = 0; i < count; ++i) {
+				if (name != table[i].name) continue;
+				if (table[i].element[0] == '\0' || element == table[i].element) return &table[i];
+			}
+			return nullptr;
+		}
+
+		// What to say about a property its element does not take.
+		std::string unknownProperty(const std::string& type, const std::string& id,
+		                            const std::string& key, const WidgetDesc& widget) {
+			std::string message = "<" + type + "> '" + id + "' has no property '" + key + "'";
+
+			// The table first: it knows what was meant, where a distance only knows what looks alike.
+			if (const KnownGuess* guess = knownGuess(kPropertyGuesses, std::size(kPropertyGuesses), type, key)) {
+				// A suggestion this element would itself refuse is not one.
+				const bool usable = guess->instead && findProp(widget, guess->instead);
+				if (usable) message += "; did you mean '" + std::string(guess->instead) + "'?";
+				if (guess->note) message += std::string(usable ? " (" : "; ") + guess->note + (usable ? ")" : "");
+				if (usable || guess->note) return message;
+			}
+
+			// Its own properties before the common ones, so that on a tie the one that belongs to
+			// this element is the one named.
+			std::string best;
+			size_t bestDistance = SIZE_MAX;
+			const auto consider = [&](const PropDesc& prop) {
+				const size_t distance = nameDistance(key, prop.name);
+				if (distance < bestDistance) { bestDistance = distance; best = prop.name; }
+			};
+			for (size_t i = 0; i < widget.propCount; ++i) consider(widget.props[i]);
+			size_t commonCount = 0;
+			const PropDesc* common = commonProps(commonCount);
+			for (size_t i = 0; i < commonCount; ++i) consider(common[i]);
+			if (!best.empty() && bestDistance <= nameTolerance(key.size())) {
+				return message + "; did you mean '" + best + "'?";
+			}
+
+			// Nothing close: say what it does take, the properties first and the events after.
+			std::string valid;
+			size_t listed = 0;
+			for (const bool events : { false, true }) {
+				for (size_t i = 0; i < widget.propCount && listed < 6; ++i) {
+					if ((widget.props[i].type == PropType::Event) != events) continue;
+					valid += (listed++ ? ", " : "") + std::string(widget.props[i].name);
+				}
+			}
+			if (listed == 0) valid = "visible, width, height";
+			return message + "; it takes " + valid + ", and the common ones. `rda elements " + type +
+			       "` lists them all";
+		}
+
+		// What to say about an element nothing builds.
+		std::string unknownElement(const std::string& type, const std::string& id) {
+			std::string message = "<" + type + "> '" + id + "' is not an element";
+			if (const KnownGuess* guess = knownGuess(kElementGuesses, std::size(kElementGuesses), "", type)) {
+				message += "; did you mean <" + std::string(guess->instead) + ">?";
+				if (guess->note) message += std::string(" (") + guess->note + ")";
+				return message;
+			}
+			size_t count = 0;
+			const WidgetDesc* widgets = widgetSchema(count);
+			std::string best;
+			size_t bestDistance = SIZE_MAX;
+			for (size_t i = 0; i < count; ++i) {
+				const size_t distance = nameDistance(type, widgets[i].name);
+				if (distance < bestDistance) { bestDistance = distance; best = widgets[i].name; }
+			}
+			if (!best.empty() && bestDistance <= nameTolerance(type.size())) {
+				return message + "; did you mean <" + best + ">?";
+			}
+			return message + "; `rda elements` lists the ones there are";
 		}
 
 		// A function prop is a binding. Its source is recovered from the function itself,
@@ -257,6 +495,34 @@ namespace RDA::Layout {
 				// A list's row template is structure, not a property: it was called once
 				// above and its result queued as this node's child.
 				if (key == "row" && (type == "list" || type == "tree")) continue;
+				// Written by this compiler, not by the author; never a property of anything.
+				const bool compilerOwned = key.rfind("!signal ", 0) == 0;
+
+				// Against the schema, once the structural keys are out of the way. A
+				// component's own props are not here: it was called, and what it returned is
+				// the element being read.
+				if (!compilerOwned && gNaming) {
+					const WidgetDesc* widget = findWidget(type);
+					if (widget && !findProp(*widget, key)) {
+						gNaming->push_back(unknownProperty(type, nodeId, key, *widget));
+					}
+				}
+
+				// A widget has no opening of its own: it is simply there or not. Refused here
+				// because the loader has nothing to attach it to, and would drop what the
+				// author wrote with a line in the log. A <popup>'s onClose is its own event.
+				if (isLayoutEvent(key) && node != 0) {
+					const WidgetDesc* widget = findWidget(type);
+					const PropDesc* prop = widget ? findProp(*widget, key) : nullptr;
+					const bool own = prop && prop >= widget->props && prop < widget->props + widget->propCount;
+					if (!own) {
+						error = "'" + key + "' on '" + nodeId + "' belongs on the layout's root element: "
+						        "a widget has no opening of its own, because it is simply there or not. "
+						        "To react to a value changing, use `watch` in state.ts";
+						ok = false;
+						break;
+					}
+				}
 
 				JSValue value = JS_GetProperty(ctx, props, names[i].atom);
 				if (JS_IsString(value)) {
@@ -329,6 +595,8 @@ namespace RDA::Layout {
 			// keeps that flat, and the cap turns one that returns itself into a failed
 			// build rather than a hung one.
 			for (int depth = 0; depth < 64; ++depth) {
+				// Every node comes through here, and so does what a component returned.
+				normaliseElement(ctx, node);
 				JSValue typeValue = JS_GetPropertyStr(ctx, node, "type");
 				if (!JS_IsFunction(ctx, typeValue)) {
 					JS_FreeValue(ctx, typeValue);
@@ -422,10 +690,26 @@ namespace RDA::Layout {
 				JSValue typeValue = JS_GetPropertyStr(ctx, pending.value, "type");
 				const char* typeText = JS_IsString(typeValue) ? JS_ToCString(ctx, typeValue) : nullptr;
 				if (!typeText) {
-					error = "a node has no element name. An element is either one of the "
-					        "built-in ones, like <panel>, or a function that returns one; "
-					        "this is neither -- a fragment <>...</>, perhaps, which has no "
-					        "node of its own to become.";
+					if (JS_IsString(pending.value)) {
+						const char* raw = JS_ToCString(ctx, pending.value);
+						std::string text = raw ? raw : "";
+						if (raw) JS_FreeCString(ctx, raw);
+						const size_t first = text.find_first_not_of(" \t\r\n");
+						const std::string parent = pending.parent == kNoParent
+							? std::string("the layout") : "'" + paths[pending.parent] + "'";
+						error = first == std::string::npos
+							? "there are spaces beside a tag in " + parent + ", which JSX keeps as text, and "
+							  "a layout has no text between tags. A comment on the same line as a tag "
+							  "leaves them behind: put it on a line of its own."
+							: "\"" + text.substr(first, 40) + "\" is text between the tags of " + parent +
+							  ", and a layout has no text there: text is a property, text=\"...\". A // "
+							  "comment there is text too: write {/* ... */} on a line of its own.";
+					} else {
+						error = "a node has no element name. An element is one of the built-in ones, "
+						        "like <panel> or { type: \"panel\" }, or a function that returns one; "
+						        "this is neither -- a fragment <>...</>, perhaps, which has no "
+						        "node of its own to become.";
+					}
 					JS_FreeValue(ctx, typeValue);
 					JS_FreeValue(ctx, pending.value);
 					ok = false;
@@ -523,6 +807,8 @@ namespace RDA::Layout {
 						break;
 					}
 				}
+
+				if (gNaming && !findWidget(type)) gNaming->push_back(unknownElement(type, id));
 
 				if (index == 0) {
 					// While the root is still the node being filled: props are contiguous
@@ -641,6 +927,7 @@ namespace RDA::Layout {
 			JSContext* ctx = engine.get();
 
 			bool ok = false;
+			const NamingScope naming(&compiled.nameWarnings);
 			JSValue global = JS_GetGlobalObject(ctx);
 			JS_SetPropertyStr(ctx, global, "h", JS_NewCFunction(ctx, js_h, "h", 3));
 
@@ -674,17 +961,20 @@ namespace RDA::Layout {
 					if (!one.global) declared.emplace(one.authored, one.name);
 				}
 
-				if (!JS_IsFunction(ctx, builderFn)) {
-					error = "the layout has no default export, or it is not a function. "
-					        "A layout file exports the function that builds it: "
-					        "`export default function Name(props) { return <panel/> }`";
+				if (!JS_IsFunction(ctx, builderFn) && (!JS_IsObject(builderFn) || JS_IsArray(builderFn))) {
+					error = "the layout has no default export, or it is neither a function nor an "
+					        "element. A layout file exports the function that builds it, "
+					        "`export default function Name(props) { return <panel/> }`, or the "
+					        "element itself, `export default { type: \"panel\" }`";
 				} else {
 					JSValue props = JS_ParseJSON(ctx, propsJson.c_str(), propsJson.size(), "<props>");
 					if (JS_IsException(props)) {
 						JS_FreeValue(ctx, props);
 						props = JS_NewObject(ctx);
 					}
-					JSValue tree = JS_Call(ctx, builderFn, JS_UNDEFINED, 1, &props);
+					JSValue tree = JS_IsFunction(ctx, builderFn)
+						? JS_Call(ctx, builderFn, JS_UNDEFINED, 1, &props)
+						: JS_DupValue(ctx, builderFn);
 					if (JS_IsException(tree)) {
 						error = thrownBy(ctx, origins);
 					} else if (!JS_IsObject(tree)) {
@@ -748,6 +1038,15 @@ namespace RDA::Layout {
 		BlueprintBuilder builder;
 		if (!evaluate(js, sourceMap, sourcePath, builder, result, result.error)) return result;
 		result.evaluateMs = millisSince(evaluateStart);
+		if (options.strict && !result.nameWarnings.empty()) {
+			// Every one, not the first: a build that fails on a typo and then on the next
+			// one is a build run five times to learn what one run knew.
+			for (const std::string& one : result.nameWarnings) {
+				result.error += (result.error.empty() ? "" : "\n") + one;
+			}
+			result.error += "\n(--strict: without it these are warnings, and the layout builds)";
+			return result;
+		}
 		for (const std::string& warning : result.warnings) RDA_LOG_WARNING(sourcePath << ": " << warning);
 
 		result.bytes     = builder.finish();

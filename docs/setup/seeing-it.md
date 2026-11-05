@@ -31,6 +31,7 @@ rda shot . --out home.png --size 1100x700 --scale 1
 | `--key <chord>` | press a key chord first, `Ctrl+S`, `Tab`. Repeatable, sent in order, one a frame |
 | `--drag X1,Y1,X2,Y2` | press at the first point, carry across, let go at the second. `--hold` takes the picture before letting go |
 | `--click [Ctrl+][Shift+]X,Y` | a click with those held through it, which `--key` cannot do: `--click 100,92 --click Shift+100,212` chooses a run of rows. Repeatable, in order with `--key` |
+| a widget's id | `--click`, `--hover` and `--press` take an id as well as `X,Y`: `--click add`, or `--click root/buttons/add` when the end of the path is not enough. The pointer goes to the centre of that widget once the layout is built. An id that is nothing, or the end of several, is refused before a window opens, with the ids there are. Only widgets a screen reader can reach have a centre to aim at |
 | `--files <a;b>` | let files go where the pointer is, as though dragged in from outside. Put the pointer there with `--hover` |
 | `--a11y <file>` | write the accessibility tree of the same frame — see [screen readers](../frontend/accessibility.md#seeing-it) |
 | `--compose <text>` | an input method part way through a word, drawn at the focused field's caret |

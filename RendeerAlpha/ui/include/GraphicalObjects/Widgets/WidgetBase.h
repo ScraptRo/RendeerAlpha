@@ -149,9 +149,10 @@ namespace RDA {
 	// tall as what it holds.
 	inline constexpr float kUnbounded = 1.0e9f;
 
-	// How a widget wants to be sized on one axis, used by layout containers. Absolute
-	// (Free) layout ignores these and uses `rect` — the two are alternatives, not a
-	// migration: placing things yourself stays a first-class option.
+	// How a widget wants to be sized on one axis. A stack reads it to share out its room,
+	// and a widget nothing arranges reads it through freeExtent(). `rect` is the other way
+	// of saying it -- the two are alternatives, not a migration: placing things yourself
+	// stays a first-class option.
 	struct SizeSpec {
 		enum class Mode : uint8_t {
 			Fixed,   // exactly `value`
@@ -246,6 +247,12 @@ namespace RDA {
 			if (size < min) size = min;
 			return size < 0.0f ? 0.0f : size;
 		}
+
+		// Whether this says nothing at all, which is what a widget has when a layout wrote
+		// no width and no bounds. Zero is "no opinion" here as it is across a stack's axis.
+		bool silent() const {
+			return mode == Mode::Fixed && value <= 0.0f && min <= 0.0f && max >= kUnbounded && !maxOf;
+		}
 	};
 
 
@@ -285,6 +292,26 @@ namespace RDA {
 		}
 	}
 
+	// How big a widget nothing arranges is on one axis: a child of a <panel> or a
+	// <container>, or of the window. `room` is what the parent has left past the widget's
+	// own position, and `content` is what measuring it gave, for a size that asked for that.
+	//
+	// `w` and `h` come first, so a layout that placed things itself is untouched by a width
+	// beside them, and a widget that says nothing stays at zero for resolveRect's fallback.
+	// Everything else means what it means in a stack, with the one difference a stack would
+	// have: there are no siblings to share with, so a fill is all of the room.
+	//
+	// width and height used to be read by a stack and nothing else. A button in a panel with
+	// height={30} filled the panel, with no message, and looked like the property was broken.
+	inline float freeExtent(const SizeSpec& spec, float own, float room, float content) {
+		if (own > 0.0f || spec.silent()) return own;
+		switch (spec.mode) {
+		case SizeSpec::Mode::Fixed:   return spec.clamp(spec.value > 0.0f ? spec.value : room, room);
+		case SizeSpec::Mode::Content: return spec.clamp(content, room);
+		default:                      return spec.clamp(room, room);
+		}
+	}
+
 	// A node in the retained widget tree. Unlike an immediate call, a Widget persists:
 	// you build it once (typically in onStart), keep it, and mutate it at runtime. Each
 	// frame the tree is walked and every node emits the equivalent immediate-mode call
@@ -319,8 +346,8 @@ namespace RDA {
 		float marginRight = 0.0f;
 		float marginBottom = 0.0f;
 
-		// Size preferences, honoured by layout containers (Stack) and ignored by absolute
-		// ones (Free), which use `rect` instead.
+		// Size preferences. A stack shares its room out by them, and a widget placed by its
+		// own x and y sizes itself by them unless `rect` already says -- see freeExtent().
 		SizeSpec width;
 		SizeSpec height;
 
@@ -490,8 +517,9 @@ namespace RDA {
 
 		// The rect this widget actually occupies, given where the parent put it and how
 		// big the parent's content area is. `origin` is the parent's top-left in screen
-		// space; `parent` is that same area including its size.
-		Rect resolveRect(glm::vec2 origin, const Rect& parent) const;
+		// space; `parent` is that same area including its size. `content` is what
+		// measureContent() answered, and is only read on an axis sized "content".
+		Rect resolveRect(glm::vec2 origin, const Rect& parent, glm::vec2 content = { 0.0f, 0.0f }) const;
 
 		// Where a layout container decided this widget goes. Set by the parent just
 		// before painting it, and consumed once — so a widget under a Stack uses the

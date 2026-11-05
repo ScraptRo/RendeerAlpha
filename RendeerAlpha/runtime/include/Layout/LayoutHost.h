@@ -33,9 +33,15 @@ namespace RDA::Layout {
 
 	class LayoutHost {
 	public:
+		// Whether open() runs the layout's onOpen itself. Later is for a Router, which has a
+		// screen to close first and builds the next one before it does.
+		enum class Announce { Now, Later };
+
 		// `parent` must outlive this. `sourcePath` is optional and is only consulted in a
-		// build that can compile.
-		bool open(RDA::Widget& parent, std::string blueprintPath, std::string sourcePath = {});
+		// build that can compile. A layout already open here is closed first, once the new
+		// blueprint has been read.
+		bool open(RDA::Widget& parent, std::string blueprintPath, std::string sourcePath = {},
+		          Announce announce = Announce::Now);
 
 		// Checks whether anything moved and reloads if so. Returns true when it did.
 		//
@@ -46,7 +52,14 @@ namespace RDA::Layout {
 		// Rebuilds regardless. Returns false and leaves the current interface alone if the
 		// new blueprint cannot be read — a layout that will not load should not take the
 		// running one down with it.
+		//
+		// Runs neither onOpen nor onClose: the reader opened nothing, and a handler that sets
+		// a value up would otherwise undo "the count survives" on every save.
 		bool reload();
+
+		// A layout's onOpen and onClose, each at most once. See LayoutInstance.
+		void announceOpen() { mInstance.announceOpen(); }
+		void announceClose() { mInstance.announceClose(); }
 
 		const LayoutInstance& instance() const { return mInstance; }
 		RDA::Widget* root() const { return mInstance.root(); }
@@ -61,6 +74,7 @@ namespace RDA::Layout {
 		bool sourceChanged();
 		void rediscover();          // watch the source's imports, as they are now
 		bool blueprintChanged();
+		bool rebuild(bool opening);
 
 		RDA::Widget*   mParent = nullptr;
 		std::string    mBlueprintPath;

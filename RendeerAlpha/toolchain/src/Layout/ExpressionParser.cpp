@@ -1,5 +1,7 @@
 ﻿#include <Layout/ExpressionParser.h>
 
+#include <Core/Utf8.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -553,18 +555,86 @@ namespace RDA::Layout {
 				emit(Op::PushNumber, numberConstant(std::strtod(mSource.substr(start, mAt - start).c_str(), nullptr)));
 			}
 
+			static int hexDigit(char c) {
+				if (c >= '0' && c <= '9') return c - '0';
+				if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+				if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+				return -1;
+			}
+
+			uint32_t readHex(size_t digits) {
+				uint32_t value = 0;
+				for (size_t i = 0; i < digits; ++i, ++mAt) {
+					const int digit = atEnd() ? -1 : hexDigit(mSource[mAt]);
+					if (digit < 0) fail("expected a hexadecimal digit in this escape");
+					value = value * 16 + static_cast<uint32_t>(digit);
+				}
+				return value;
+			}
+
+			// What follows `\u`: four digits, or any number of them in braces. A character
+			// past U+FFFF can also arrive the way JavaScript stores it, as two halves one
+			// after the other, and those are one character here. A half with no partner is
+			// left as it is, and comes out of Utf8::encode as the replacement character.
+			uint32_t readUnicodeEscape() {
+				if (!atEnd() && mSource[mAt] == '{') {
+					++mAt;
+					uint32_t value = 0;
+					size_t digits = 0;
+					for (; !atEnd() && mSource[mAt] != '}'; ++mAt, ++digits) {
+						const int digit = hexDigit(mSource[mAt]);
+						if (digit < 0 || value > 0x10FFFF) fail("this escape is not a character");
+						value = value * 16 + static_cast<uint32_t>(digit);
+					}
+					if (atEnd() || digits == 0 || value > 0x10FFFF) fail("this escape is not a character");
+					++mAt; // the closing brace
+					return value;
+				}
+
+				const uint32_t first = readHex(4);
+				const bool awaitsSecondHalf = first >= 0xD800 && first <= 0xDBFF;
+				if (awaitsSecondHalf && mAt + 2 < mSource.size() && mSource[mAt] == '\\'
+				    && mSource[mAt + 1] == 'u' && mSource[mAt + 2] != '{') {
+					const size_t second = mAt;
+					mAt += 2;
+					const uint32_t low = readHex(4);
+					if (low >= 0xDC00 && low <= 0xDFFF) {
+						return 0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00);
+					}
+					mAt = second;
+				}
+				return first;
+			}
+
+			// One escape, with its backslash read and mAt on what follows it.
+			//
+			// These are characters rather than decoration: an application can write `ă`,
+			// and esbuild writes every non-ASCII character that way unless told otherwise.
+			// Treating the letter after the backslash as the character put "u0103" on the
+			// screen where an ă had been written, and only in a binding, because a constant
+			// never comes through here.
+			void readEscape(std::string& out) {
+				const char escape = mSource[mAt++];
+				switch (escape) {
+				case 'n': out.push_back('\n'); break;
+				case 't': out.push_back('\t'); break;
+				case 'r': out.push_back('\r'); break;
+				case 'b': out.push_back('\b'); break;
+				case 'f': out.push_back('\f'); break;
+				case 'v': out.push_back('\v'); break;
+				case '0': out.push_back('\0'); break;
+				case 'x': Utf8::encode(readHex(2), out); break;
+				case 'u': Utf8::encode(readUnicodeEscape(), out); break;
+				default:  out.push_back(escape); break;
+				}
+			}
+
 			std::string readEscaped(char terminator) {
 				std::string out;
 				while (!atEnd() && mSource[mAt] != terminator) {
 					char ch = mSource[mAt++];
 					if (ch == '\\' && !atEnd()) {
-						const char escape = mSource[mAt++];
-						switch (escape) {
-						case 'n': out.push_back('\n'); break;
-						case 't': out.push_back('\t'); break;
-						case 'r': out.push_back('\r'); break;
-						default:  out.push_back(escape); break;
-						}
+						readEscape(out);
 						continue;
 					}
 					out.push_back(ch);
@@ -597,13 +667,8 @@ namespace RDA::Layout {
 
 				while (!atEnd() && mSource[mAt] != '`') {
 					if (mSource[mAt] == '\\' && mAt + 1 < mSource.size()) {
-						const char escape = mSource[mAt + 1];
-						mAt += 2;
-						switch (escape) {
-						case 'n': literal.push_back('\n'); break;
-						case 't': literal.push_back('\t'); break;
-						default:  literal.push_back(escape); break;
-						}
+						++mAt;
+						readEscape(literal);
 						continue;
 					}
 					if (mSource[mAt] == '$' && mAt + 1 < mSource.size() && mSource[mAt + 1] == '{') {

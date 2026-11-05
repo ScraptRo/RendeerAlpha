@@ -135,46 +135,47 @@ namespace RDA::Layout {
 		out << "\n\n# The state, as one object. Import it and assign to it.\n"
 		       "State = _State()\n";
 
-		if (!schema.commands.empty()) {
-			out << "\n\nclass _Commands:\n"
-			       "\t\"\"\"The work the interface can ask for. Each name is a decorator that\n"
-			       "\tbinds the function under it, so a handler is written where it belongs.\n"
-			       "\t\"\"\"\n"
-			       "\t__slots__ = ()\n";
-			for (const StateCommand& command : schema.commands) {
-				out << "\n\tdef " << command.name << "(self, fn):\n";
-				// What the handler is called with, said where an editor shows it.
-				std::string called;
-				if (command.action) {
-					called = "state.ts answers this; a function bound here watches it, called after "
-					         "the action with the same arguments.";
-				} else if (!command.params.empty()) {
-					called = "Called as fn(";
-					for (size_t i = 0; i < command.params.size(); ++i) {
-						if (i) called += ", ";
-						called += command.params[i].name + ": " + pythonType(command.params[i].type);
-					}
-					called += ").";
+		// Whether or not there are any. `from state import State, Commands` is written before
+		// the first command is, and a module without the name fails on that line, with an
+		// error about the import rather than about anything the application did.
+		out << "\n\nclass _Commands:\n"
+		       "\t\"\"\"The work the interface can ask for. Each name is a decorator that\n"
+		       "\tbinds the function under it, so a handler is written where it belongs.\n"
+		       "\t\"\"\"\n"
+		       "\t__slots__ = ()\n";
+		for (const StateCommand& command : schema.commands) {
+			out << "\n\tdef " << command.name << "(self, fn):\n";
+			// What the handler is called with, said where an editor shows it.
+			std::string called;
+			if (command.action) {
+				called = "state.ts answers this; a function bound here watches it, called after "
+				         "the action with the same arguments.";
+			} else if (!command.params.empty()) {
+				called = "Called as fn(";
+				for (size_t i = 0; i < command.params.size(); ++i) {
+					if (i) called += ", ";
+					called += command.params[i].name + ": " + pythonType(command.params[i].type);
 				}
-				if (!command.doc.empty() || !called.empty()) {
-					out << "\t\t\"\"\"" << pythonDoc(command.doc);
-					if (!command.doc.empty() && !called.empty()) out << "\n\n\t\t";
-					out << pythonDoc(called) << "\"\"\"\n";
-				}
-				const bool takesArgs = command.action || !command.params.empty();
-				out << "\t\treturn _engine.bind_command(\"" << command.name << "\", fn"
-				    << (takesArgs ? ", takes_args=True" : "") << ")\n";
+				called += ").";
 			}
-			out << "\n\nCommands = _Commands()\n\n\n"
-			       "def call(name: str, *args):\n"
-			       "\t\"\"\"Runs a command and returns what it returned.\n"
-			       "\n"
-			       "\tOne state.ts answers returns its function's result; one a handler answers\n"
-			       "\truns the handler and returns None. How a rule written once in state.ts --\n"
-			       "\ta validation, a price -- is the backend's rule too.\n"
-			       "\t\"\"\"\n"
-			       "\treturn _engine.call(name, *args)\n";
+			if (!command.doc.empty() || !called.empty()) {
+				out << "\t\t\"\"\"" << pythonDoc(command.doc);
+				if (!command.doc.empty() && !called.empty()) out << "\n\n\t\t";
+				out << pythonDoc(called) << "\"\"\"\n";
+			}
+			const bool takesArgs = command.action || !command.params.empty();
+			out << "\t\treturn _engine.bind_command(\"" << command.name << "\", fn"
+			    << (takesArgs ? ", takes_args=True" : "") << ")\n";
 		}
+		out << "\n\nCommands = _Commands()\n\n\n"
+		       "def call(name: str, *args):\n"
+		       "\t\"\"\"Runs a command and returns what it returned.\n"
+		       "\n"
+		       "\tOne state.ts answers returns its function's result; one a handler answers\n"
+		       "\truns the handler and returns None. How a rule written once in state.ts --\n"
+		       "\ta validation, a price -- is the backend's rule too.\n"
+		       "\t\"\"\"\n"
+		       "\treturn _engine.call(name, *args)\n";
 
 		// ---- tables ----
 		// A class per table rather than a dictionary of them, for the same reason the

@@ -65,6 +65,13 @@ namespace RDA::Layout {
 
 	const WidgetDesc* findWidget(std::string_view name);
 
+	// The two events that belong to a layout rather than to a widget. Declared with the
+	// common properties, so that a root element of any kind can carry them, and answered
+	// by the loader rather than by any widget: a widget has no opening of its own.
+	inline bool isLayoutEvent(std::string_view name) {
+		return name == "onOpen" || name == "onClose";
+	}
+
 	// A prop of that widget, its own or a common one, or nullptr if it takes no such
 	// thing. This is what turns a typo into a message instead of into silence.
 	const PropDesc* findProp(const WidgetDesc& widget, std::string_view prop);

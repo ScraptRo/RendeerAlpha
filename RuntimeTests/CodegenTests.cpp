@@ -145,6 +145,26 @@ TEST(a_text_default_with_a_newline_is_escaped_in_the_csharp_file) {
 	          "\t\t\tEngine.DefineText(\"title\", " + std::string(R"x("a\"b\\c\nd\re\tf\u00017b")x") + ");");
 }
 
+TEST(a_declaration_with_no_commands_still_has_the_name_an_application_imports) {
+	// The line an application opens with imports Commands, and it is there before the first
+	// command is. The name not existing was an ImportError on the very first run.
+	const StateSchema schema = schemaWithTitle("x");
+	CHECK(schema.commands.empty());
+
+	const std::string python = generate(&emitStatePython, schema, "state.py");
+	CHECK(contains(python, "class _Commands:"));
+	CHECK(contains(python, "Commands = _Commands()"));
+	CHECK(contains(python, "def call(name: str, *args):"));
+
+	const std::string node = generate(&emitStateNode, schema, "state.mjs");
+	CHECK(contains(node, "export const Commands = Object.freeze({"));
+	CHECK(contains(node, "export function call(name, ...args)"));
+
+	const std::string csharp = generate(&emitStateCSharp, schema, "state.cs");
+	CHECK(contains(csharp, "public static class Commands {"));
+	CHECK(contains(csharp, "public static JsonElement Call(string name"));
+}
+
 TEST(an_ordinary_text_default_generates_what_it_always_did) {
 	const StateSchema schema = schemaWithTitle("Sandbox");
 	CHECK(contains(generate(&emitStateHeader, schema, "plain.h"),

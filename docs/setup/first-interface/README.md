@@ -8,6 +8,19 @@ Every language starts from the same three files under `res/`. This page is those
 The one after it is the backend, in the language you are writing:
 [C++](cpp.md) · [Python](python.md) · [Node](node.md) · [C#](csharp.md).
 
+Typing them in is optional. `rda init` writes a smaller version of the same files, and the
+backend for the language you name, then builds them once:
+
+```bash
+rda init MyApp --python        # or --node, --csharp, --cpp; no flag: the interface alone
+cd MyApp
+rda prototype .                # opens it with no backend behind it
+```
+
+It makes a counter and one command, and calls the layout `main.tsx` where this page says
+`home.tsx`. It refuses to overwrite anything that is already there unless you pass
+`--force`. Everything below still applies to what it wrote.
+
 What sits beside them — a `CMakeLists.txt` for C++, a `package.json` for Node, a
 `.csproj` for C#, nothing at all for Python — is in
 [adding to a project](../adding-to-a-project/README.md), one page per language. Set
@@ -122,11 +135,12 @@ says *what*.
 ```
 
 Nothing emits from it, and it is worth more than it looks. An unknown element or an
-unknown property **compiles**: the build does not check names against the widget schema,
-so `<div>` and `colour="#fff"` both produce a blueprint, and the loader then skips the
-element and ignores the property with a line in `RDA_DEBUG.txt`. The editor is where that
-typo is meant to be caught, and this file plus the generated `rda.d.ts` is what catches
-it.
+unknown property **compiles, with a warning**: the build checks names against the widget
+schema, so `<div>` and `colour="#fff"` both produce a blueprint and a line saying what was
+not recognised and what was probably meant (`did you mean <container>?`). The loader then
+skips the element and ignores the property, so `rda build --strict` turns the warning into
+an error. The editor catches it sooner, and this file plus the generated `rda.d.ts` is
+what does; `rda elements <name>` lists what an element takes.
 
 ## What you should see
 

@@ -155,55 +155,55 @@ namespace RDA::Layout {
 		out << "\t}\n";
 
 		// ---- commands ----
-		if (!schema.commands.empty()) {
-			out << "\n\t/// <summary>The work the interface can ask for. Each name takes the\n"
-			       "\t/// delegate that answers it.\n"
-			       "\t/// <para>The engine calls these on its own loop thread, inside the frame\n"
-			       "\t/// the interface asked in -- so a handler should be quick, and must not\n"
-			       "\t/// block on anything the loop is responsible for.</para></summary>\n"
-			       "\tpublic static class Commands {\n";
-			for (const StateCommand& command : schema.commands) {
-				out << "\n";
-				if (!command.doc.empty()) {
-					out << "\t\t/// <summary>" << csharpDoc(command.doc) << "</summary>\n";
-				}
-				if (command.action) {
-					// state.ts answers it; a handler here watches it, with the arguments as
-					// JSON, because what an action takes is its function's and TypeScript's.
-					out << "\t\t/// <para>Answered by state.ts. A handler here watches it, and is called\n"
-					       "\t\t/// after the action with the same arguments.</para>\n"
-					       "\t\tpublic static void " << csharpName(command.name)
-					    << "(Action<JsonElement[]> handler) => Engine.OnCommand(\"" << command.name
-					    << "\", handler);\n";
-				} else if (command.params.empty()) {
-					out << "\t\tpublic static void " << csharpName(command.name)
-					    << "(Action handler) => Engine.OnCommand(\"" << command.name
-					    << "\", handler);\n";
-				} else if (command.params.size() <= 16) {
-					out << "\t\tpublic static void " << csharpName(command.name) << "(Action<";
-					for (size_t i = 0; i < command.params.size(); ++i) {
-						if (i) out << ", ";
-						out << csharpType(command.params[i].type);
-					}
-					out << "> handler) =>\n\t\t\tEngine.OnCommand(\"" << command.name << "\", a => handler(";
-					for (size_t i = 0; i < command.params.size(); ++i) {
-						if (i) out << ", ";
-						out << "Engine.Arg" << csharpAccessor(command.params[i].type) << "(a, " << i << ")";
-					}
-					out << "));\n";
-				} else {
-					out << "\t\tpublic static void " << csharpName(command.name)
-					    << "(Action<JsonElement[]> handler) => Engine.OnCommand(\"" << command.name
-					    << "\", handler);\n";
-				}
+		// Whether or not there are any, so `Commands` is a name in every project and a handler
+		// can be added without the file around it changing shape.
+		out << "\n\t/// <summary>The work the interface can ask for. Each name takes the\n"
+		       "\t/// delegate that answers it.\n"
+		       "\t/// <para>The engine calls these on its own loop thread, inside the frame\n"
+		       "\t/// the interface asked in -- so a handler should be quick, and must not\n"
+		       "\t/// block on anything the loop is responsible for.</para></summary>\n"
+		       "\tpublic static class Commands {\n";
+		for (const StateCommand& command : schema.commands) {
+			out << "\n";
+			if (!command.doc.empty()) {
+				out << "\t\t/// <summary>" << csharpDoc(command.doc) << "</summary>\n";
 			}
-			out << "\n\t\t/// <summary>Runs a command and returns what it returned, as JSON. One\n"
-			       "\t\t/// state.ts answers returns its function's result; one a handler answers\n"
-			       "\t\t/// runs it and returns null.</summary>\n"
-			       "\t\tpublic static JsonElement Call(string name, params object?[] args) =>\n"
-			       "\t\t\tEngine.Call(name, args);\n";
-			out << "\t}\n";
+			if (command.action) {
+				// state.ts answers it; a handler here watches it, with the arguments as
+				// JSON, because what an action takes is its function's and TypeScript's.
+				out << "\t\t/// <para>Answered by state.ts. A handler here watches it, and is called\n"
+				       "\t\t/// after the action with the same arguments.</para>\n"
+				       "\t\tpublic static void " << csharpName(command.name)
+				    << "(Action<JsonElement[]> handler) => Engine.OnCommand(\"" << command.name
+				    << "\", handler);\n";
+			} else if (command.params.empty()) {
+				out << "\t\tpublic static void " << csharpName(command.name)
+				    << "(Action handler) => Engine.OnCommand(\"" << command.name
+				    << "\", handler);\n";
+			} else if (command.params.size() <= 16) {
+				out << "\t\tpublic static void " << csharpName(command.name) << "(Action<";
+				for (size_t i = 0; i < command.params.size(); ++i) {
+					if (i) out << ", ";
+					out << csharpType(command.params[i].type);
+				}
+				out << "> handler) =>\n\t\t\tEngine.OnCommand(\"" << command.name << "\", a => handler(";
+				for (size_t i = 0; i < command.params.size(); ++i) {
+					if (i) out << ", ";
+					out << "Engine.Arg" << csharpAccessor(command.params[i].type) << "(a, " << i << ")";
+				}
+				out << "));\n";
+			} else {
+				out << "\t\tpublic static void " << csharpName(command.name)
+				    << "(Action<JsonElement[]> handler) => Engine.OnCommand(\"" << command.name
+				    << "\", handler);\n";
+			}
 		}
+		out << "\n\t\t/// <summary>Runs a command and returns what it returned, as JSON. One\n"
+		       "\t\t/// state.ts answers returns its function's result; one a handler answers\n"
+		       "\t\t/// runs it and returns null.</summary>\n"
+		       "\t\tpublic static JsonElement Call(string name, params object?[] args) =>\n"
+		       "\t\t\tEngine.Call(name, args);\n";
+		out << "\t}\n";
 
 		// ---- tables ----
 		if (!schema.tables.empty()) {

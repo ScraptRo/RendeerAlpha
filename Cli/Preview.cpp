@@ -20,6 +20,7 @@
 #include <Core/FileStamp.h>
 #include <Core/Png.h>
 #include <Core/Signals.h>
+#include <Layout/Blueprint.h>
 #include <GraphicalObjects/Gui.h>
 #include <Layout/LayoutHost.h>
 #include <Layout/ModuleTransform.h>
@@ -83,7 +84,52 @@ namespace Cli {
 			if (inside.size() >= 2 && inside.front() == '[' && inside.back() == ']')
 				inside = inside.substr(1, inside.size() - 2);
 			std::printf("rda: commands.%s(%s)\n", name, inside.c_str());
+			// Said the first time and not every time: a line like the one above reads as the
+			// command having been carried out, and nothing is -- there is no backend here to
+			// carry it out. A script that clicked a button and saw it print was told it worked.
+			static bool said = false;
+			if (!said) {
+				said = true;
+				std::printf("rda: no backend is attached, so a command only prints its call "
+				            "and nothing else happens\n");
+			}
 			std::fflush(stdout);
+		}
+
+		// ---- widgets named on the command line -----------------------------------------------
+
+		// Which of these ids `target` means: the whole id when one is exactly that, otherwise
+		// every id that ends with it after a slash. `add` is the end of root/buttons/add and not
+		// of root/buttons/padding, which is why the slash is part of the match.
+		std::vector<std::string> idsMatching(const std::vector<std::string>& ids, const std::string& target) {
+			std::vector<std::string> exact, ending;
+			const std::string tail = "/" + target;
+			for (const std::string& id : ids) {
+				if (id == target) exact.push_back(id);
+				else if (id.size() > tail.size() && id.compare(id.size() - tail.size(), tail.size(), tail) == 0)
+					ending.push_back(id);
+			}
+			return exact.empty() ? ending : exact;
+		}
+
+		std::string listOf(const std::vector<std::string>& ids, size_t most) {
+			std::string out;
+			for (size_t i = 0; i < ids.size() && i < most; ++i) out += (i ? ", " : "") + ids[i];
+			if (ids.size() > most) out += ", ... (" + std::to_string(ids.size() - most) + " more)";
+			return out;
+		}
+
+		// What to say when `target` does not name exactly one of `ids`; empty when it does.
+		std::string refusalFor(const std::vector<std::string>& ids, const std::string& target,
+		                       const std::string& where) {
+			const std::vector<std::string> found = idsMatching(ids, target);
+			if (found.size() == 1) return {};
+			if (found.empty()) {
+				return "`" + target + "` is not the id of any widget in " + where + ". Its ids are: " +
+				       listOf(ids, 14);
+			}
+			return "`" + target + "` is the end of " + std::to_string(found.size()) + " widgets' ids in " +
+			       where + " -- say more of the path: " + listOf(found, 8);
 		}
 
 		// ---- the session --------------------------------------------------------------------
@@ -104,10 +150,11 @@ namespace Cli {
 				// Compiled first, and by the same code `rda build` runs: a prototype of a layout
 				// that has not been compiled since it was edited is a prototype of the wrong
 				// thing.
-				if (mOptions.compile && cmdBuild({ "build", mOptions.project.string() }) != 0) return 1;
+				if (mOptions.compile && cmdBuild({ "build", mOptions.project.string(), "--no-detect" }) != 0) return 1;
 
 				if (!readState()) return 1;
 				if (!findCompiledFiles()) return 1;
+				if (!checkTargets()) return 1;
 				if (!enterProject()) return 1;
 
 				RDA::AppConfig config;
@@ -154,6 +201,52 @@ namespace Cli {
 				}
 				if (!themes.empty()) {
 					mThemePath = "res/themes/" + themes.front().filename().string();
+				}
+				return true;
+			}
+
+			// Every widget the command line aims at, checked against the compiled layout before a
+			// window opens: a name that matches nothing, or too much, is a refusal here and not a
+			// picture of nothing having been clicked. The ids are in the blueprint, so this needs no
+			// device -- which is also what lets it be tested where there is none.
+			//
+			// Only when the layout is known. With routes and no --layout, which screen opens
+			// depends on state the window has not read yet, and the check is left to the moment
+			// the widget is looked for.
+			bool checkTargets() {
+				std::vector<std::string> targets = mOptions.script.targets();
+				if (!mOptions.pointerTarget.empty()) targets.push_back(mOptions.pointerTarget);
+				if (targets.empty() || !mShooting) return true;
+
+				std::string stem = mOptions.opening;
+				if (!mSchema.routes.empty()) {
+					stem.clear();
+					for (const RDA::Layout::StateRoute& route : mSchema.routes) {
+						if (route.name == mOptions.opening) stem = route.layout;
+					}
+				} else if (stem.empty() && mBlueprints.size() == 1) {
+					stem = mBlueprints.front().stem().string();
+				}
+				if (stem.empty()) return true;
+
+				const fs::path blueprintPath = mRes / "layouts" / (stem + ".rdab");
+				RDA::Layout::Blueprint blueprint;
+				std::string error;
+				if (!RDA::Layout::loadBlueprintFile(blueprintPath.string(), blueprint, error)) {
+					// Not this check's to report: the opening will say so, with more to go on.
+					return true;
+				}
+				std::vector<std::string> ids;
+				for (size_t i = 0; i < blueprint.nodeCount(); ++i) {
+					ids.emplace_back(blueprint.string(blueprint.node(i).id));
+				}
+				const std::string where = shown(mRes / "layouts" / (stem + ".tsx"));
+				for (const std::string& target : targets) {
+					const std::string refusal = refusalFor(ids, target, where);
+					if (!refusal.empty()) {
+						std::printf("rda: %s\n", refusal.c_str());
+						return false;
+					}
 				}
 				return true;
 			}
@@ -398,11 +491,14 @@ namespace Cli {
 				++mShot.tick;
 				// Asked for from the first frame, so the tree exists by the time anything is
 				// captured; it is built by the walk, and only once somebody wants it.
-				if (mShot.tick == 1 && !mOptions.a11yOut.empty()) getMainWindow()->describeForAccessibility();
+				// Also when a widget is aimed at by name: where it is comes from the same tree.
+				if (mShot.tick == 1 && (!mOptions.a11yOut.empty() || aimsAtWidgets()))
+					getMainWindow()->describeForAccessibility();
 				if (mShot.tick <= 2) return;
 				const float ms = (std::min)(dt * 1000.0f, 100.0f);
 				mShot.sinceStart += ms;
 
+				if (!placePointerOnTarget()) return;
 				holdPointer();
 
 				// The steps, one a frame, before anything is counted as settled: a shortcut's
@@ -410,14 +506,89 @@ namespace Cli {
 				// it set moving starts from there. So the settle time and the wait for
 				// stillness both begin again once the last step is down.
 				if (!mOptions.script.finished()) {
-					mOptions.script.sendNext(mPointer);
-					mShot.sinceStart = 0.0f;
-					mShot.stillFor = 0.0f;
+					std::string problem;
+					const Resolver resolve = [this](const std::string& target, float& x, float& y,
+					                                std::string& why) { return findWidget(target, x, y, why); };
+					const Found sent = mOptions.script.sendNext(mPointer, resolve, problem);
+					if (sent == Found::No) {
+						std::printf("rda: %s\n", problem.c_str());
+						refuse();
+						return;
+					}
+					// The layout has not been walked yet: try the same step on the next frame.
+					if (sent == Found::Yes) {
+						mShot.sinceStart = 0.0f;
+						mShot.stillFor = 0.0f;
+					}
 					return;
 				}
 
 				if (!hasWaitedLongEnough(ms)) return;
 				mShot.captureNow = true;
+			}
+
+			bool aimsAtWidgets() const {
+				return !mOptions.pointerTarget.empty() || !mOptions.script.targets().empty();
+			}
+
+			// Where the widget `target` is: the centre of its bounds in the tree the last frame
+			// published, in the layout units the synthetic pointer is placed in. The tree holds
+			// what a screen reader can reach -- buttons, fields, labels, pictures -- so a panel or
+			// a stack is not something to aim at, and that is said rather than guessed around.
+			Found findWidget(const std::string& target, float& x, float& y, std::string& problem) {
+				const auto tree = getMainWindow()->gui().accessibleTree();
+				if (!tree) return Found::NotYet;
+
+				std::vector<std::string> ids;
+				std::vector<size_t> at;
+				for (size_t i = 0; i < tree->nodes.size(); ++i) {
+					if (tree->nodes[i].automationId.empty()) continue;
+					ids.push_back(tree->nodes[i].automationId);
+					at.push_back(i);
+				}
+				const std::vector<std::string> found = idsMatching(ids, target);
+				if (found.empty()) {
+					// A screen arriving takes a few frames to be on screen; after that it is wrong.
+					if (++mTargetMisses < 40) return Found::NotYet;
+					problem = "`" + target + "` is in the layout but there is nothing on screen with that id "
+					          "to aim at. Only widgets a screen reader can reach have a place to click (not a "
+					          "panel, a stack or a container), and a hidden one has none. On screen: " +
+					          listOf(ids, 14);
+					return Found::No;
+				}
+				if (found.size() > 1) {
+					problem = refusalFor(ids, target, "the layout on screen");
+					return Found::No;
+				}
+				for (size_t i = 0; i < ids.size(); ++i) {
+					if (ids[i] != found.front()) continue;
+					const RDA::Rect& box = tree->nodes[at[i]].bounds;
+					x = box.x + box.w * 0.5f;
+					y = box.y + box.h * 0.5f;
+					return Found::Yes;
+				}
+				return Found::NotYet;
+			}
+
+			// --hover and --press given a widget: once it can be found, the pointer is there,
+			// as if X,Y had been written. False while still looking, or when it cannot be found.
+			bool placePointerOnTarget() {
+				if (mOptions.pointerTarget.empty() || mPointer.placed) return true;
+				float x = 0.0f, y = 0.0f;
+				std::string problem;
+				const Found found = findWidget(mOptions.pointerTarget, x, y, problem);
+				if (found == Found::No) {
+					std::printf("rda: %s\n", problem.c_str());
+					refuse();
+					return false;
+				}
+				if (found == Found::NotYet) return false;
+				mPointer.placed = true;
+				mPointer.x = x;
+				mPointer.y = y;
+				mPointer.pressed = mOptions.pointerTargetPressed;
+				mTargetMisses = 0;
+				return true;
 			}
 
 			// Held from the first frame, so a hovered widget is hovered by the time
@@ -554,6 +725,8 @@ namespace Cli {
 			RDA::Layout::LayoutHost mHost;
 			bool                    mRouted = false;
 			bool                    mRefused = false;
+			// Frames spent looking for a widget that is not there yet, before saying it is not.
+			int                     mTargetMisses = 0;
 
 			ShotProgress mShot;
 		};

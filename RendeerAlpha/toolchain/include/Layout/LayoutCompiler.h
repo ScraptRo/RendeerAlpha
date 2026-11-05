@@ -40,6 +40,11 @@ namespace RDA::Layout {
 		size_t               scriptBytes = 0;
 		// Worth saying, not worth failing over -- a top-level value run-time code changes.
 		std::vector<std::string> warnings;
+		// Names the schema does not know: an element nobody builds, a property it does not
+		// take. Kept apart from `warnings` because those are logged as they are found and
+		// these are the tool's to report -- with the file, in its own words, or as errors
+		// under `strict`. Each reads "<element> 'id' ..." and carries its own suggestion.
+		std::vector<std::string> nameWarnings;
 	};
 
 	struct CompileOptions {
@@ -54,6 +59,9 @@ namespace RDA::Layout {
 		// needs it -- for an application that wants "a shipped binary evaluates no
 		// JavaScript" to stay true. `rda build --no-runtime-code`.
 		bool        allowRuntimeCode = true;
+		// True makes every name the schema does not know an error rather than a warning in
+		// CompileResult::nameWarnings. `rda build --strict`, `rda layout --strict`.
+		bool        strict = false;
 	};
 
 	// Compiles one source file. Accepts .tsx, .ts, .jsx and .js — esbuild picks its

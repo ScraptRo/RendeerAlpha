@@ -64,6 +64,8 @@ namespace RDA {
 		mPresent.clear();
 		mMissing.clear();
 		mPixels.clear();
+		mUnbaked.clear();
+		mAddedSizes = 0;
 		if (mFaces) mFaces->faces.clear();
 		mShelfX = mShelfY = mShelfHeight = 0;
 		mDirtyTop = mDirtyBottom = 0;
@@ -80,6 +82,29 @@ namespace RDA {
 			std::vector<unsigned char>    pixels; // kAtlasWidth * used
 			int                           used = 0;
 			std::vector<stbtt_packedchar> chars;  // indexed by glyphSlot()
+		};
+
+		// The replacement box at one height in pixels, and drawing it. Shared by the sizes
+		// baked at startup and the ones added later, so a box looks the same at both.
+		struct ReplacementBox {
+			int stroke;
+			int width;
+			int height;
+			explicit ReplacementBox(float pixelHeight)
+				: stroke((std::max)(1, static_cast<int>(std::lround(pixelHeight / 16.0f)))),
+				  width((std::max)(4, static_cast<int>(std::lround(pixelHeight * 0.5f)))),
+				  height((std::max)(6, static_cast<int>(std::lround(pixelHeight * 0.66f)))) {}
+
+			// `topLeft` is in a bitmap kAtlasWidth texels wide.
+			void draw(unsigned char* topLeft) const {
+				for (int y = 0; y < height; ++y) {
+					for (int x = 0; x < width; ++x) {
+						const bool edge = x < stroke || x >= width - stroke
+						               || y < stroke || y >= height - stroke;
+						if (edge) topLeft[static_cast<size_t>(y) * kAtlasWidth + x] = 255;
+					}
+				}
+			}
 		};
 	}
 
@@ -256,22 +281,16 @@ namespace RDA {
 			// cannot be taken from the font, because plenty of fonts have no U+FFFD:
 			// Cascadia Mono, the one that ships here, is one of them. So it is a hollow
 			// rectangle stroked into the band below the glyphs, at every size, always.
-			const int stroke = (std::max)(1, static_cast<int>(std::lround(pixelHeights[i] / 16.0f)));
-			const int boxW = (std::max)(4, static_cast<int>(std::lround(pixelHeights[i] * 0.5f)));
-			const int boxH = (std::max)(6, static_cast<int>(std::lround(pixelHeights[i] * 0.66f)));
+			const ReplacementBox shape(pixelHeights[i]);
+			const int boxW = shape.width;
+			const int boxH = shape.height;
 			if (used + boxH + 1 > kMaxAtlasHeight) {
 				RDA_LOG_ERROR("Font atlas has no room for a replacement box at "
 				              << pixelHeights[i] << "px");
 				return false;
 			}
 			const int boxY = used;
-			for (int y = 0; y < boxH; ++y) {
-				for (int x = 0; x < boxW; ++x) {
-					const bool edge = x < stroke || x >= boxW - stroke
-					               || y < stroke || y >= boxH - stroke;
-					if (edge) scratch[static_cast<size_t>(boxY + y) * kAtlasWidth + x] = 255;
-				}
-			}
+			shape.draw(scratch.data() + static_cast<size_t>(boxY) * kAtlasWidth);
 			used += boxH + 1;
 
 			stbtt_packedchar& box = bands[i].chars[static_cast<size_t>(kReplacementSlot)];
@@ -312,7 +331,8 @@ namespace RDA {
 
 		std::vector<unsigned char> bitmap(static_cast<size_t>(kAtlasWidth) * atlasHeight, 0);
 		mSizes.clear();
-		mSizes.reserve(pixelHeights.size());
+		mAddedSizes = 0;
+		mUnbaked.clear();
 
 		int asc = 0, desc = 0, gap = 0;
 		stbtt_GetFontVMetrics(&font, &asc, &desc, &gap);
@@ -474,16 +494,8 @@ namespace RDA {
 			return true;
 		}
 
-		// A shelf: fill along a row, drop to a new one below the tallest thing on it.
-		const int needW = w + kGlyphPad;
-		const int needH = h + kGlyphPad;
-		if (mShelfX + needW > kAtlasWidth) {
-			mShelfY += mShelfHeight;
-			mShelfX = 0;
-			mShelfHeight = 0;
-		}
-		const int atlasHeight = static_cast<int>(mAtlasH);
-		if (mShelfY + needH > atlasHeight) {
+		int px = 0, py = 0;
+		if (!claimShelf(w, h, px, py)) {
 			if (!mRoomWarned) {
 				mRoomWarned = true;
 				RDA_LOG_WARNING("Font atlas has no room left for new glyphs; the rest draw "
@@ -492,33 +504,94 @@ namespace RDA {
 			return false;
 		}
 
-		const int px = mShelfX;
-		const int py = mShelfY;
 		// Straight into the CPU copy, one row at a time, at the atlas' stride.
 		stbtt_MakeGlyphBitmap(chosen,
 			mPixels.data() + static_cast<size_t>(py) * kAtlasWidth + px,
 			w, h, kAtlasWidth, scale, scale, glyph);
-
-		mShelfX += needW;
-		mShelfHeight = (std::max)(mShelfHeight, needH);
 
 		baked.x0 = static_cast<unsigned short>(px);
 		baked.y0 = static_cast<unsigned short>(py);
 		baked.x1 = static_cast<unsigned short>(px + w);
 		baked.y1 = static_cast<unsigned short>(py + h);
 		size.onDemand.emplace(cp, baked);
-
-		// Grow the pending rectangle rather than sending now: a line that met twenty new
-		// characters is one upload at the end of the frame instead of twenty stalls.
-		if (mDirtyBottom <= mDirtyTop) {
-			mDirtyTop = py;
-			mDirtyBottom = py + h;
-		} else {
-			mDirtyTop = (std::min)(mDirtyTop, py);
-			mDirtyBottom = (std::max)(mDirtyBottom, py + h);
-		}
+		markDirty(py, py + h);
 		++mRevision;
 		return true;
+	}
+
+	// A shelf: fill along a row, drop to a new one below the tallest thing on it.
+	bool FontAtlas::claimShelf(int w, int h, int& x, int& y) const {
+		const int needW = w + kGlyphPad;
+		const int needH = h + kGlyphPad;
+		int shelfX = mShelfX;
+		int shelfY = mShelfY;
+		int shelfHeight = mShelfHeight;
+		if (shelfX + needW > kAtlasWidth) {
+			shelfY += shelfHeight;
+			shelfX = 0;
+			shelfHeight = 0;
+		}
+		if (shelfY + needH > static_cast<int>(mAtlasH)) return false;
+
+		x = shelfX;
+		y = shelfY;
+		mShelfX = shelfX + needW;
+		mShelfY = shelfY;
+		mShelfHeight = (std::max)(shelfHeight, needH);
+		return true;
+	}
+
+	// Grows the pending rectangle rather than sending now: a line that met twenty new
+	// characters is one upload at the end of the frame instead of twenty stalls.
+	void FontAtlas::markDirty(int top, int bottom) const {
+		if (mDirtyBottom <= mDirtyTop) {
+			mDirtyTop = top;
+			mDirtyBottom = bottom;
+		} else {
+			mDirtyTop = (std::min)(mDirtyTop, top);
+			mDirtyBottom = (std::max)(mDirtyBottom, bottom);
+		}
+	}
+
+	int FontAtlas::addSize(float px) const {
+		if (!mFaces || mFaces->faces.empty() || mPixels.empty()) return -1;
+		const float height = px * mScale; // in pixels, like everything drawn here
+		if (mAddedSizes >= kMaxAddedSizes || height > kMaxAddedHeight) return -1;
+
+		// The box first, because it is the one glyph a size cannot be without: it is what
+		// everything undrawable falls back to, and no room for it means no room for the size.
+		const ReplacementBox shape(height);
+		int boxX = 0, boxY = 0;
+		if (!claimShelf(shape.width, shape.height, boxX, boxY)) return -1;
+		shape.draw(mPixels.data() + static_cast<size_t>(boxY) * kAtlasWidth + boxX);
+		markDirty(boxY, boxY + shape.height);
+
+		// The line metrics are the body font's, as they are for a baked size.
+		const stbtt_fontinfo& body = mFaces->faces.front().info;
+		const float scale = stbtt_ScaleForPixelHeight(&body, height);
+		int asc = 0, desc = 0, gap = 0, space = 0, bearing = 0;
+		stbtt_GetFontVMetrics(&body, &asc, &desc, &gap);
+		stbtt_GetCodepointHMetrics(&body, ' ', &space, &bearing);
+
+		Size added;
+		added.preloaded = false;
+		added.pixelHeight = px;
+		added.ascent = asc * scale / mScale;
+		added.lineAdvance = (asc - desc + gap) * scale / mScale;
+		added.glyphs.resize(static_cast<size_t>(kGlyphCount));
+		added.glyphs[static_cast<size_t>(kSpaceSlot)].xadvance = space * scale / mScale;
+		added.glyphs[static_cast<size_t>(kReplacementSlot)] = {
+			static_cast<unsigned short>(boxX), static_cast<unsigned short>(boxY),
+			static_cast<unsigned short>(boxX + shape.width),
+			static_cast<unsigned short>(boxY + shape.height),
+			1.0f / mScale, -static_cast<float>(shape.height) / mScale,
+			(static_cast<float>(shape.width) + 2.0f) / mScale,
+		};
+		mSizes.push_back(std::move(added));
+		++mAddedSizes;
+		++mRevision;
+		RDA_LOG_INFO("Font atlas added " << px << "px, which was not baked at startup");
+		return static_cast<int>(mSizes.size()) - 1;
 	}
 
 	FontAtlas::DirtyRows FontAtlas::takeDirtyRows() {

@@ -1,3 +1,20 @@
+## Or have it written for you
+
+What the rest of this page describes is also what `rda init` writes. It makes the folder, puts in `res/` and a backend in the language you name, and builds it once:
+
+```bash
+rda init myapp --python      # or --node, --csharp, --cpp
+cd myapp
+rda prototype .              # the interface, before any backend exists
+python app.py
+```
+
+With no language flag you get the interface alone, which `rda prototype .` opens as it stands. The project is a small counter — a heading, a button that counts, and a command the backend answers — so there is something on screen to change. Its layout is `res/layouts/main.tsx`, where the tutorials call it `home.tsx`; nothing depends on the name.
+
+`init` refuses to touch a folder that already holds a file it would write, names the files, and changes nothing until you add `--force`. It ends by running the same build as `rda build`, so `res/layouts/rda.d.ts` is there and your editor works at once; if esbuild cannot be found the project is still made, and it says so. `--no-build` skips that step.
+
+The pages after this one are the same files, written out and explained. Read them for the reasons; run `rda init` to skip the typing.
+
 ## C++ — one line of CMake
 
 ```cmake title="CMakeLists.txt"
@@ -24,7 +41,16 @@ npx rda build .            # Node
 rda build .                # anything, using bin/rda directly
 ```
 
-That compiles any meshes, the theme and every layout beside their sources, and writes the generated state module for the language you are in — `state.py`, `state.mjs` or `state.cs`. The engine itself is a shared library the backend opens at run time, not something you compile against.
+That compiles any meshes, the theme and every layout beside their sources, and writes the generated state module for the backend the folder has — `state.py`, `state.mjs` or `state.cs`. It works out which from the project root and says what it found on the first line, `rda: detected Python (app.py)`:
+
+| Found in the project root | Written |
+| --- | --- |
+| `app.py`, or any `*.py` | `state.py` |
+| `package.json`, or any `*.mjs` | `state.mjs` |
+| a `*.csproj`, or an existing `state.cs` | `state.cs` |
+| a `CMakeLists.txt` | nothing: CMake generates the C++ header |
+
+A folder that matches more than one gets each of them rather than a guess. A folder that matches none gets no state module, and the build says so in one line that names the flags, because `3 written` would otherwise read as complete. `--python`, `--node` or `--csharp` always wins and nothing is looked for. The engine itself is a shared library the backend opens at run time, not something you compile against.
 
 | Language | What sits beside res/ |
 | --- | --- |
@@ -47,7 +73,7 @@ myapp/
 └── app.py | main.cpp | app.mjs | Program.cs
 ```
 
-> An unknown element or an unknown property **compiles**. The build does not check names against the widget schema — the loader skips the element, ignores the property, and writes a line in `RDA_DEBUG.txt`. The editor is where that typo is meant to be caught, which is what `rda.d.ts` and that `tsconfig.json` are for.
+> An unknown element or an unknown property **compiles, with a warning**. The build checks names against the widget schema and says what it did not recognise and what you probably meant: `<button> 'root/again' has no property 'widht'; did you mean 'width'?`. The loader still skips the element and ignores the property, so `rda build --strict` (or `rda layout --strict`) turns each warning into an error, which is what a build that must not ship a typo wants. The editor catches the same typo sooner, which is what `rda.d.ts` and that `tsconfig.json` are for; `rda elements checkbox` lists what an element takes.
 
 ## An application that already exists
 

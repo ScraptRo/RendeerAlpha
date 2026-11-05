@@ -21,6 +21,7 @@ run time, and if it is not, it does not.
 | [The three kinds of value](values.md) | constants, bindings, handlers — and why the arrow is not a closure |
 | [What an expression may contain](expressions.md) | the grammar, in full, and the two rules it enforces |
 | [The four names a layout starts with](names.md) | `state`, `signal()`, `commands`, `row` |
+| [A layout as an object](objects.md) | the same elements without JSX, typed as `Layout` |
 | [Components and imports](components.md) | functions expanded at build time; splitting a layout across files |
 | [Functions: code that runs](functions.md) | what a binding may call, what runs when, and what it costs |
 

@@ -362,6 +362,61 @@ TEST(comparing_the_engine_namespace_is_not_a_write) {
 	CHECK(r.ran);
 }
 
+// A string in a binding, and what it says. The backslashes doubled here are the binding's own:
+// what reaches the parser is `\u0103`, which is what esbuild hands it.
+static std::string saying(const std::string& body) {
+	return run("() => \"" + body + "\"").text();
+}
+
+static bool refused(const std::string& body) {
+	return !parseBinding("() => \"" + body + "\"").ok;
+}
+
+TEST(an_escape_in_a_string_is_the_character_it_stands_for) {
+	// "ă", the way esbuild writes it, and what used to reach the screen as "u0103".
+	CHECK_STR(saying("\\u0103"), "\xC4\x83");
+	CHECK_STR(saying("\\xEE"), "\xC3\xAE");
+	CHECK_STR(saying("\\u{219}\\u{21B}"), "\xC8\x99\xC8\x9B");
+	// And the ones that were always read, and the ones that were not.
+	CHECK_STR(saying("a\\tb\\nc"), "a\tb\nc");
+	CHECK_STR(saying("\\b\\f\\v"), "\b\f\v");
+	CHECK_STR(saying("\\\"\\\\\\'"), "\"\\'");
+}
+
+TEST(a_character_past_the_first_plane_is_one_character_in_either_spelling) {
+	const std::string grin = "\xF0\x9F\x98\x80"; // U+1F600
+	CHECK_STR(saying("\\uD83D\\uDE00"), grin);
+	CHECK_STR(saying("\\u{1F600}"), grin);
+}
+
+TEST(half_of_a_character_is_the_replacement_character_and_keeps_what_follows) {
+	const std::string replacement = "\xEF\xBF\xBD";
+	CHECK_STR(saying("\\uD83Dx"), replacement + "x");
+	CHECK_STR(saying("\\uD83D\\u0103"), replacement + "\xC4\x83");
+	CHECK_STR(saying("\\uDE00"), replacement);
+}
+
+TEST(a_template_reads_the_same_escapes_as_a_string) {
+	CHECK_STR(run("() => `\\u0103\\r\\n`").text(), "\xC4\x83\r\n");
+	CHECK_STR(run("() => `\\uD83D\\uDE00`").text(), "\xF0\x9F\x98\x80");
+	CHECK_STR(run("() => `\\${a}`").text(), "${a}");
+}
+
+TEST(text_in_a_binding_that_is_not_escaped_arrives_untouched) {
+	const std::string text = "\xC4\x83\xC3\xAE\xC8\x99\xC8\x9B";
+	CHECK_STR(saying(text), text);
+}
+
+TEST(an_escape_that_is_not_a_character_is_refused) {
+	CHECK(refused("\\u01"));
+	CHECK(refused("\\uzzzz"));
+	CHECK(refused("\\xG0"));
+	CHECK(refused("\\u{}"));
+	CHECK(refused("\\u{110000}"));
+	CHECK(refused("\\u{110000000}"));
+	CHECK(refused("\\u{41"));
+}
+
 TEST(a_binding_still_refuses_other_nesting) {
 	const ParseResult nested = parseBinding("() => state.user.name");
 	CHECK(!nested.ok);

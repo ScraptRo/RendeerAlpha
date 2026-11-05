@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RdaEngine>@ENGINE@</RdaEngine>
+    <!-- Listed by hand: state.cs does not exist until the build below has made it, so a
+         glob evaluated before that would miss it on a first build. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="state.cs" />
+    <Compile Include="$(RdaEngine)/bindings/csharp/*.cs" />
+    <!-- The engine beside the executable, where .NET looks first, and its font
+         beside the engine, where the engine looks. -->
+    <None Include="$(RdaEngine)/bin/@LIB@" Link="@LIB@"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(RdaEngine)/bin/res/**" Link="res/%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- The interface, before the C# is compiled: state.cs comes out of this. -->
+  <Target Name="RdaBuild" BeforeTargets="BeforeBuild">
+    <Exec Command="&quot;$(RdaEngine)/bin/rda&quot; build &quot;$(MSBuildProjectDirectory)&quot; --csharp" />
+  </Target>
+</Project>

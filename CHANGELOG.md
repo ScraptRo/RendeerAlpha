@@ -15,6 +15,96 @@ command carries, running one for its result, and loading state.ts's code (1.8); 
 already there changed meaning. A layout gets the rest by being rebuilt; a backend gets
 state.ts's code by regenerating its state module.
 
+### `rda init`
+
+`rda init [<dir>] [--python | --node | --csharp | --cpp] [--force] [--no-build]` writes the
+files a project starts from, where a newcomer used to type five or six of them out of the
+tutorials before anything could be seen. With no language it makes an interface alone --
+`res/state.ts`, `res/themes/app.ts`, `res/layouts/main.tsx`, the editor's `tsconfig.json` and a
+`.gitignore` covering what the build generates -- which `rda prototype .` opens; a language
+flag adds that language's backend (`app.py`, `app.mjs` and `package.json`, `Program.cs` and a
+`.csproj`, or `main.cpp` and `CMakeLists.txt`). The content is the counter from the first
+tutorial, with a command the backend answers. The directory defaults to the current one, is
+made if it is missing, and names the project.
+
+It refuses to overwrite: if any file it would write exists it changes nothing, lists them and
+says `--force`. Unless `--no-build` is given it ends by running what `rda build` runs, so
+`res/layouts/rda.d.ts` exists and the editor works at once; without esbuild the project is
+still made, and it says so. Then it prints the next steps for the language. In Node and C# the
+handler is bound before the interface is loaded.
+
+It is in `rda`, not `rda-preview`, and adds no dependency: the templates are real files under
+`Cli/templates/`, embedded with `rda_embed_js` like the JavaScript preludes. Tests make each
+of the five kinds and build them with a separate `rda build`, and check the refusal.
+
+### The command line, for the person who is not yet sure what is wrong
+
+Seven things that three people stumbled on in a usability test, and two that were in the way of
+the next three. Nothing here crosses the C ABI.
+
+`rda build .` works out the language. It wrote no state module unless it was told `--python`,
+`--node` or `--csharp`, and printed `3 written` as though that were all of it; the tutorial said
+the opposite. It now reads the project root -- `app.py` or any `*.py` is Python, `package.json` or
+any `*.mjs` is Node, a `*.csproj` or an existing `state.cs` is C#, a `CMakeLists.txt` is C++ and
+writes nothing because CMake generates that one -- and says what it found on its first line.
+Several matches write each of them, not a guess between them. No match writes none, in one line
+that names the flags. A flag is still the whole answer: nothing is looked for when one is given.
+`rda prototype` and `rda shot` build with no detection, so a picture never leaves a `state.py` in
+a project it was only asked to draw.
+
+A misspelt element or property is said at build time. `<buton widht={1}>` and
+`<checkbox text="x">` compiled, exited 0, and were skipped by the loader with a line in a log.
+They are now warnings with what was meant, from edit distance over that element's own properties
+and the common ones (`widht` is `width`, a swap counting as one edit): `<checkbox> 'root/c' has no
+property 'text'; did you mean 'label'?`. A short table covers the guesses a distance cannot reach --
+`text` on a checkbox, `gap` on a stack, `className` -- and a name with no close match lists a few
+that are valid. The structural keys the compiler reads itself (`id`, `children`, `row` on a list and
+a tree) and the signals it writes are never checked, a component is expanded first so its own props
+are not, and an element written as an object is checked the same as one written as JSX, because it
+goes through the same function. `rda build --strict` and `rda layout --strict` make each an error,
+and `--strict` compiles every layout again: a warning exists only while a layout is being compiled,
+so skipping the up-to-date ones would pass a typo that had already been reported. Checked against
+the layouts under `RuntimeTests/script`, the templates, and the tsx in `docs/` and `skills/` that
+compiles on its own: no valid name is flagged.
+
+`rda doctor [<project>]` prints what was found, a line each, `ok` or `PROBLEM` with what to do:
+rda and its engine version, esbuild and its version, `rda-preview` beside it, whether a Vulkan
+loader opens -- by `LoadLibrary` or `dlopen` at run time, so `rda` still links no GPU code -- and
+python, node and dotnet, with where `import rda` lands for that python. Given a project it adds
+`res/`, the declaration, themes, layouts, the backend it detected, and whether anything is
+missing or older than its source or than `rda` itself. It exits 1 when something the project or the
+build cannot do without is missing, and not for a missing GPU on a machine that only builds.
+
+`rda dev [<project>] [--layout <name>] [--dry-run]` is the edit loop as one command: build, start
+the backend that was detected (`python app.py`, `node app.mjs`, `dotnet run`), and watch
+`res/state.ts` and what it imports -- the one thing a Debug engine does not reload by itself. A
+change builds again and restarts the backend; a build that fails leaves the running one alone. The
+backend's exit code is `dev`'s, and Ctrl+C ends it. A C++ project is its own program, so it says
+to use CMake; with no backend it falls back to the prototype. `--dry-run` prints what it would do.
+The launching is `Forward.cpp`'s, extended to a child that can be waited for and started again, and
+inside the same job object, so a backend is never left open by a tool nobody is waiting for.
+
+`rda add screen <name> [<project>]` writes `res/layouts/<name>.tsx` and the route to it. With
+`export const routes` in state.ts, one entry is inserted in the layout the file has, aligned the way
+its author aligned it. Without, a declaration is added at the end with an entry for each screen
+already in `res/layouts/` -- imported components are not screens -- `main` first, because the first
+route is where the app opens, and the command says what the backend changes in its language,
+`open_routes(ROUTES, ...)` where it had `load_interface`. The text is edited, not rewritten, so
+comments and formatting stay, and what was written is read back the way the build reads it and put
+back if it would not load. A file in a shape that cannot be edited safely is left alone and the
+lines to paste are printed. The layout or the route already existing is a refusal.
+
+`rda elements [<name>] [--json]` is the widget schema readable: every element with its line, or one
+element's own and common properties with their types, whether they can be bound, their docs, and
+its events. People were searching the generated `rda.d.ts` for what `hAlign` takes.
+
+`rda shot --click <id>` takes a widget's id or the end of its path (`add`, `root/buttons/add`) as
+well as `X,Y`, and so do `--hover` and `--press`: the pointer goes to the centre of that widget
+once the layout is built. An id that matches nothing, or the end of several paths, is refused
+before a window opens -- the ids are in the blueprint -- naming the choices. And when a project has
+commands, `shot` and `prototype` now say once that no backend is attached, so `rda: commands.x()`
+does not read as the command having run.
+
 ### The engine in layers
 
 A layout, a backend and the C ABI do not change at all, and a C++ application changes only if
@@ -305,6 +395,101 @@ are named by hand, as an action's are, because typing them from the field made e
 that reads `state` circular. See [functions](docs/frontend/functions.md#reacting-to-a-change-watch)
 and [the design](docs/architecture/watch-and-on-open.md), which also holds what comes next for
 a screen and for a backend.
+
+### Opening and closing a screen
+
+`onOpen` and `onClose` on a layout's root element say what happens when it opens and closes.
+They are ordinary handlers, so a plain one runs in the grammar and needs no QuickJS, and
+anywhere but the root they are refused with the reason. Every `onOpen` gets exactly one
+`onClose`, unless the process dies: a route change, opening another layout in its place, and
+the application exiting all close it, the last of those before the backend's shutdown. A saved
+edit runs neither, so the count survives; a reload does stop the layout's timers, and the log
+now says so, since nothing will start them again.
+
+`Router::show` builds the arriving screen first, so that one that will not load cannot take the
+running one down. So the host separates building from announcing, and the order is build,
+close the old, swap, put `route` right, open the new. A cross-fade keeps that order, and
+`onClose` runs as the screen starts to leave.
+
+A command called from `onOpen` runs while the layout loads, so its handler has to be bound by
+then, and the Node and C# samples now bind first. In Node, `run()` also joins the engine before
+its last poll, because a closing layout's commands arrive after `running` has turned false. On
+a root `<popup>`, `onClose` stays the popup's own event. See
+[screens](docs/frontend/screens.md#opening-and-closing).
+
+### A layout as an object
+
+A layout may return plain objects instead of JSX, with `type` naming the element and `children`
+what is inside it. `{ type: "label", text: "Hello" }` and `<label text="Hello" />` are the same
+thing and compile to the same bytes, which a test holds them to across every kind of node. It
+is not a second pipeline: an object is turned into what `h()` makes at the one place every node
+passes through, so nothing after that knows which was written. `Layout` is generated into
+`rda.d.ts` from the same table as the JSX elements, so a misspelt element or property is
+underlined in a nested child as well, and a layout's default export may be the object itself.
+
+Writing one found two things. A handler written as a method, `onClick() { ... }`, did not
+compile, because a binding reached the module without going through the step that makes a
+method an expression; an action's `run` always had. And text between tags now says so, naming
+the text and the element, where it said "a fragment, perhaps": an `<option>English</option>`
+or a comment beside a tag gets a reason that points at what was written. See
+[a layout as an object](docs/frontend/objects.md).
+
+### More than apt
+
+`scripts/linux-bringup.sh` knew Debian and stopped everywhere else with Debian's package names.
+It now finds the package manager by the command it provides -- apt, pacman, dnf, zypper, apk or
+xbps -- and describes each dependency by what it is, with a table of what each manager calls
+it, its own check for what is installed and its own install. On anything else it says what is
+needed by purpose. `--check` prints what it found and what it would run, and does neither.
+
+pacman is never asked for a sync on its own, because a partial upgrade is unsupported on Arch: a
+stale database is reported, with `sudo pacman -Syu` as the advice. And shaderc is searched for as
+`shaderc_shared` first on Linux, because Arch ships that beside a static `libshaderc.a` that the
+plain name would have stopped at. Debian and Ubuntu have no such file and find what they found.
+
+### A theme rebuilt every time on Linux
+
+`rda build` recompiled every theme on every run there, whatever had changed, and said so as
+`1 written`. A file time counts from its clock's own epoch, and with GCC's that lies in the
+future, so every real stamp is negative; the newest mesh started at zero, outranked them all,
+and made each theme look older than something. The tests for `rda init` found it, by asking a
+second build to have nothing to do.
+
+### Text that is not English, in a binding
+
+`text={() => "Bună ziua"}` drew `Bunu0103 ziua`. esbuild writes every non-ASCII character as an
+escape, and the binding parser took the letter after the backslash for the character, so only
+text in a binding was affected and a constant beside it looked fine. The parser reads `\uXXXX`,
+`\u{...}`, `\xXX` and a surrogate pair as the character they stand for now, in strings and in
+template literals, and refuses an escape that is not one. esbuild is also told to leave the text
+alone, so an error or an `rda dump` shows what was written.
+
+### `Commands` is always in a state module
+
+`from state import State, Commands` failed with an `ImportError` on a project that had declared
+no command yet, and an `import` in Node stopped the same way. The Python, Node and C# modules
+always have `Commands` and `call` now, empty when there is nothing to put in them.
+
+### Any font size
+
+`fontSize: 16` in a theme drew at 15, and a warning named `GuiConfig::fontSizes`, which only C++
+can reach. A size the atlas does not hold is added the first time it is drawn now, and its glyphs
+are baked as they are met, so what a theme writes is what it gets, in every language. `fontSizes`
+stays as a head start. The limits are 32 added sizes and 192 pixels tall; past either, text is
+drawn at the nearest size and the log says so.
+
+### A size on a child of a panel
+
+`<panel><button height={30} /></panel>` drew a button as big as the panel. `width` and `height`
+were read by a stack and by nothing else, so a widget placed by its own `x` and `y` used `w` and
+`h` or filled its parent, and the size that was written was dropped with no message. They work on
+a child of any parent now, with their bounds, and bound values too: a number, `"content"`,
+`"fill"`, and `"fill-40"`, where a fill is all of the room because there is nobody to share it
+with. A `w` or an `h` still wins, and a pair of anchored edges still decides its own axis.
+
+This can move something that was already drawn. A size written on such a widget and quietly
+ignored until now takes effect, including on a layout's root, which `height="content"` no longer
+stretches to the window.
 
 ### A reload could follow freed widgets
 

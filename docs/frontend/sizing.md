@@ -13,6 +13,9 @@ Two properties, `width` and `height`, each taking a number or one of three words
 Plus `minWidth`, `maxWidth`, `minHeight`, `maxHeight` — bounds applied to whatever was
 chosen.
 
+These work on a child of any parent. In a `<panel>` or a `<container>` nothing is shared, so
+`"fill"` is all of the room: see [absolute placement](placement.md).
+
 ### What a number means
 
 A **layout unit**, which is a pixel on an ordinary display and one and a half pixels on one

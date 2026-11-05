@@ -21,21 +21,26 @@ these existed.
 ## The sizes are baked, not scaled
 
 A bitmap glyph drawn at a size it was not baked at is a blurry glyph, and text is most of
-what a GUI draws. So every size an application uses is baked at startup — into **one**
-atlas texture, stacked as bands — and text of every size still batches into a single draw.
-The cost is atlas area, which is cheap; the cost it avoids is a draw call per size, which
-is not.
+what a GUI draws. So nothing is scaled: every size on screen has glyphs of its own, in
+**one** atlas texture, and text of every size still batches into a single draw. The cost is
+atlas area, which is cheap; the cost it avoids is a draw call per size, which is not.
 
-Which sizes get baked is the application's to declare:
+Some sizes start with the whole table ready, stacked as bands:
 
 ```cpp
 config.gui.fontHeight = 18.0f;                       // the base
 config.gui.fontSizes  = { 12, 15, 22, 28, 36 };      // the rest of the scale
 ```
 
-A theme naming a size that was not baked is drawn at the nearest one that was, and says so
-once in the log, naming both numbers. That is a real mistake — it silently draws at the
-wrong size — so it is worth a line, and worth only one line rather than one per frame.
+Any other size is added the first time something draws it, and its glyphs are baked as
+they are met, the same way a character outside the table is. So a theme can name any size,
+from any language, with nothing declared first. `fontSizes` is only a head start: listing a
+size saves baking its first few dozen glyphs during the frame that needs them.
+
+An added size spends the spare rows that glyphs outside the table also need, so there are
+two limits: 32 added sizes, and 192 pixels tall. Past either, text is drawn at the nearest
+size the atlas holds, and the log says so once, naming both numbers. It is drawn slightly
+wrong rather than blurrily, and a line in the log is what stops that passing unnoticed.
 
 ## Bold is synthesised
 

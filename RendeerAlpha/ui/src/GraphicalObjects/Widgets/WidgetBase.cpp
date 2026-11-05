@@ -14,16 +14,21 @@ namespace RDA {
 	Widget::~Widget() { ++gWidgetsDestroyed; }
 	uint64_t Widget::destroyedCount() { return gWidgetsDestroyed; }
 
-	Rect Widget::resolveRect(glm::vec2 origin, const Rect& parent) const {
-		// Start from the classic behaviour — a fixed rect at a fixed offset — and let the
-		// anchors override each axis. With Anchor::TopLeft this is exactly what the
-		// widget layer did before anchoring existed.
-		Rect out{ origin.x + rect.x, origin.y + rect.y, rect.w, rect.h };
-
+	Rect Widget::resolveRect(glm::vec2 origin, const Rect& parent, glm::vec2 content) const {
 		const bool left = hasAnchor(anchor, Anchor::Left);
 		const bool right = hasAnchor(anchor, Anchor::Right);
 		const bool top = hasAnchor(anchor, Anchor::Top);
 		const bool bottom = hasAnchor(anchor, Anchor::Bottom);
+
+		const float roomW = (std::max)(0.0f, parent.w - rect.x);
+		const float roomH = (std::max)(0.0f, parent.h - rect.y);
+		const float sizeW = freeExtent(width, rect.w, roomW, content.x);
+		const float sizeH = freeExtent(height, rect.h, roomH, content.y);
+
+		// Start from the classic behaviour — a fixed rect at a fixed offset — and let the
+		// anchors override each axis. With Anchor::TopLeft this is exactly what the
+		// widget layer did before anchoring existed.
+		Rect out{ origin.x + rect.x, origin.y + rect.y, sizeW, sizeH };
 
 		if (parent.w > 0.0f) {
 			if (left && right) {
@@ -31,14 +36,14 @@ namespace RDA {
 				out.w = (std::max)(0.0f, parent.w - rect.x - marginRight);
 			} else if (right) {
 				// Right only: keep the size, follow the right edge.
-				out.x = origin.x + parent.w - marginRight - rect.w;
+				out.x = origin.x + parent.w - marginRight - sizeW;
 			}
 		}
 		if (parent.h > 0.0f) {
 			if (top && bottom) {
 				out.h = (std::max)(0.0f, parent.h - rect.y - marginBottom);
 			} else if (bottom) {
-				out.y = origin.y + parent.h - marginBottom - rect.h;
+				out.y = origin.y + parent.h - marginBottom - sizeH;
 			}
 		}
 
@@ -47,10 +52,8 @@ namespace RDA {
 		// parent has left, so a child placed straight into a container fills it rather
 		// than vanishing, and any layout it runs for its own children has a real extent
 		// to divide up. An explicit size, or a pair of anchored edges, is left alone.
-		if (!(left && right) && rect.w <= 0.0f && parent.w > 0.0f)
-			out.w = (std::max)(0.0f, parent.w - rect.x);
-		if (!(top && bottom) && rect.h <= 0.0f && parent.h > 0.0f)
-			out.h = (std::max)(0.0f, parent.h - rect.y);
+		if (!(left && right) && sizeW <= 0.0f && parent.w > 0.0f) out.w = roomW;
+		if (!(top && bottom) && sizeH <= 0.0f && parent.h > 0.0f) out.h = roomH;
 		return out;
 	}
 
@@ -136,7 +139,13 @@ namespace RDA {
 				mArrangedValid = false; // consumed; re-set by the parent next frame
 				return mArranged;
 			}
-			const Rect resolved = resolveRect(origin, gui.currentClipRect());
+			const Rect parent = gui.currentClipRect();
+			// Measured only when asked for: some widgets count their lines to answer.
+			const bool measures = width.mode == SizeSpec::Mode::Content
+			                   || height.mode == SizeSpec::Mode::Content;
+			const glm::vec2 content = measures ? measureContent(gui, { parent.w, parent.h })
+			                                   : glm::vec2{ 0.0f, 0.0f };
+			const Rect resolved = resolveRect(origin, parent, content);
 			// A widget a container placed by its own x and y was never eased at all --
 			// only a stack's children were, and a stack has no x and y to move between.
 			// So this is the other half of what a route is for, and it is opt-in twice

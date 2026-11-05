@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include <Layout/Bindings.h>
+#include <Layout/LayoutLoader.h>
 #include <Layout/ScriptHost.h>
 #include <Layout/StyleWatch.h>
 #include <Core/LoopWork.h>
@@ -389,6 +390,9 @@ namespace RDA::Runtime {
 		// a real hazard, and every such application would have to know to wait first. It
 		// is one call here and a whole class of mistake nobody has to hear about.
 		gRenderer.waitIdle();
+		// Before onShutdown, so a screen that saves on close saves through a backend that is
+		// still there. However a screen ended, its onClose runs.
+		Layout::closeOpenLayouts();
 		if (config.onShutdown) config.onShutdown();
 
 		// The application just let go of its widget trees, so anything they owned is in

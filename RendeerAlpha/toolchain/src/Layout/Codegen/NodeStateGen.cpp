@@ -121,43 +121,43 @@ namespace RDA::Layout {
 		out << "})\n";
 
 		// ---- commands ----
-		if (!schema.commands.empty()) {
-			out << "\n/**\n"
-			       " * The work the interface can ask for. Each name takes the function that\n"
-			       " * answers it, and returns that function so it can be named or reused.\n"
-			       " *\n"
-			       " * The handler runs on Node's own loop rather than inside the frame the\n"
-			       " * interface asked in -- see the `rda` package for why it has to.\n"
-			       " */\n"
-			       "export const Commands = Object.freeze({\n";
-			for (const StateCommand& command : schema.commands) {
-				std::string called;
-				if (command.action) {
-					called = "state.ts answers this; a function given here watches it, called after the "
-					         "action with the same arguments.";
-				} else if (!command.params.empty()) {
-					called = "Called as fn(";
-					for (size_t i = 0; i < command.params.size(); ++i) {
-						if (i) called += ", ";
-						called += command.params[i].name;
-					}
-					called += ").";
+		// Whether or not there are any, for the reason the Python module has it: an import of
+		// a name the module does not export stops the program before its first line.
+		out << "\n/**\n"
+		       " * The work the interface can ask for. Each name takes the function that\n"
+		       " * answers it, and returns that function so it can be named or reused.\n"
+		       " *\n"
+		       " * The handler runs on Node's own loop rather than inside the frame the\n"
+		       " * interface asked in -- see the `rda` package for why it has to.\n"
+		       " */\n"
+		       "export const Commands = Object.freeze({\n";
+		for (const StateCommand& command : schema.commands) {
+			std::string called;
+			if (command.action) {
+				called = "state.ts answers this; a function given here watches it, called after the "
+				         "action with the same arguments.";
+			} else if (!command.params.empty()) {
+				called = "Called as fn(";
+				for (size_t i = 0; i < command.params.size(); ++i) {
+					if (i) called += ", ";
+					called += command.params[i].name;
 				}
-				if (!command.doc.empty() || !called.empty()) {
-					out << "\t/** " << jsDoc(command.doc)
-					    << (!command.doc.empty() && !called.empty() ? " " : "") << jsDoc(called) << " */\n";
-				}
-				out << "\t" << command.name << ": (fn) => engine.onCommand('"
-				    << command.name << "', fn),\n";
+				called += ").";
 			}
-			out << "})\n\n"
-			       "/**\n"
-			       " * Runs a command and returns what it returned. One state.ts answers returns its\n"
-			       " * function's result; one a handler answers runs it and returns null. How a rule\n"
-			       " * written once in state.ts -- a validation, a price -- is the backend's rule too.\n"
-			       " */\n"
-			       "export function call(name, ...args) { return engine.call(name, ...args) }\n";
+			if (!command.doc.empty() || !called.empty()) {
+				out << "\t/** " << jsDoc(command.doc)
+				    << (!command.doc.empty() && !called.empty() ? " " : "") << jsDoc(called) << " */\n";
+			}
+			out << "\t" << command.name << ": (fn) => engine.onCommand('"
+			    << command.name << "', fn),\n";
 		}
+		out << "})\n\n"
+		       "/**\n"
+		       " * Runs a command and returns what it returned. One state.ts answers returns its\n"
+		       " * function's result; one a handler answers runs it and returns null. How a rule\n"
+		       " * written once in state.ts -- a validation, a price -- is the backend's rule too.\n"
+		       " */\n"
+		       "export function call(name, ...args) { return engine.call(name, ...args) }\n";
 
 		// ---- tables ----
 		if (!schema.tables.empty()) {

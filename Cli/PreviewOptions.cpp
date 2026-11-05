@@ -111,8 +111,15 @@ namespace Cli {
 
 		std::string takePointer(PreviewOptions& options, const std::string& flag, const std::string& value) {
 			float x = 0.0f, y = 0.0f;
+			// A widget's id in place of a point: the pointer goes to its centre once the layout
+			// is built. Pressing is remembered with it, because that is not known until then.
+			if (namesAWidget(value)) {
+				options.pointerTarget = value;
+				options.pointerTargetPressed = (flag == "--press");
+				return {};
+			}
 			if (!coordinates(value, x, y)) {
-				return flag + " wants X,Y in layout units, like 120,340";
+				return flag + " wants X,Y in layout units, like 120,340, or a widget's id";
 			}
 			options.pointer.placed = true;
 			options.pointer.x = x;

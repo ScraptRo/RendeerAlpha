@@ -2,6 +2,7 @@
 #include <Layout/ImportScan.h>
 #include <Layout/Rebuilder.h>
 #include <Layout/Bindings.h>
+#include <Layout/ScriptHost.h>
 #include <GraphicalObjects/Widget.h>
 #include <Logger/Logger.h>
 #include <Core/FileStamp.h>
@@ -15,7 +16,8 @@ namespace RDA::Layout {
 		using Clock = std::chrono::steady_clock;
 	}
 
-	bool LayoutHost::open(Widget& parent, std::string blueprintPath, std::string sourcePath) {
+	bool LayoutHost::open(Widget& parent, std::string blueprintPath, std::string sourcePath,
+	                      Announce announce) {
 		mParent = &parent;
 		mBlueprintPath = std::move(blueprintPath);
 		mSourcePath = std::move(sourcePath);
@@ -27,12 +29,13 @@ namespace RDA::Layout {
 			RDA_LOG_INFO("layout: this build cannot compile " << mSourcePath
 			             << "; watching the blueprint only");
 		}
-		if (!reload()) return false;
+		if (!rebuild(/*opening*/ true)) return false;
 
 		// Recorded after the first load, so the first check does not report a change that
 		// is only "this has not been looked at before" and recompile for nothing.
 		rediscover();
 		mBlueprintStamp = fileStamp(mBlueprintPath);
+		if (announce == Announce::Now) announceOpen();
 		return true;
 	}
 
@@ -91,7 +94,9 @@ namespace RDA::Layout {
 		return reload();
 	}
 
-	bool LayoutHost::reload() {
+	bool LayoutHost::reload() { return rebuild(/*opening*/ false); }
+
+	bool LayoutHost::rebuild(bool opening) {
 		if (!mParent) return false;
 
 		Blueprint blueprint;
@@ -104,6 +109,12 @@ namespace RDA::Layout {
 
 		// Only now is the old one taken down. Reading first means a blueprint that will
 		// not parse leaves the running interface untouched instead of clearing it.
+		const bool wasOpen = mInstance.announced();
+		if (opening) mInstance.announceClose();
+		// A reload runs no onOpen, so what it stops here nothing will start again. Said,
+		// rather than left as a timer that quietly stopped after a save.
+		const std::shared_ptr<ScriptModule> module = mInstance.sink()->module;
+		const size_t timers = !opening && module ? scriptHost().timerCount(*module) : 0;
 		if (Widget* previous = mInstance.root()) {
 			const std::string id = previous->id();
 			mInstance.release(); // forgets the bindings before their widgets go
@@ -115,6 +126,15 @@ namespace RDA::Layout {
 			mLastError = "the layout built nothing";
 			RDA_LOG_WARNING("layout: " << mLastError);
 			return false;
+		}
+
+		// The same layout, so still open, and it is the new onClose that will answer.
+		if (!opening && wasOpen) mInstance.markAnnounced();
+		if (timers > 0) {
+			RDA_LOG_WARNING("layout: reloading " << mBlueprintPath << " stopped the " << timers
+			                << (timers == 1 ? " timer" : " timers") << " it had running, and a reload "
+			                "runs no onOpen to start them again. A timer that has to outlive a reload "
+			                "belongs to an action in state.ts");
 		}
 
 		// Every bound property starts from what its expression says. The signals those
