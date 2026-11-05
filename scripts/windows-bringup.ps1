@@ -324,7 +324,7 @@ if ($node) {
 
 Say "C# and everything else"
 if ($dotnet) { Note "dotnet $(& dotnet --version 2>$null)" } else { Note "no dotnet (only needed for a C# backend)" }
-Note "bin\ holds rendeer_c.dll, rda.exe and include\RendeerC.h; bin\README.md says how each language reaches it."
+Note "bin\ holds rendeer_c.dll, rda.exe (with rda-preview.exe beside it) and include\RendeerC.h; bin\README.md says how each language reaches it."
 
 # ---- 8. what Vulkan is available ---------------------------------------------------------------
 

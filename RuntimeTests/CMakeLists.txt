@@ -17,72 +17,102 @@ set(RDA_TEST_SOURCES
 	PngTests.cpp
 	ShortcutTests.cpp
 	AccessibleTextTests.cpp
+	AccessibleDiffTests.cpp
 	TableOrderTests.cpp
 	SelectionTests.cpp
 	ScriptHostTests.cpp
 	StateCodeTests.cpp
+	SourceMapTests.cpp
+	CodegenTests.cpp
 	TimerFormatTests.cpp
 	ViewportEventTests.cpp
 	WindowEdgeTests.cpp
-	../RendeerAlpha/src/Layout/Expression.cpp
+	StampAndMailboxTests.cpp
+	RetireQueueTests.cpp
+	../RendeerAlpha/formats/src/Layout/Expression.cpp
 	# Writing a picture, and reading it back with the decoder that is vendored for reading
 	# other people's. The round trip is the test: an encoder checked against bytes somebody
 	# decided were right only proves it still agrees with itself.
-	../RendeerAlpha/src/Core/Png.cpp
+	../RendeerAlpha/foundation/src/Core/Png.cpp
 	../RendeerAlpha/src/vendor/stb_image/stb_image.cpp
 	# A mesh resolves to vertices against a rectangle, and refuses a file it cannot read.
 	# Both are device-free, so both are covered here -- the compiler that writes those
 	# files needs esbuild and QuickJS and is checked end to end by the rda_mesh test.
-	../RendeerAlpha/src/GraphicalObjects/MeshAsset.cpp
-	# Watching a theme and its meshes. Compiled without RDA_ENABLE_HOT_RELOAD, so what is
-	# covered here is the half that needs no compiler: noticing a changed artifact, re-
+	../RendeerAlpha/ui/src/GraphicalObjects/MeshAsset.cpp
+	# Watching a theme and its meshes. Nothing installs a compiler behind Layout/Rebuilder.h
+	# here, so what is covered is the half that needs none: noticing a changed artifact, re-
 	# reading it, and telling the theme to forget what it resolved against the old one.
 	# A Theme is plain data and a blueprint is a POD array, so neither needs a device.
-	../RendeerAlpha/src/Layout/StyleWatch.cpp
-	../RendeerAlpha/src/GraphicalObjects/GuiTheme.cpp
-	../RendeerAlpha/src/Layout/Blueprint.cpp
-	../RendeerAlpha/src/Layout/ThemeSchema.cpp
-	../RendeerAlpha/src/GraphicalObjects/Motion.cpp
+	# StyleWatch asks whether a file moved through Core/FileStamp, which is covered here too.
+	../RendeerAlpha/foundation/src/Core/FileStamp.cpp
+	../RendeerAlpha/runtime/src/Layout/StyleWatch.cpp
+	../RendeerAlpha/formats/src/Layout/Rebuilder.cpp
+	../RendeerAlpha/blueprint/src/Layout/ThemeLoader.cpp
+	../RendeerAlpha/ui/src/GraphicalObjects/GuiTheme.cpp
+	../RendeerAlpha/formats/src/Layout/Blueprint.cpp
+	../RendeerAlpha/formats/src/Layout/ThemeSchema.cpp
+	../RendeerAlpha/ui/src/GraphicalObjects/Motion.cpp
 	# Motion::along follows a route, and a route is measured by the SVG path
 	# flattener -- so the animation layer the tests exist to cover now reaches both.
-	../RendeerAlpha/src/Core/Route.cpp
-	../RendeerAlpha/src/Core/Svg.cpp
-	../RendeerAlpha/src/Core/Colour.cpp
-	../RendeerAlpha/src/GraphicalObjects/TileGrid.cpp
-	../RendeerAlpha/src/GraphicalObjects/Syntax.cpp
+	../RendeerAlpha/foundation/src/Core/Route.cpp
+	../RendeerAlpha/foundation/src/Core/Svg.cpp
+	../RendeerAlpha/foundation/src/Core/Colour.cpp
+	../RendeerAlpha/ui/src/GraphicalObjects/TileGrid.cpp
+	../RendeerAlpha/ui/src/GraphicalObjects/Syntax.cpp
 	../RendeerAlpha/src/vendor/tinyxml2/tinyxml2.cpp
-	../RendeerAlpha/src/Layout/ExpressionParser.cpp
-	../RendeerAlpha/src/Core/Signals.cpp
-	../RendeerAlpha/src/Core/Commands.cpp
-	../RendeerAlpha/src/Core/Json.cpp
-	../RendeerAlpha/src/Core/Tables.cpp
+	../RendeerAlpha/toolchain/src/Layout/ExpressionParser.cpp
+	../RendeerAlpha/state/src/Core/Signals.cpp
+	../RendeerAlpha/state/src/Core/Commands.cpp
+	../RendeerAlpha/foundation/src/Core/Json.cpp
+	../RendeerAlpha/state/src/Core/Tables.cpp
 	# A table seen sorted and filtered, which is what a <grid> and a <list> show through.
-	../RendeerAlpha/src/Layout/TableOrder.cpp
+	../RendeerAlpha/state/src/Layout/TableOrder.cpp
 	# Several rows chosen at once, by key, with Ctrl and Shift.
-	../RendeerAlpha/src/Layout/Selection.cpp
+	../RendeerAlpha/ui/src/Layout/Selection.cpp
 	# A layout's functions at run time: QuickJS, the natives, the deadline, the line map.
 	# The QuickJS objects come from the engine's own target, below.
-	../RendeerAlpha/src/Layout/ScriptHost.cpp
-	../RendeerAlpha/src/Core/Utf8.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptRuntime.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptValues.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptFrame.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptNatives.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptTimers.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptModules.cpp
+	../RendeerAlpha/runtime/src/Layout/Script/ScriptState.cpp
+	# The build-time half of the same question -- which line of which file -- read out of
+	# esbuild's source map. The map is text, so no esbuild and no QuickJS: the tests hand it
+	# one esbuild wrote.
+	../RendeerAlpha/toolchain/src/Layout/SourceMap.cpp
+	# What a state declaration is printed as, in four languages, and the writer they share.
+	# Only the printing: the reader that builds the declaration from a state.ts needs esbuild
+	# and QuickJS, so the tests hand the generators one built by hand.
+	../RendeerAlpha/toolchain/src/Layout/Codegen/CodeWriter.cpp
+	../RendeerAlpha/toolchain/src/Layout/Codegen/CppStateGen.cpp
+	../RendeerAlpha/toolchain/src/Layout/Codegen/PythonStateGen.cpp
+	../RendeerAlpha/toolchain/src/Layout/Codegen/NodeStateGen.cpp
+	../RendeerAlpha/toolchain/src/Layout/Codegen/CSharpStateGen.cpp
+	../RendeerAlpha/foundation/src/Core/Utf8.cpp
 	# What a layout writes as a key chord, and which keys a focused widget keeps. GLFW-free
 	# on purpose, so it can be here.
-	../RendeerAlpha/src/GraphicalObjects/Shortcut.cpp
+	../RendeerAlpha/ui/src/GraphicalObjects/Shortcut.cpp
 	# What happened to a <viewport> -- resized, or the pointer over it -- summed for whoever reads. Its own lock and no
 	# device, so it is covered here, waiting thread and all.
-	../RendeerAlpha/src/GraphicalObjects/ViewportEvents.cpp
+	../RendeerAlpha/sync/src/GraphicalObjects/ViewportEvents.cpp
 	# A frameless window's edges: which one the pointer is on and what dragging it does.
 	# Arithmetic and a picture, kept apart from GLFW so they can be checked here.
-	../RendeerAlpha/src/GraphicalObjects/WindowEdges.cpp
+	../RendeerAlpha/platform/src/GraphicalObjects/WindowEdges.cpp
 	# How a screen reader moves through a field: by character, word and line.
-	../RendeerAlpha/src/GraphicalObjects/Accessible.cpp
-	../RendeerAlpha/src/Logger/Logger.cpp
+	../RendeerAlpha/formats/src/GraphicalObjects/Accessible.cpp
+	../RendeerAlpha/formats/src/GraphicalObjects/AccessibleDiff.cpp
+	../RendeerAlpha/foundation/src/Logger/Logger.cpp
 )
 
 add_executable(rendeer_tests ${RDA_TEST_SOURCES})
 target_include_directories(rendeer_tests PRIVATE
 	"${CMAKE_CURRENT_SOURCE_DIR}"
-	"${CMAKE_SOURCE_DIR}/RendeerAlpha/include"
-	"${CMAKE_SOURCE_DIR}/RendeerAlpha/src"
+	${RDA_ENGINE_INCLUDE_DIRS}
+	# The JavaScript the toolchain embeds -- ScriptPreludes.h, which TimerFormatTests runs,
+	# includes the preludes as generated headers.
+	"${RDA_GENERATED_DIR}"
 	${RDA_VULKAN_INCLUDE}
 	${RDA_GLM_INCLUDE}
 )
@@ -100,6 +130,14 @@ target_link_libraries(rendeer_tests PRIVATE rendeer_quickjs)
 
 add_test(NAME rendeer_tests COMMAND rendeer_tests)
 
+# The blueprint layer's records, checked against the schema they implement. Linked against
+# the engine rather than compiled from its sources: a record reaches every widget type, and
+# none of them needs a device until it is painted -- so this runs anywhere the engine links.
+add_executable(rendeer_engine_tests Main.cpp RegistryTests.cpp)
+target_include_directories(rendeer_engine_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(rendeer_engine_tests PRIVATE rendeer)
+add_test(NAME rendeer_engine_tests COMMAND rendeer_engine_tests)
+
 # The compiler's half of a layout's functions: esbuild's bundle, acorn, which functions a
 # binding reaches, what ships as code and what as a value, and the bytecode -- one layout
 # written to use all of it, compiled. And the same layout refused under
@@ -116,12 +154,29 @@ if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
 	add_test(NAME rda_shadowed_local
 		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/shadowed.tsx"
 		                   "${CMAKE_CURRENT_BINARY_DIR}/shadowed.rdab")
-	set_tests_properties(rda_runtime_code rda_no_runtime_code rda_shadowed_local PROPERTIES TIMEOUT 120)
+	# The plainest write in a value binding. The grammar refuses it and hands it on, and what
+	# is past the grammar has to refuse it too, so this is the whole path and not half of it.
+	add_test(NAME rda_value_binding_write
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/value_write.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/value-write.rdab")
+	set_tests_properties(rda_runtime_code rda_no_runtime_code rda_shadowed_local
+	                     rda_value_binding_write PROPERTIES TIMEOUT 120)
 	# Refused for the reason, not for any reason: a missing esbuild fails too.
 	set_tests_properties(rda_no_runtime_code PROPERTIES
 		PASS_REGULAR_EXPRESSION "asked for no run-time code")
 	set_tests_properties(rda_shadowed_local PROPERTIES
 		PASS_REGULAR_EXPRESSION "is declared by the code around this binding")
+	set_tests_properties(rda_value_binding_write PROPERTIES
+		PASS_REGULAR_EXPRESSION "a value binding cannot write state")
+	# A component that throws while the layout is built, through a helper it imports: the
+	# error names the helper's line and then the component's, as they are in the two files.
+	# Read off esbuild's bundle, both frames said throws.tsx, at lines 4 and 10 -- the first
+	# in the wrong file, the second three lines short.
+	add_test(NAME rda_layout_error_line
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/throws.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/throws.rdab")
+	set_tests_properties(rda_layout_error_line PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "at titleOf \\([^)]*throws-helper\\.ts:4:[0-9]+\\)\n    at Title \\([^)]*throws\\.tsx:13:[0-9]+\\)")
 endif()
 
 # state.ts's code: the same compiler, reading compute and run out of a declaration. Then the
@@ -137,9 +192,31 @@ if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
 		                   "${CMAKE_CURRENT_BINARY_DIR}/state-refused.py")
 	set_tests_properties(rda_state_code rda_state_no_runtime_code PROPERTIES TIMEOUT 120)
 	set_tests_properties(rda_state_code PROPERTIES
-		PASS_REGULAR_EXPRESSION "3 computed, 1 action, [0-9]+ bytes of code")
+		PASS_REGULAR_EXPRESSION "3 computed, 1 action, 1 watch, [0-9]+ bytes of code")
 	set_tests_properties(rda_state_no_runtime_code PROPERTIES
 		PASS_REGULAR_EXPRESSION "asked for no run-time code")
+	# A `watch` that is not a function. It would otherwise read as a field with no watch, and
+	# the reaction its author wrote would quietly never run.
+	add_test(NAME rda_state_watch_refused
+		COMMAND rda python "${CMAKE_CURRENT_SOURCE_DIR}/script/state-watch-bad.ts"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/state-watch-bad.py")
+	set_tests_properties(rda_state_watch_refused PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "has a `watch` that is not a function")
+	# A declaration that throws while it is read: the line of state.ts, 10, which is line 28
+	# of the IIFE esbuild makes of it. It used to say neither -- the message alone.
+	add_test(NAME rda_state_error_line
+		COMMAND rda python "${CMAKE_CURRENT_SOURCE_DIR}/script/state-throws.ts"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/state-throws.py")
+	set_tests_properties(rda_state_error_line PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "cannot read property 'max' of undefined\n    at [^\n]*state-throws\\.ts:10:[0-9]+\\)")
+	# A computed value that throws when it is run once at build: caught, and said as which
+	# value it was -- and now where, the compute's own frame under the message and none of
+	# the evaluator's.
+	add_test(NAME rda_state_compute_error_line
+		COMMAND rda python "${CMAKE_CURRENT_SOURCE_DIR}/script/state-compute-throws.ts"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/state-compute-throws.py")
+	set_tests_properties(rda_state_compute_error_line PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "state\\.first is computed, and running it once[^\n]*\n    at compute \\([^)]*state-compute-throws\\.ts:12:[0-9]+\\)\n*$")
 
 	set(state_header "${CMAKE_CURRENT_BINARY_DIR}/generated/RdaState.h")
 	add_custom_command(
@@ -168,10 +245,35 @@ if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
 		COMMAND rda mesh "${CMAKE_CURRENT_SOURCE_DIR}/mesh/badge.ts"
 		                 "${CMAKE_CURRENT_BINARY_DIR}/badge.rdam")
 	set_tests_properties(rda_mesh PROPERTIES TIMEOUT 120)
+	# A mesh the geometry helpers refuse: their frames, then the mesh's own line under them.
+	# It used to be the message alone, here and for the theme below.
+	add_test(NAME rda_mesh_error_line
+		COMMAND rda mesh "${CMAKE_CURRENT_SOURCE_DIR}/mesh/throws.ts"
+		                 "${CMAKE_CURRENT_BINARY_DIR}/throws.rdam")
+	set_tests_properties(rda_mesh_error_line PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "an edge is a number or \\[anchor, pixels\\][^\n]*\n(    at [^\n]*<mesh>[^\n]*\n)+    at [^\n]*mesh/throws\\.ts:11:[0-9]+\\)")
+	# And a theme, the same way: its line -- which, had it been printed, the colour helpers
+	# written in front of the theme would have pushed down by their whole length.
+	add_test(NAME rda_theme_error_line
+		COMMAND rda theme "${CMAKE_CURRENT_SOURCE_DIR}/script/theme-throws.ts"
+		                  "${CMAKE_CURRENT_BINARY_DIR}/theme-throws.rdth")
+	set_tests_properties(rda_theme_error_line PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "cannot read property 'accent' of undefined\n    at [^\n]*theme-throws\\.ts:10:[0-9]+\\)")
 elseif(NOT TARGET rda)
 	message(STATUS "Mesh test: RDA_BUILD_TOOLS is off, skipping rda_mesh")
 else()
 	message(STATUS "Mesh test: esbuild was not found, skipping rda_mesh")
+endif()
+
+# `rda shot` and `rda prototype` are run by rda-preview, which rda hands the whole command line
+# to and whose output and exit code it passes back. The project here is not there, so what
+# comes back is the refusal printed before any window or device is asked for: the test needs
+# neither, and passes only if the line reached rda-preview and its answer reached this test.
+if(TARGET rda AND TARGET rda-preview)
+	add_test(NAME rda_preview_forwarded
+		COMMAND rda shot "${CMAKE_CURRENT_SOURCE_DIR}/no-such-project")
+	set_tests_properties(rda_preview_forwarded PROPERTIES TIMEOUT 120
+		PASS_REGULAR_EXPRESSION "rda: no res/ directory in [^\n]*no-such-project")
 endif()
 
 # Every test above that runs the tool is given the esbuild the build itself uses, the way the

@@ -27,9 +27,11 @@ The path is the one Python, Node and C# all took:
    find out what your binding does not do yet, and it is how both of these were finished
    rather than merely written.
 
-Adding a generator is one function beside `emitStatePython` / `emitStateNode` /
-`emitStateCSharp` in `RendeerAlpha/src/Layout/StateSchema.cpp`, one subcommand in
-`Cli/rda.cpp`, and a flag for it in that file's `build` command, which is how a
+Adding a generator is one file beside `PythonStateGen.cpp`, `NodeStateGen.cpp` and
+`CSharpStateGen.cpp` in `RendeerAlpha/toolchain/src/Layout/Codegen/` -- using `CodeWriter` for its
+string literals, so text with a newline in it comes out valid -- one target in
+`Cli/CmdState.cpp` with its line in `Cli/main.cpp`'s command table, and a flag for it in
+`Cli/CmdBuild.cpp`, which is how a
 project without a build system asks for its state module. The test is a fourth
 `check.<ext>` and a few lines in `bindings/tests/CMakeLists.txt`.
 

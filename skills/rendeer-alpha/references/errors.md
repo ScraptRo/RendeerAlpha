@@ -32,6 +32,12 @@ half its bindings read a signal nobody declared.
 An error from esbuild — a stray bracket, a bad import — is passed through as it is, with
 the line and column in the `.tsx`.
 
+An exception thrown while a file is built — in a component, a helper it imports, a theme, a
+mesh, state.ts — comes with its stack, and every frame names the file, line and column it
+was written at, not esbuild's output. Fix the top frame that is one of your files; a frame
+in `<rda helpers>`, `<colours>` or `<mesh>` is the engine's helper that refused what that
+line gave it.
+
 ## Build errors — a theme
 
 | Message | Fix |

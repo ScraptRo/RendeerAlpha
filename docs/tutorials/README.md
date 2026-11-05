@@ -16,13 +16,14 @@ reference.
 ## These are published, and fetched as they are
 
 The website that shows this series reads these files **at run time**, straight from this
-repository. A correction committed here is live there within GitHub's cache window, with
-nothing rebuilt and nothing redeployed -- which is the whole reason the content lives beside
-the code instead of in the site.
+repository's `main` branch on GitHub. A correction that reaches it is live there within
+GitHub's cache window, with nothing rebuilt and nothing redeployed -- which is the whole
+reason the content lives beside the code instead of in the site. A correction on `dev` is
+not live until it has been merged and pushed.
 
 That costs one rule: `index.json` is the series, and a page is only in it if it is listed
-there. `slug` names the page in a URL, `file` is the markdown beside it, and `minutes`,
-`title`, `tagline` and `summary` are what the index page shows.
+there. `slug` names the page in a URL, `file` is the markdown beside it, `title`, `tagline`
+and `minutes` are what the index page shows, and `summary` opens the page itself.
 
 ## What the markdown may contain
 
@@ -37,8 +38,8 @@ A reader renders these into the site's own blocks, so the dialect is small and f
 | `> a note` | drawn as a callout |
 | a fenced block | ` ```tsx title="res/layouts/home.tsx" ` -- the title is the file label |
 
-Inline, `` `code` ``, `**bold**`, `*emphasis*` and `[text](https://…)` all work. Anything
-else -- images, nested lists, three-column tables, headings below `##` -- has nowhere to go
+Inline, `` `code` ``, `**bold**`, `*emphasis*` and `[text](https://…)` all work, and a link
+to another `.md` in `docs/` opens that page on GitHub. Anything else -- images, nested lists, three-column tables, headings below `##` -- has nowhere to go
 and will come out as plain text.
 
 ---

@@ -28,9 +28,9 @@ namespace {
 		double      number() const { return value.asNumber(); }
 	};
 
-	Run run(const std::string& source) {
+	Run run(const std::string& source, bool handler = false) {
 		Run out;
-		const ParseResult parsed = parseBinding(source);
+		const ParseResult parsed = parseBinding(source, handler);
 		if (!parsed.ok) {
 			out.error = parsed.error;
 			return out;
@@ -137,7 +137,7 @@ TEST(a_ternary_picks_a_branch) {
 TEST(a_handler_writes_a_signal) {
 	Fixture fx;
 	const uint32_t count = signals().define("count", 0.0);
-	const Run r = run("() => state.count = 5");
+	const Run r = run("() => state.count = 5", true);
 	CHECK(r.ran);
 	CHECK_EQ(signals().number(count), 5.0);
 }
@@ -145,22 +145,22 @@ TEST(a_handler_writes_a_signal) {
 TEST(a_handler_can_increment_and_compound_assign) {
 	Fixture fx;
 	const uint32_t count = signals().define("count", 10.0);
-	run("() => state.count++");
+	run("() => state.count++", true);
 	CHECK_EQ(signals().number(count), 11.0);
-	run("() => state.count += 4");
+	run("() => state.count += 4", true);
 	CHECK_EQ(signals().number(count), 15.0);
-	run("() => state.count--");
+	run("() => state.count--", true);
 	CHECK_EQ(signals().number(count), 14.0);
-	run("() => state.count *= 2");
+	run("() => state.count *= 2", true);
 	CHECK_EQ(signals().number(count), 28.0);
 }
 
 TEST(a_write_goes_through_the_signals_own_type) {
 	Fixture fx;
 	const uint32_t open = signals().define("open", false);
-	run("() => state.open = !state.open");
+	run("() => state.open = !state.open", true);
 	CHECK(signals().boolean(open));
-	run("() => state.open = !state.open");
+	run("() => state.open = !state.open", true);
 	CHECK(!signals().boolean(open));
 }
 
@@ -168,7 +168,7 @@ TEST(a_block_runs_every_statement) {
 	Fixture fx;
 	const uint32_t a = signals().define("a", 0.0);
 	const uint32_t b = signals().define("b", 0.0);
-	const Run r = run("() => { state.a = 1; state.b = state.a + 41 }");
+	const Run r = run("() => { state.a = 1; state.b = state.a + 41 }", true);
 	CHECK(r.ran);
 	CHECK_EQ(signals().number(a), 1.0);
 	CHECK_EQ(signals().number(b), 42.0);
@@ -179,13 +179,66 @@ TEST(writing_a_signal_marks_the_bindings_that_read_it) {
 	const uint32_t count = signals().define("count", 0.0);
 	signals().observe(count, 1);
 
-	run("() => state.count = 3");
+	run("() => state.count = 3", true);
 	CHECK(signals().anyDirty());
 	signals().clearDirty();
 
 	// The same value again is not a change, even written through a handler.
-	run("() => state.count = 3");
+	run("() => state.count = 3", true);
 	CHECK(!signals().anyDirty());
+}
+
+// A value binding runs again when what it reads changes, and the signal it stores into counts
+// as read: `state.a = 1` undoes every handler's write to a, and `state.a = state.a + 1` never
+// stops. Every spelling is refused, and with the words the compiler uses for what goes past
+// the grammar, so the rule does not depend on how the write was written.
+TEST(a_value_binding_refuses_every_way_of_writing) {
+	Fixture fx;
+	signals().define("count", 0.0);
+	const char* const writes[] = {
+		"() => state.count = 1",
+		"() => state.count += 1",
+		"() => state.count -= 1",
+		"() => state.count *= 2",
+		"() => state.count /= 2",
+		"() => state.count++",
+		"() => state.count--",
+		"() => { state.count = 1 }",
+		"() => (state.count = 1)",
+		"() => state.count > 0 ? state.count = 1 : 0",
+		"() => state.count > 0 ? 0 : state.count = 1",
+		"() => state.rda.maximized = true",
+	};
+	for (const char* write : writes) {
+		CHECK(refusal(write).find("cannot write state") != std::string::npos);
+	}
+}
+
+TEST(a_value_binding_points_at_what_it_wrote) {
+	const ParseResult parsed = parseBinding("() => 1 + (state.count = 2)");
+	CHECK(!parsed.ok);
+	CHECK_EQ(parsed.position, size_t(11));
+}
+
+// `==`, `<=` and `- -1` all begin with something a write begins with. Telling them apart is
+// what keeps every comparison in every layout compiling.
+TEST(reading_a_signal_is_not_a_write) {
+	Fixture fx;
+	signals().define("count", 0.0);
+	const char* const reads[] = {
+		"() => state.count == 0",
+		"() => state.count === 0",
+		"() => state.count != 1",
+		"() => state.count !== 1",
+		"() => state.count <= 0",
+		"() => state.count >= 0",
+		"() => state.count - 1",
+		"() => state.count - -1",
+		"() => state.count + +1",
+	};
+	for (const char* read : reads) {
+		CHECK(refusal(read).empty());
+	}
 }
 
 // ---- what the grammar refuses ---------------------------------------------------

@@ -1,9 +1,97 @@
 # Restructuring the engine into layers
 
-**Status: proposal.** Nothing here is built yet. It comes from six read-only reviews of the
-whole engine, run side by side on 2026-10-22, plus an include graph taken from the tree.
-The findings that could be checked cheaply were checked against the code. Each one says
-where it is.
+**Status: built.** All six steps are in the tree, apart from two pieces left out on purpose,
+each with its reason below. The layers are there and the build enforces them -- see
+[the layers](layers.md) for the result. The rest of this page is
+the proposal as it was written, from six read-only reviews of the whole engine run side by
+side on 2026-10-22, plus an include graph taken from the tree. It is kept as the record of
+what was found and why. The findings that could be checked cheaply were checked against the
+code, and each one says where it is.
+
+What was built, and where it went differently from the plan below:
+
+- **Step 1, the wrong-way edges: done.** Plus seams the plan did not foresee, found by the
+  include graph once the obvious edges were gone. The renderer draws into a `RenderSurface`
+  rather than a `Window`. A list asks the runtime to bind its rows (`ListView::RowBinder`)
+  rather than evaluating them itself. The layout loader is split into the `Instantiator`
+  (blueprint) and the binding of what it built (runtime). `Rect` has a header of its own.
+- **Step 2, directories and targets: done, differently.** Each layer is an object library
+  rather than a static library, all of them linked into the one `rendeer` an application
+  already links, and the include paths did not change -- a header is still
+  `<GraphicalObjects/Widget.h>`, in whichever layer's `include/` it now lives. So nothing a
+  C++ application writes had to change, and the enforcement is the same: a layer is compiled
+  against its own headers and those below it, and an upward include does not compile.
+  Some files landed somewhere other than the table below says, because the include graph said
+  so. The accessibility tree is in `formats` and the draw list in `renderer`, so the layers
+  that read them sit above them. `MeshAsset` is in `ui`. The binding engine and the script
+  host are in `runtime`. `RendeerAlpha.h` belongs to the runtime that implements it.
+- **Step 3, the widget registry: done.** One record per element, setters resolved when a
+  layout loads, constant-only properties marked in the schema and refused by the compiler,
+  and a test that fails when the schema and the registry disagree. `Widget.cpp` is one file
+  per widget. `Probe` keeps its casts: each is one test action on one widget type, not a
+  ladder that drifts.
+- **Step 4, the large files: done.**
+  - Split: `RendeerAlpha.cpp` (into `runtime/src/Runtime/`), `Docking.cpp`, `ScriptHost.cpp`,
+    `FontAtlas.cpp` and `Gui::textField`. The two node walks are one. `PresentationSurface`
+    (the surface, the swapchain and the FrameBuffer over it) is out of `Window` and in the
+    engine layer, and the rest of `Window.cpp` is split by concern under
+    `runtime/src/GraphicalObjects/Window/`.
+    `Gui.cpp` and `GuiWidgets.cpp` are a file per concern under
+    `ui/src/GraphicalObjects/Gui/`.
+    `OsWindow` in the platform layer owns the GLFW window and everything done to it, and
+    `getGLFW()` is gone: GLFW is private to `platform` and `vulkan`, so the runtime cannot
+    include it. It is a class rather than the interface with `Win32/`, `Linux/` and `Null/`
+    implementations the plan drew, because GLFW already is that abstraction and there is one
+    implementation of it.
+    `FontAtlas` is CPU only: it bakes into a bitmap it owns and records which rows changed,
+    so text can be measured without a device, and `GlyphAtlasTexture` owns the Vulkan image.
+  - `Gui` is a facade. Seven classes own what it was made of, each with its state: `Canvas`
+    (the draw list, clipping, opacity and text), `Interaction` (ids, hot and active, the input
+    stack), `Focus`, `Shortcuts`, `DragDrop`, `A11yCollector` and `WindowChrome`. What one needs
+    from another is passed in rather than reached for. Three things stayed in `Gui` because
+    they belong to none of the seven: applying a screen reader's requests, which touches four
+    of them; each field's text state, which is keyed by widget id and which the splitter uses
+    too; and what is per frame, from the retained tree and the overlays to the theme and the
+    immediate widgets. `hot`, `active` and a few fields of `Focus` are public data, because
+    every widget reads and writes them as it draws.
+- **Step 5, the sync engines: done, without `StatePump`.**
+  - Done: `Mailbox`, `FileStamp`/`FileWatch`, the stream lock, the dock removal queue,
+    `RetireQueue` and `FrameSync`. `RetireQueue` is the texture retire list, the one place
+    that was a queue; the other waitIdle-and-forget pairs recreate in place and wait for
+    nothing to be handed over. `FrameSync` is a window's frames in flight, and its sibling
+    `PresentSync` a swapchain's per-image present semaphores -- two classes because they
+    are counted in different things and live for different lengths of time.
+  - Not built, on purpose: `StatePump`. What the frame loop and `Probe` share is two calls,
+    and in the loop they have GUI work between them whose order matters, so one function
+    would mean reordering the frame to save a line.
+  - Done: `AccessibleDiff`, in `formats` beside the tree. Which nodes came, went or changed is
+    worked out once; what to say about it stays in each platform layer, because the two do not
+    have the same events and already differed on purpose, on a single-select list losing its
+    row. The caret clamps are `textCaretIn` and `textAnchorIn`, which is all the planned
+    `AccessibleQuery` came to. The hit test stays per backend: Windows converts the point to
+    layout units once, and AT-SPI converts each node into whichever system the client asked
+    for, so what the two share is a backward loop. Checked by recording every event a client
+    received, on both platforms, before and after.
+- **Step 6, the toolchain: done, without a library of its own.**
+  - Done: `CodeWriter` and one generator per language, and `rda` split into a file per
+    command group. `JsContext` (`toolchain/src/Layout/JsContext.h`), which every compiler
+    now evaluates in and which says an exception one way, with the two things that genuinely
+    differ between them as parameters. The preludes, the run-time module's prelude and the
+    analysis as `.js` files in `toolchain/src/Layout/js/`, embedded by `rda_embed_js`.
+  - Done since: `rda-preview` as a program of its own, running `prototype` and `shot`, with
+    `rda` forwarding the two to the one beside it. It was the only part of `rda` that
+    needed Vulkan and a window: `rda.exe` now imports nothing but `KERNEL32` and the C
+    runtime, with no `vulkan-1.dll` and no `USER32`. Theme, mesh and state.ts are compiled on
+    the same large-stack thread a layout is, so a recursion that does not end is an error
+    with a line rather than a crash.
+  - Not built, on purpose: the toolchain as a library of its own. The linker already leaves
+    its objects out of a program that does not reference them, and in a Debug build, where the
+    running engine does reference them for hot reload, a separate library would be a link
+    cycle with the runtime.
+
+Every checked bug in [Bugs found on the way](#bugs-found-on-the-way) is fixed, and so are the
+three reported ones that were checked once the code was open: the dead `Router`, the lost
+second close, and the synthetic press that reached one window.
 
 The short version: most of the tangle is about **who owns what and which way the
 dependencies point**. Very little is about how an algorithm is written. So the fix is mostly
@@ -252,7 +340,8 @@ are owned by `EngineContext`, never by function-local statics.
 - `Surface`: the `WindownSurface` rename.
 - `Swapchain`.
 - `OneShotSubmit`: one copy.
-- `FrameSync`: per-window fences and semaphores, from Renderer and Swapchain.
+- `FrameSync` and `PresentSync`: a window's fences and acquire semaphores, from Renderer, and
+  a swapchain's per-image present semaphores, from Swapchain.
 
 **platform/ (`rda_platform`)**
 - An `OsWindow` interface with one GLFW implementation; `getGLFW()` disappears from callers.

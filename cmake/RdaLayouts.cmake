@@ -5,10 +5,10 @@
 # "first, run rda layout" has already lost the argument.
 #
 # The blueprint is written next to its source rather than into the build directory, and
-# that is deliberate. Only a Studio build has the compiler; an App build has the loader
-# and nothing that could produce a blueprint. Keeping the .rdab beside the .tsx makes it
-# a committed artefact, so an App-tier build of an application is self-sufficient — the
-# same reason a project would commit a generated parser.
+# that is deliberate. An application links the loader, and the compiler only where something
+# calls it -- hot reload does, in a Debug build -- so a release has no way to make a blueprint.
+# Keeping the .rdab beside the .tsx makes it a committed artefact, so a build with no compiler
+# (RDA_COMPILE_LAYOUTS off, or no esbuild) uses it as it is, the way a generated parser is.
 #
 #   rda_add_layouts(sandbox res/layouts/hello.tsx)
 

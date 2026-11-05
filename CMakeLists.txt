@@ -20,7 +20,7 @@ cmake_minimum_required(VERSION 3.21)
 # There is one configuration. There used to be three tiers that each excluded the layer
 # above; they are gone because the interface layer is the product, and because the
 # footprint they protected is protected by static linking anyway — the linker leaves out
-# a compiler that nothing calls. See RendeerAlpha/include/Core/BuildMode.h.
+# a compiler that nothing calls. See RendeerAlpha/foundation/include/Core/BuildMode.h.
 
 # 1.0: the interface layer is what this engine is, four languages have driven it, and the
 # behaviour it has now is the behaviour it is promising. It builds and tests from a clone
@@ -39,7 +39,7 @@ cmake_minimum_required(VERSION 3.21)
 #
 # Every version since is in CHANGELOG.md, which is where a running account of what changed
 # belongs rather than here. The number below and the C ABI in RendeerC.h move
-# independently: this is 1.2.0 and that is still 1.6.
+# independently: this is 1.2.0 and that is still 1.8.
 project(RendeerAlpha VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -141,9 +141,12 @@ if(PROJECT_IS_TOP_LEVEL AND RDA_BUILD_TOOLS AND RDA_BUILD_C_API)
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${RDA_STAGE_DIR}/include"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:rendeer_c>" "${RDA_STAGE_DIR}/"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:rda>" "${RDA_STAGE_DIR}/"
+		# `rda prototype` and `rda shot` are run by the program beside `rda`, and are not there
+		# without it.
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:rda-preview>" "${RDA_STAGE_DIR}/"
 		${_rda_stage_extra}
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			"${CMAKE_SOURCE_DIR}/RendeerAlpha/include/RendeerC.h" "${RDA_STAGE_DIR}/include/"
+			"${CMAKE_SOURCE_DIR}/RendeerAlpha/api/include/RendeerC.h" "${RDA_STAGE_DIR}/include/"
 		COMMAND ${CMAKE_COMMAND} -E copy_directory
 			"${CMAKE_SOURCE_DIR}/RendeerAlpha/res" "${RDA_STAGE_DIR}/res"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -151,7 +154,7 @@ if(PROJECT_IS_TOP_LEVEL AND RDA_BUILD_TOOLS AND RDA_BUILD_C_API)
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different
 			"${CMAKE_BINARY_DIR}/stage/$<CONFIG>/BUILD.txt" "${RDA_STAGE_DIR}/BUILD.txt"
 		COMMAND ${CMAKE_COMMAND} -E echo "Staged the $<CONFIG> engine into ${RDA_STAGE_DIR}"
-		DEPENDS rendeer_c rda
+		DEPENDS rendeer_c rda rda-preview
 		COMMENT "Staging the engine into ${RDA_STAGE_DIR}"
 		VERBATIM
 	)

@@ -317,6 +317,14 @@ setter is generated.
 - One that reads itself, directly or around a loop of others, is stopped and logged rather
   than recomputed for ever.
 
+### Watches
+
+A field with `watch` runs that function when its value changes. Where a computed value runs
+inside the write and may have no effects, a watch runs after the writes have finished and may
+have any a handler may. It runs at the end of `ScriptHost::tick`, once timers and computed values
+have settled and before the bindings are applied. [Reacting to change](watch-and-on-open.md) is
+the reasoning, and what the same idea becomes for a screen and for a backend.
+
 ### Typed for TypeScript: defineState, defineTables, defineCommands
 
 Run-time code in state.ts names `state`, `tables` and `commands` and gets the live ones --

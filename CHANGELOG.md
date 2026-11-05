@@ -15,6 +15,118 @@ command carries, running one for its result, and loading state.ts's code (1.8); 
 already there changed meaning. A layout gets the rest by being rebuilt; a backend gets
 state.ts's code by regenerating its state module.
 
+### The engine in layers
+
+A layout, a backend and the C ABI do not change at all, and a C++ application changes only if
+it reached past the interface into the engine; those calls are listed below. The headers keep
+their names and `rendeer` is the same library. What changed is where the files are and what may
+include what. The engine is now twelve layers, bottom to top -- `foundation`, `sync`, `state`,
+`formats`, `vulkan` and `platform` side by side, `engine`, `renderer`, `ui`, `blueprint`,
+`runtime`, `toolchain` -- each a directory under `RendeerAlpha/` and each an object library
+compiled against its own headers and those of the layers below, so an include that points
+upward does not compile. See [the layers](docs/architecture/layers.md). It started as a review
+of the whole engine, and [restructure.md](docs/architecture/restructure.md) is what it found.
+
+Getting there meant cutting every edge that pointed the wrong way, and each cut is a seam a
+lower layer reaches through rather than an include. Anything asks for a frame through
+`Core/Wake.h` instead of the public facade. The style registry reads a theme through a slot
+the blueprint layer fills. Hot reload reaches the compilers through `Layout/Rebuilder.h`, so
+the running engine includes no compiler header. The renderer draws into a `RenderSurface`,
+an interface it declares and a window implements, instead of reading a `Window`. A list asks
+the runtime to bring a row up to date instead of evaluating its bindings itself. And the
+layout loader is two things now: the `Instantiator`, which builds widgets from a blueprint,
+and the runtime that binds them.
+
+The large files are split by what each part is for. `RendeerAlpha.cpp` is six files under
+`runtime/src/Runtime/`. `Widget.cpp` is one file per widget, and `Gui.cpp` one per concern.
+`Docking.cpp`, `ScriptHost.cpp`, `FontAtlas.cpp`, `StateSchema.cpp`, `Cli/rda.cpp` and
+`Gui::textField`'s 880 lines are each split along their own seams. `Window` gave up its
+surface, swapchain and FrameBuffer to a `PresentationSurface` in the engine layer, and the OS
+window itself to an `OsWindow` in the platform layer. GLFW is private to the platform and
+Vulkan layers now, so nothing above them can reach for it. Every split was checked by rendering
+a set of interfaces before and after and comparing the pictures and accessibility trees byte
+for byte.
+
+`Gui` is a facade now rather than one class spread across files. Seven classes own what it was
+made of, each with its own state: `Canvas` for drawing and text, `Interaction` for ids and what
+the pointer is on, `Focus`, `Shortcuts`, `DragDrop`, `A11yCollector` and `WindowChrome`. What one
+needs from another is passed in, and `Gui`'s public interface did not change.
+
+`FontAtlas` no longer touches Vulkan: it bakes into a bitmap of its own, so text can be measured
+with no device, and `GlyphAtlasTexture` in the renderer owns the image. A texture waiting to be
+freed is in a `RetireQueue` and a window's frames in flight are a `FrameSync`, so each of those
+rules is written once. What changed between two accessibility trees is `AccessibleDiff`, worked
+out once for UI Automation and AT-SPI, which keep only what to say about it. Every event a
+screen reader was sent, recorded on both platforms before and after, came out the same.
+
+`rda` no longer needs a GPU. `prototype` and `shot` are a program of their own, `rda-preview`,
+beside `rda`, which forwards the two commands to it. So the tool that builds a project imports
+nothing but `KERNEL32` and the C runtime on Windows.
+
+A C++ application that called any of these has something to change:
+
+- `Window::getGLFW()` is gone, and GLFW cannot be included above the platform layer. Use the
+  window's own methods, which now include the clipboard.
+- `InitGlfw()` and `endGlfw()` are `initWindowSystem()` and `endWindowSystem()` in
+  `Platform/WindowSystem.h`.
+- `Swapchain::imageInFlight()` is replaced by `claimImage()`.
+- `FontAtlas::texture()` and `FontAtlas::uploadPending()` are on `GlyphAtlasTexture`, which is
+  given the atlas.
+
+The toolchain evaluates JavaScript one way. Seven copies of setting QuickJS up and three ways
+of turning an exception into text are one `JsContext`, keeping the two differences that were
+real: the deeper stack a layout is compiled with, and the wording of two messages. The
+preludes, the analysis and the module a layout's code ships in are `.js` files now rather
+than C++ raw strings -- one of them split in three to fit under MSVC's limit -- embedded at
+configure time by `rda_embed_js`.
+
+**A widget kind is one record.** How each element is built, which of its properties a binding
+can drive, and which events it has used to be three chains of `dynamic_cast` in three files,
+and they had drifted. `Layout/WidgetRegistry.h` has one record per element instead. A binding
+finds its setter once, when the layout loads, rather than comparing names whenever a value
+moves. A test now fails the build if the schema and the registry disagree. What the drift had
+been hiding:
+
+- About twenty properties type-checked as bindable and were ignored at run time, with a
+  warning: `hAlign` on a label or a button, everything on `<scroll>` and `<splitter>`,
+  `fit` on an image, `barHeight` on tabs, a list's `rowHeight`, a grid's `headerHeight`, a
+  column's `field` and `hAlign`, a dock's `title`, `closable` and `variant`, `anchor`, and
+  more. They follow state now.
+- What is only read once -- the table a list shows, a text field's mode, where a dock panel
+  starts -- is marked constant in the schema. `rda.d.ts` offers no binding form for it, and
+  the compiler refuses one with the reason, rather than compiling a binding that does nothing.
+- The loader and the binding runtime parsed the same words separately, and disagreed:
+  `"auto"` was an alignment to one and not the other, and a bound `arrange` the stack did not
+  know turned it vertical. One parser now.
+- A typo inside a list's row template was never reported, because nothing checked a template's
+  nodes. It is reported once, when the layout loads.
+
+Fixed on the way:
+
+- **A second window could not copy or paste and wore the built-in look.** Only the first got the
+  clipboard and the theme.
+- **`rda_set_title` went around the window,** so a screen reader kept the old name.
+- **A `Router` going away left back and forward bound to it.**
+- **Two panels closed in one frame lost one.**
+- **A synthetic press reached the first window only.**
+- **A stream's lock was held through a whole GPU upload,** so a producer on another thread asking
+  `wanted()` waited as long.
+- **The logger had no lock,** with the loop on its own thread.
+- **A property error on a `<list>` with a row template aborted the compiler** with a QuickJS
+  assertion rather than reporting it.
+- **A theme, a mesh or a `state.ts` that recursed without end took the compiler down.** They are
+  compiled on the same large stack a layout is now, so it is an error with a line.
+- **On Linux, a program started by a relative path could lose its own assets.** For the main
+  program `dladdr` reports `argv[0]`, which stops meaning anything once the program has changed
+  directory, as `prototype` and `shot` do.
+- **The Python, Node and C# state modules wrote a text default containing a newline as broken
+  code.** One writer escapes for every language now.
+
+Smaller: three unused vendored libraries are gone (shaderc's sources, nlohmann/json and an OBJ
+loader, about 220 files); the command queue and the dropped-files queue in the C ABI are one
+`Core/Mailbox.h`; four copies of "did this file change" are `Core/FileStamp.h`; and
+`RDA_LOG_SUCCES` is spelled `RDA_LOG_SUCCESS`, with the old name kept as an alias.
+
 ### Formatting and timers
 
 What an interface needs that QuickJS lacks. **`format`** -- `number`, `percent`, `bytes`,
@@ -116,6 +228,83 @@ typed in `rda.d.ts`. See [functions](docs/frontend/functions.md) and
 A blueprint with functions is version 3; one without is version 2, byte for byte what it
 was. A blueprint with functions in it is code, and is to be trusted only as far as the
 executable that loads it is.
+
+### An error while a file is built names the line it was written on
+
+A layout that threw while it was built was reported at a line of esbuild's bundle, not of
+the file: the types are gone from that, the imports are pasted in above, and the compiler
+wraps the lot in a function. A component throwing on its third line said `main.tsx:5`. A
+helper imported by `throws.tsx` that threw on its own line 4 said `throws.tsx:4` -- a
+comment, in the wrong file -- and its caller on line 13 said `throws.tsx:10`. A theme, a
+mesh and a state.ts that threw said no line at all: the message alone, the stack left off.
+Every frame of the bundle is moved back through esbuild's source map now, to the file, line
+and column it came from -- `throws-helper.ts:4:10`, then `throws.tsx:13:24` -- and what no
+file accounts for, the wrapper's own lines, says "the engine's own code", as a run-time
+module's frames do.
+
+The rest of a kind. A mesh the geometry helpers refuse -- an edge written as a word, a
+state with another's triangle count -- shows their frames and then the mesh's line that
+asked. A computed value that failed when it was run once at build, which the engine catches
+to say which value it was, says where too: the compute's own frame, and none of the
+evaluator's around it. A row template that threw used to say only that it had; it says what
+it threw. And a theme's colour helpers are evaluated as a script of their own, as a
+layout's have been since the timers: written in front of the theme, they had put every line
+of it off by their length, which nobody saw only because no line was printed.
+
+### A failed submit hung the engine
+
+A frame whose `vkQueueSubmit` failed left a fence that had been reset and that nothing would
+signal, so the next draw waited on it for good: a window that froze, with nothing said. Such a
+frame cannot simply be dropped, because its semaphore and its acquired image are left waiting
+too, and retrying would mean rebuilding all three on a device that has just refused work. So
+the engine says which `VkResult` it got and stops the ordinary way, with `onShutdown` still to
+come. That includes running out of memory, which now ends the application. A lost device
+reported by acquire or present, rather than by the submit, still only logs, every frame.
+
+### A value binding could write
+
+`text={() => state.count = 1}` built and ran. The rule that a value binding may not write was
+kept past the grammar and at run time, but the grammar itself accepted the plainest spelling of
+it, so the same write was refused or not depending on how it was written. It did harm when it
+got through. A value binding runs again when what it reads changes, and the signal it stores
+into counts as read, so that line undid every handler's write to `count`, leaving a button that
+looked dead, and `state.count = state.count + 1` climbed every frame without end. Every spelling
+is refused now, with the words the other path already used. A layout that relied on this stops
+building and says where: the write belongs in a handler.
+
+### Watching a value
+
+A field of state can say what to do when its value changes, beside what `compute` says about
+how it is worked out. It is the home for what a write in a value binding was reaching for.
+
+```ts
+export const state = defineState({
+  country: { value: "", watch: () => { state.city = "" } },
+  city:    "",
+  volume:  { value: 50, watch: (now: number) => { if (now > 100) state.volume = 100 } },
+  theme:   { value: "dark", watch: (now: string) => commands.saveSetting("theme", now) },
+  total:   {
+    compute: () => state.price * state.qty,
+    watch:   (now: number, was: number) => { if (now > was) commands.noteIncrease(now) },
+  },
+})
+```
+
+A watch runs as a handler does: it may write state, call commands and start timers. It is told
+`(now, was)`, once for a batch of writes, and not at all for a starting value or for a value
+that moved and came back. It runs at the end of the frame's script step, after timers and
+computed values have settled and before bindings are applied, so what it writes is on the
+screen in the same frame, and a table can be watched through a computed value that reads it.
+A watch may write what it watches, which is how a clamp settles. Watches that never settle are
+stopped after 64 passes and logged by name, and what they reached stands, so a value cannot
+climb for ever the way the binding could.
+
+Nothing crosses the C ABI: state.ts's code already travels in every generated module, so a
+backend gets this by regenerating, and `rda prototype` runs it with no backend. Its parameters
+are named by hand, as an action's are, because typing them from the field made every `compute`
+that reads `state` circular. See [functions](docs/frontend/functions.md#reacting-to-a-change-watch)
+and [the design](docs/architecture/watch-and-on-open.md), which also holds what comes next for
+a screen and for a backend.
 
 ### A reload could follow freed widgets
 
@@ -438,6 +627,13 @@ the title bar of a panel *behind* it and drag that instead.
 `limitations.md` still said there was one font face and that text outside Latin draws as a
 box, and the element index said nineteen. Fallback faces and glyphs baked on first use made
 the first two untrue some time ago; the third was four elements behind.
+
+The tutorials had fallen behind the same way. They still measured a layout in pixels, the
+declaration in State and backends did not compile, and the backends beside it read a signal
+it never declared. A top-level constant reaches a binding now while a component's local is
+refused, which the text had as one rule, and it still said the program contains no
+JavaScript engine. Every sample in the series has been compiled again, and the backends
+checked against what the build generates.
 
 ## 1.2.0 — 2026-10-02
 

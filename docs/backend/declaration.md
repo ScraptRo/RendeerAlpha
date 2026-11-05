@@ -55,7 +55,7 @@ module carries that code to every backend:
 ```ts
 export const state = defineState({
   price: 0,
-  qty:   { value: 1, doc: "how many" },
+  qty:   { value: 1, doc: "how many", watch: (now: number) => { if (now < 0) state.qty = 0 } },
   total: { compute: () => state.price * state.qty, doc: "what the cart costs" },
 })
 
@@ -69,6 +69,7 @@ export const commands = defineCommands({
 | | what it is | on the backend |
 | --- | --- | --- |
 | `total: { compute }` | a computed signal: worked out by state.ts, current the moment what it read changes | read like any signal; no setter, and the C ABI refuses a write |
+| `qty: { watch }` | a watch: state.ts runs it when the value changes, once the writes have finished | nothing to do: it travels in the generated module, and a backend's write counts as a change |
 | `rename: { params }` | a command with arguments, declared by example and in order | a handler typed from them -- `onRename([](double id, const std::string& name) {...})` |
 | `validate: { run }` | an action: state.ts answers it | callable -- `call("validate", "ABC-1234")` returns `true` -- and bindable, to hear of it after |
 

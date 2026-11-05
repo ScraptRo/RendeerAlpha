@@ -60,6 +60,7 @@ The tests are two kinds of thing. The engine’s own cases need no device and ta
 bin/                       written by the `stage` target; not tracked
 ├── rendeer_c.dll          the engine as a shared library — what every non-C++ backend opens
 ├── rda.exe                the toolchain: `rda build <project>` compiles an interface
+├── rda-preview.exe        what `rda prototype` and `rda shot` run, beside it
 ├── esbuild.exe            what the toolchain transforms TypeScript with
 ├── include/RendeerC.h     the C ABI, for anything with an FFI
 ├── res/                   the engine's font and syntax definitions

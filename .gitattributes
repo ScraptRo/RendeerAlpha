@@ -10,6 +10,11 @@
 *.bat    text eol=crlf
 *.cmd    text eol=crlf
 
+# The JavaScript preludes are embedded as the bytes of the file, so the file has to be the
+# same bytes however it was checked out: with autocrlf on Windows it would otherwise be a
+# different prelude there than on Linux.
+RendeerAlpha/toolchain/src/Layout/js/*.js text eol=lf
+
 # Binary, so git never tries to "fix" them.
 *.png    binary
 *.jpg    binary

@@ -8,7 +8,7 @@ Two properties, `width` and `height`, each taking a number or one of three words
 | `"content"` | as big as the widget says it needs |
 | `"fill"` | share of what is left over |
 | `"fill:2"` | twice the share of a plain `fill` beside it |
-| `"content-23"`, `"fill-40"`, `"content+8"` | the same, less or plus a number of pixels |
+| `"content-23"`, `"fill-40"`, `"content+8"` | the same, less or plus a number of units |
 
 Plus `minWidth`, `maxWidth`, `minHeight`, `maxHeight` — bounds applied to whatever was
 chosen.

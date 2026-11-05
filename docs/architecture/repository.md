@@ -7,7 +7,7 @@ Writing one is the subject of [Setup](../setup/README.md).
 | Path | What it is |
 | --- | --- |
 | `RendeerAlpha/` | The engine, built as a static library, plus `rendeer_c` beside it |
-| `Cli/` | The `rda` tool: `build` for a whole project, and `layout`, `theme`, `state`, `types`, `python`, `node`, `csharp`, `dump` one file at a time |
+| `Cli/` | The `rda` tool: `build` for a whole project, and `layout`, `theme`, `state`, `types`, `python`, `node`, `csharp`, `dump` one file at a time. And `rda-preview`, the part that opens a window -- `prototype` and `shot` -- which `rda` forwards to |
 | `bindings/` | The backend packages: `python/` (ctypes), `node/` (koffi), `csharp/` (P/Invoke), and `tests/` |
 | `cmake/` | Dependency resolution, and the codegen rules a C++ project's build calls |
 | `RuntimeTests/` | The test runner — 105 cases, run by `ctest` |
@@ -28,9 +28,11 @@ is C++20. Every other language consumes `bin/`: the shared library opened throug
 and `rda build` run over the project's `res/`. The engine finds its own assets beside
 its shared library, so nothing is copied into a project.
 
-Inside the engine, `src/` groups by what the files do: `GraphicalSrc/` is Vulkan,
-`GraphicalObjects/` is windows and widgets, `Layout/` is the blueprint pipeline, `Core/`
-is signals and loop plumbing.
+Inside the engine, each directory is a layer -- `foundation/` up to `toolchain/`, with the
+C ABI in `api/` -- and each has an `include/` of public headers and a `src/` of the rest.
+The build compiles every layer against the layers below it and nothing above, so the
+layering cannot drift; [the layers](layers.md) says what goes where and why. `src/vendor/`
+holds the third-party code compiled with it.
 
 ---
 

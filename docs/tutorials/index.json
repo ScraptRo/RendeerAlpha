@@ -4,7 +4,7 @@
       "slug": "what-it-is",
       "title": "What RendeerAlpha is",
       "tagline": "An interface compiled ahead of time, and a backend in whatever language you already write.",
-      "summary": "The shape of the whole thing before any of the details: a TypeScript layout compiled into a flat binary blueprint, an application that loads it with no parser and no JavaScript engine, and a seam that sits at the state rather than at the pixels.",
+      "summary": "The shape of the whole thing before any of the details: a TypeScript layout compiled into a flat binary blueprint, an application that loads it with no parser, and a seam that sits at the state rather than at the pixels.",
       "minutes": 6,
       "file": "what-it-is.md"
     },

@@ -43,8 +43,18 @@ namespace {
 		"       writeTotal: () => { state.total = 1; },\n"                                               // 14
 		"       fail: () => { state.qty = 0; var none = null; return none.x; },\n"                       // 15
 		"       echo: (o, s) => ({ got: o.k, s: s }) },\n"                                               // 16
-		"  row: function () {} };\n"                                                                     // 17
-		"})\n";                                                                                          // 18
+		"  w: { qty: (now, was) => { state.seen += \"[\" + was + \">\" + now + \"]\"; },\n"                 // 17
+		"       total: (now) => { state.totalSeen = now; },\n"                                           // 18
+		"       rows: (now) => { state.rowsSeen = now; },\n"                                             // 19
+		"       volume: (now) => { if (now > 100) state.volume = 100; },\n"                              // 20
+		"       ping: (now) => { state.pong = now + 1; },\n"                                             // 21
+		"       pong: (now) => { state.ping = now + 1; },\n"                                             // 22
+		"       orderB: () => { state.order += \"b\"; },\n"                                              // 23
+		"       orderA: () => { state.order += \"a\"; },\n"                                              // 24
+		"       asks: (now) => { commands.add(now); },\n"                                                // 25
+		"       throws: (now) => { if (now === 1) throw new Error(\"no\"); state.afterThrow = now; } },\n" // 26
+		"  row: function () {} };\n"                                                                     // 27
+		"})\n";                                                                                          // 28
 
 	BlueprintScript compiledState(const std::string& engine = JS_GetVersion()) {
 		BlueprintScript script;
@@ -61,7 +71,7 @@ namespace {
 		JS_FreeContext(ctx);
 		JS_FreeRuntime(rt);
 		script.engine = engine;
-		for (int line = 1; line <= 18; ++line) {
+		for (int line = 1; line <= 28; ++line) {
 			if (line > 1) script.lineMap += "\n";
 			script.lineMap += "test.ts:" + std::to_string(line);
 		}
@@ -73,6 +83,8 @@ namespace {
 	// module carries.
 	struct Fixture {
 		uint32_t price = 0, qty = 0, flag = 0, total = 0, label = 0, rows = 0, capped = 0;
+		uint32_t seen = 0, totalSeen = 0, rowsSeen = 0, volume = 0, ping = 0, pong = 0;
+		uint32_t order = 0, orderA = 0, orderB = 0, asks = 0, throws = 0, afterThrow = 0;
 		uint32_t files = 0;
 		bool loaded = false;
 		std::string error;
@@ -85,6 +97,18 @@ namespace {
 			label = signals().define("label", std::string_view(""));
 			rows = signals().define("rows", 0.0);
 			capped = signals().define("capped", 0.0);
+			seen = signals().define("seen", std::string_view(""));
+			totalSeen = signals().define("totalSeen", 0.0);
+			rowsSeen = signals().define("rowsSeen", 0.0);
+			volume = signals().define("volume", 50.0);
+			ping = signals().define("ping", 0.0);
+			pong = signals().define("pong", 0.0);
+			order = signals().define("order", std::string_view(""));
+			orderA = signals().define("orderA", 0.0);
+			orderB = signals().define("orderB", 0.0);
+			asks = signals().define("asks", 0.0);
+			throws = signals().define("throws", 0.0);
+			afterThrow = signals().define("afterThrow", 0.0);
 			files = tables().define("files");
 			tables().at(files).resize(0);
 			for (const char* name : { "add", "twice", "writeTotal", "fail", "echo" }) {
@@ -296,6 +320,143 @@ TEST(a_computed_signal_follows_a_table_once_a_frame) {
 	CHECK(signals().number(fx.rows) == 3.0);     // ...so it is asked, once a frame
 }
 
+// ---- watches ---------------------------------------------------------------------------
+
+TEST(a_watch_runs_on_the_tick_and_not_inside_the_write) {
+	Fixture fx;
+	signals().set(fx.qty, 5.0);
+	CHECK(signals().text(fx.seen).empty());      // a computed value would have run by now
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[1>5]");
+}
+
+TEST(a_watch_is_told_what_was_and_what_is_and_only_once) {
+	Fixture fx;
+	signals().set(fx.qty, 5.0);
+	scriptHost().tick();
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[1>5]");
+	signals().set(fx.qty, 7.0);
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[1>5][5>7]");
+}
+
+TEST(a_watch_runs_once_for_a_batch) {
+	Fixture fx;
+	signals().set(fx.qty, 2.0);
+	signals().set(fx.qty, 3.0);
+	signals().set(fx.qty, 4.0);
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[1>4]");
+}
+
+TEST(a_value_that_came_back_did_not_change) {
+	Fixture fx;
+	signals().set(fx.qty, 9.0);
+	signals().set(fx.qty, 1.0);
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen).empty());
+}
+
+TEST(a_starting_value_is_not_a_change) {
+	Fixture fx;
+	CHECK(signals().number(fx.total) == 4.0);    // worked out when the code loaded
+	scriptHost().tick();
+	CHECK(signals().number(fx.totalSeen) == 0.0);
+	CHECK(signals().text(fx.seen).empty());
+}
+
+TEST(a_watch_hears_any_writer_and_a_computed_value) {
+	Fixture fx;
+	call("add", "[2]");                          // an action wrote it
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[1>3]");
+	CHECK(signals().number(fx.totalSeen) == 12.0);   // and what is computed from it moved too
+}
+
+TEST(a_table_is_watched_through_a_computed_value) {
+	Fixture fx;
+	tables().at(fx.files).resize(3);
+	scriptHost().tick();                         // asked, computed, and heard in the one tick
+	CHECK(signals().number(fx.rowsSeen) == 3.0);
+}
+
+TEST(a_watch_may_correct_what_it_watches_and_that_settles) {
+	Fixture fx;
+	signals().set(fx.volume, 150.0);
+	scriptHost().tick();
+	CHECK(signals().number(fx.volume) == 100.0);
+	scriptHost().tick();
+	CHECK(signals().number(fx.volume) == 100.0);
+	signals().set(fx.volume, 50.0);              // and what is allowed is left alone
+	scriptHost().tick();
+	CHECK(signals().number(fx.volume) == 50.0);
+}
+
+TEST(watches_feeding_each_other_are_stopped_and_stay_stopped) {
+	Fixture fx;
+	signals().set(fx.ping, 1.0);
+	scriptHost().tick();
+	const double reached = signals().number(fx.ping);
+	CHECK(reached > 1.0);
+	scriptHost().tick();                         // settled, so this turn starts nothing
+	CHECK(signals().number(fx.ping) == reached);
+
+	signals().set(fx.qty, 8.0);                  // and the others still work
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[1>8]");
+	CHECK(signals().number(fx.ping) == reached);
+}
+
+TEST(watches_run_in_the_order_they_were_declared) {
+	Fixture fx;
+	signals().set(fx.orderA, 1.0);               // written in the other order
+	signals().set(fx.orderB, 1.0);
+	scriptHost().tick();
+	CHECK(signals().text(fx.order) == "ba");
+}
+
+TEST(a_watch_runs_as_a_handler_and_what_it_starts_is_heard_in_the_same_tick) {
+	Fixture fx;
+	signals().set(fx.asks, 2.0);                 // calls commands.add(2), which writes qty
+	scriptHost().tick();
+	CHECK(signals().number(fx.qty) == 3.0);
+	CHECK(signals().text(fx.seen) == "[1>3]");
+}
+
+TEST(a_watch_that_throws_leaves_the_rest_running) {
+	Fixture fx;
+	signals().set(fx.throws, 1.0);
+	signals().set(fx.qty, 6.0);
+	scriptHost().tick();
+	CHECK(signals().number(fx.afterThrow) == 0.0);
+	CHECK(signals().text(fx.seen) == "[1>6]");
+	signals().set(fx.throws, 2.0);               // and it is still there for the next change
+	scriptHost().tick();
+	CHECK(signals().number(fx.afterThrow) == 2.0);
+}
+
+TEST(a_reload_starts_every_watch_from_where_things_stand) {
+	Fixture fx;
+	signals().set(fx.qty, 3.0);
+	const std::vector<uint8_t> bytes = writeScriptSection(compiledState());
+	std::string error;
+	CHECK(scriptHost().loadState(bytes.data(), bytes.size(), error));
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen).empty());
+	signals().set(fx.qty, 4.0);
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen) == "[3>4]");
+}
+
+TEST(with_the_code_gone_nothing_is_watched) {
+	Fixture fx;
+	scriptHost().unloadState();
+	signals().set(fx.qty, 3.0);
+	scriptHost().tick();
+	CHECK(signals().text(fx.seen).empty());
+}
+
 TEST(an_action_answers_its_command_with_json_in_and_out) {
 	Fixture fx;
 	std::string error;
@@ -411,6 +572,10 @@ TEST(the_generated_header_carries_its_code_and_types_its_handlers) {
 	tables().at(State::tableIds().lines).resize(4);
 	scriptHost().tick();
 	CHECK(State::lineCount() == 4.0);
+
+	// The action moved qty from 2 to 3, and that same tick ran its watch: the whole road,
+	// from a function in a declaration to bytecode in this header to a call here.
+	CHECK(State::lastChange() == 1.0);
 
 	scriptHost().unloadState();
 	signals().clear();

@@ -43,7 +43,7 @@ it once in `WidgetSchema.cpp`; the TypeScript union appeared without anyone writ
 
 ## What the layout compiler actually does
 
-Three steps, in `src/Layout/LayoutCompiler.cpp`:
+Three steps, in `toolchain/src/Layout/LayoutCompiler.cpp`:
 
 1. **Transform** — esbuild rewrites the `.tsx` into plain JS where every element is a call
    to `h(type, props, ...children)`. Types are erased here; they were never for the

@@ -1,0 +1,185 @@
+#include <GraphicalSrc/Swapchain.h>
+#include <GraphicalSrc/DeviceHandler.h>
+#include <Logger/Logger.h>
+#include <algorithm>
+#include <limits>
+
+namespace RDA {
+
+	bool Swapchain::create(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+		if (!createSwapchain(surface, fallbackExtent)) return false;
+		createImageViews();
+		createSyncObjects();
+		return true;
+	}
+
+	bool Swapchain::recreate(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+		// Asked before destroy(), not after: a window that cannot be drawn keeps the
+		// swapchain it has rather than being left with none. Otherwise a minimise
+		// tears down a working swapchain and then fails to build its replacement,
+		// and every frame until the window comes back has nothing to present to.
+		if (!surfaceIsDrawable(surface, fallbackExtent)) return false;
+		destroy();
+		return create(surface, fallbackExtent);
+	}
+
+	bool Swapchain::surfaceIsDrawable(VkSurfaceKHR surface, VkExtent2D fallbackExtent) const {
+		const SwapChainSupportDetails support =
+			querySwapChainSupport(getPhysicalDevice(), surface);
+		const VkExtent2D extent = chooseExtent(support.capabilities, fallbackExtent);
+		return extent.width != 0 && extent.height != 0;
+	}
+
+	void Swapchain::destroy() {
+		VkDevice device = getDevice();
+		if (device == VK_NULL_HANDLE) return;
+
+		mPresent.destroy();
+
+		for (VkImageView view : mImageViews) {
+			vkDestroyImageView(device, view, nullptr);
+		}
+		mImageViews.clear();
+
+		if (mSwapchain != VK_NULL_HANDLE) {
+			vkDestroySwapchainKHR(device, mSwapchain, nullptr);
+			mSwapchain = VK_NULL_HANDLE;
+		}
+		mImages.clear();
+	}
+
+	bool Swapchain::createSwapchain(VkSurfaceKHR surface, VkExtent2D fallbackExtent) {
+		VkPhysicalDevice physicalDevice = getPhysicalDevice();
+		SwapChainSupportDetails support = querySwapChainSupport(physicalDevice, surface);
+
+		VkSurfaceFormatKHR surfaceFormat = chooseFormat(support.formats);
+		VkPresentModeKHR   presentMode   = choosePresentMode(support.presentModes);
+		VkExtent2D         extent        = chooseExtent(support.capabilities, fallbackExtent);
+
+		// Not an error, and not logged as one: a minimised window has no area, and the
+		// caller builds this again when it is restored. Vulkan requires both dimensions
+		// to be non-zero, so reaching vkCreateSwapchainKHR with this is a validation
+		// error and an unusable swapchain rather than a smaller one.
+		if (extent.width == 0 || extent.height == 0) return false;
+
+		uint32_t imageCount = support.capabilities.minImageCount + 1;
+		if (support.capabilities.maxImageCount > 0 && imageCount > support.capabilities.maxImageCount) {
+			imageCount = support.capabilities.maxImageCount;
+		}
+
+		VkSwapchainCreateInfoKHR createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+		createInfo.surface = surface;
+		createInfo.minImageCount = imageCount;
+		createInfo.imageFormat = surfaceFormat.format;
+		createInfo.imageColorSpace = surfaceFormat.colorSpace;
+		createInfo.imageExtent = extent;
+		createInfo.imageArrayLayers = 1;
+		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+		QueueFamilyIndices indices = findQueueFamilies(physicalDevice, surface);
+		uint32_t queueFamilyIndices[] = { indices.graphicsFamily.value(), indices.presentFamily.value() };
+		if (indices.graphicsFamily != indices.presentFamily) {
+			createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+			createInfo.queueFamilyIndexCount = 2;
+			createInfo.pQueueFamilyIndices = queueFamilyIndices;
+		} else {
+			createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		}
+
+		createInfo.preTransform = support.capabilities.currentTransform;
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+		createInfo.presentMode = presentMode;
+		createInfo.clipped = VK_TRUE;
+		createInfo.oldSwapchain = VK_NULL_HANDLE;
+
+		VkDevice device = getDevice();
+		if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &mSwapchain) != VK_SUCCESS) {
+			RDA_RUNTIME_ERROR("Failed to create swapchain");
+		}
+
+		uint32_t actualImageCount = 0;
+		vkGetSwapchainImagesKHR(device, mSwapchain, &actualImageCount, nullptr);
+		mImages.resize(actualImageCount);
+		vkGetSwapchainImagesKHR(device, mSwapchain, &actualImageCount, mImages.data());
+
+		mFormat = surfaceFormat.format;
+		mExtent = extent;
+		return true;
+	}
+
+	void Swapchain::createImageViews() {
+		VkDevice device = getDevice();
+		mImageViews.resize(mImages.size());
+		for (size_t i = 0; i < mImages.size(); i++) {
+			VkImageViewCreateInfo viewInfo{};
+			viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			viewInfo.image = mImages[i];
+			viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			viewInfo.format = mFormat;
+			viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+			viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+			viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+			viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+			viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			viewInfo.subresourceRange.baseMipLevel = 0;
+			viewInfo.subresourceRange.levelCount = 1;
+			viewInfo.subresourceRange.baseArrayLayer = 0;
+			viewInfo.subresourceRange.layerCount = 1;
+			if (vkCreateImageView(device, &viewInfo, nullptr, &mImageViews[i]) != VK_SUCCESS) {
+				RDA_RUNTIME_ERROR("Failed to create swapchain image view");
+			}
+		}
+	}
+
+	void Swapchain::createSyncObjects() {
+		if (!mPresent.create(static_cast<uint32_t>(mImages.size()))) {
+			RDA_RUNTIME_ERROR("Failed to create present semaphore");
+		}
+	}
+
+	VkSurfaceFormatKHR Swapchain::chooseFormat(const std::vector<VkSurfaceFormatKHR>& available) {
+		for (const auto& format : available) {
+			if (format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+				format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+				return format;
+			}
+		}
+		return available[0];
+	}
+
+	VkPresentModeKHR Swapchain::choosePresentMode(const std::vector<VkPresentModeKHR>& available) const {
+		// With vsync we want FIFO: it blocks presentation to the display's refresh, so
+		// the loop never renders frames that are thrown away. Mailbox renders as fast as
+		// the GPU can and discards all but the latest each vblank — smooth, but it pins
+		// the GPU at full power, so it is opt-in.
+		if (mVsync) {
+			return VK_PRESENT_MODE_FIFO_KHR; // always available; the vblank-paced default
+		}
+		for (const auto& mode : available) {
+			if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+				return mode;
+			}
+		}
+		return VK_PRESENT_MODE_FIFO_KHR; // guaranteed to be available
+	}
+
+	VkExtent2D Swapchain::chooseExtent(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D fallback) {
+		// Most drivers report the real size here; the fallback only matters when the
+		// surface says "match the window", which is why callers pass their cached
+		// framebuffer size instead of us asking GLFW (main-thread only).
+		if (caps.currentExtent.width != (std::numeric_limits<uint32_t>::max)()) {
+			return caps.currentExtent;
+		}
+		// A window with no area cannot be clamped into one. minImageExtent is at least
+		// 1x1, so clamping here would turn "minimised" into a 1x1 swapchain that draws
+		// nothing and reports no problem; the caller has to be able to see the zero.
+		if (fallback.width == 0 || fallback.height == 0) {
+			return fallback;
+		}
+		VkExtent2D extent = fallback;
+		extent.width  = std::clamp(extent.width,  caps.minImageExtent.width,  caps.maxImageExtent.width);
+		extent.height = std::clamp(extent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+		return extent;
+	}
+}

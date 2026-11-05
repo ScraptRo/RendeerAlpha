@@ -1,11 +1,12 @@
-// A state declaration with code in it: computed values, a command with arguments, and an
-// action -- what the generated C++ carries and loads. Compiled by the build into the header
+// A state declaration with code in it: computed values, a watch, a command with arguments,
+// and an action -- what the generated C++ carries and loads. Compiled by the build into the header
 // StateCodeTests.cpp includes, and by the rda_state_code test on its own.
 import { round2 } from "./state-helpers"
 
 export const state = defineState({
   price: { value: 2.5, doc: "one item" },
-  qty: 2,
+  qty: { value: 2, watch: (now: number, was: number) => { state.lastChange = now - was } },
+  lastChange: 0,
   total: { compute: () => round2(state.price * state.qty), doc: "what it costs" },
   summary: { compute: () => `${state.qty} at ${state.price}` },
   lineCount: { compute: () => tables.lines.length },

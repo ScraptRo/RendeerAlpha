@@ -306,7 +306,7 @@ if have dotnet; then
 else
 	note "no dotnet on PATH (only needed for a C# backend)"
 fi
-note "bin/ holds the shared library, the tool and include/RendeerC.h; bin/README.md says how each language reaches it."
+note "bin/ holds the shared library, the tool (with rda-preview beside it) and include/RendeerC.h; bin/README.md says how each language reaches it."
 
 # ---- 8. what Vulkan is available ---------------------------------------------------------
 

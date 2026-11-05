@@ -127,4 +127,6 @@ python app.py
 
 A heading reading *Clicked 0 times*, two buttons, a text area, and a Save button. *Add one* counts; *Reset* returns to zero; *Save* prints whatever is in the field, from the backend.
 
-Then, with the application still running, change `"Add one"` to `"Add"` in `home.tsx` and save the file. The interface rebuilds in place and **the count survives** — state lives in the application, not inside the thing being replaced.
+Then, with the application still running, change `"Add one"` to `"Add"` in `home.tsx` and save the file. The interface rebuilds in place and **the count survives** — state lives in the application, not inside the thing being replaced. The theme reloads the same way, so a colour can be changed and looked at without restarting anything.
+
+> To see an interface before any backend exists, run `rda prototype .` in the project. It opens the same window with every signal at its declared value, and every command prints a line to the terminal.

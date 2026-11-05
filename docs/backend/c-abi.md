@@ -1,6 +1,6 @@
 # Any language with an FFI
 
-`RendeerAlpha/include/RendeerC.h` — 60 functions, built as `rendeer_c.dll` /
+`RendeerAlpha/api/include/RendeerC.h` — 60 functions, built as `rendeer_c.dll` /
 `librendeer_c.so`. Everything above is written on top of it — Python, Node and C# alike.
 
 ## Which ABI you are talking to

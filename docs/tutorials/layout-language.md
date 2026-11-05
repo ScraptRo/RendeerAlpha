@@ -3,22 +3,36 @@
 ```tsx
 <label id="t"
        text="Ready"                                    // 1. a constant
-       visible={() => state.count > 0} />              // 2. a binding
+       visible={() => state.count > 0}                 // 2. a binding
+/>
 
 <button id="b" text="Add"
-        onClick={() => state.count++} />               // 3. a handler
+        onClick={() => state.count++}                  // 3. a handler
+/>
 ```
 
 - **A constant** is written into the blueprint and never looked at again.
 - **A binding** — `{() => …}` — is parsed at build time into stack operations over signals, and evaluated when one of the signals it reads changes. That is the whole of the reactivity.
 - **A handler** — `onClick`, `onChange` — is the same machinery pointed the other way. It may write signals and call commands, and it runs when the widget says so.
 
-The arrow is **not a closure**. It is a syntax the compiler recognises so it knows *this expression is to be evaluated later*, and it is parsed from its source text. Nothing from the surrounding code comes along:
+The arrow is **not a closure**. It is a syntax the compiler recognises so it knows *this expression is to be evaluated later*, and it is compiled from its source text. Nothing from the code around it comes along. What it can name is `state`, `commands`, `tables`, and the top level of its file and its imports:
 
 ```tsx
-const step = 5
-<button onClick={() => state.count += step} />    // error: `step` is not in scope
-<button onClick={() => state.count += 5} />       // fine
+const STEP = 5                     // the file's top level
+
+function Counter() {
+  const step = 5                   // a local of the component
+  return (
+    <stack id="counter">
+      {/* error: `step` is not in scope */}
+      <button id="a" onClick={() => state.count += step} />
+      {/* fine: STEP ships with it */}
+      <button id="b" onClick={() => state.count += STEP} />
+      {/* fine */}
+      <button id="c" onClick={() => state.count += 5} />
+    </stack>
+  )
+}
 ```
 
 An event that carries a value hands it to the handler, and a two-way widget takes both halves explicitly — `value` says where the truth is, `onChange` says what to do about a change:
@@ -50,11 +64,11 @@ An event that carries a value hands it to the handler, and a two-way widget take
 
 That is the grammar, and a binding written in it runs with no engine behind it. A binding that goes past it — a function you wrote, a method, an array, a loop — is compiled to JavaScript instead and runs as QuickJS bytecode; see [functions](../frontend/functions.md).
 
-Two rules the grammar **enforces** rather than hopes for: a value binding may not call a command — drawing must not have effects — and a handler may write while a binding may not. Everything else, a loop or a computation or a call into a library, belongs in the backend, which is the half of the application that has a language.
+Two rules the grammar **enforces** rather than hopes for: a value binding may not call a command — drawing must not have effects — and a handler may write while a binding may not. What reaches outside the interface — a file, the network, a library — belongs in the backend, which is the half of the application that has a language.
 
 ## state.rda — what the engine knows about itself
 
-The one place a binding reads two levels deep. `state.rda.width` and `state.rda.height` are the window’s size in pixels, rewritten every frame — so a layout follows a resize without the application being involved:
+The one place a binding reads two levels deep. `state.rda.width` and `state.rda.height` are the window’s size in layout units, rewritten every frame — so a layout follows a resize without the application being involved:
 
 ```tsx
 <stack id="root" arrange={() => state.rda.width < 700 ? "vertical" : "horizontal"}>
@@ -66,19 +80,24 @@ They are read-only, and they cost nothing when nothing moves: a write that chang
 
 | width / height | means |
 | --- | --- |
-| `200` | exactly 200 pixels |
+| `200` | exactly 200 units |
 | `"content"` | as big as the widget says it needs |
 | `"fill"` | share of what is left over |
 | `"fill:2"` | twice the share of a plain `fill` beside it |
-| `"content-23"`, `"fill-40"`, `"content+8"` | the same, less or plus a number of pixels |
+| `"content-23"`, `"fill-40"`, `"content+8"` | the same, less or plus a number of units |
 
 ```tsx
 <stack arrange="horizontal" spacing={8}>
-  <panel width={200} />          {/* fixed */}
-  <panel width="fill" />         {/* the rest */}
-  <label width="content" />      {/* as wide as its text */}
+  {/* fixed */}
+  <panel width={200} />
+  {/* the rest */}
+  <panel width="fill" />
+  {/* as wide as its text */}
+  <label width="content" />
 </stack>
 ```
+
+A **unit** is a pixel on an ordinary display and one and a half pixels on one configured at 150%, so `height={30}` looks the same size on every display. Everything a layout says is in units; pixels exist only inside the renderer.
 
 **Saying nothing is not the same as saying zero.** Along the stacking axis, a widget with no declared size is measured — so a row of labels that declared no width is a row of labels, not a pile of them at the same x. Across the axis, saying nothing means *stretch me to the line*, which is what a child of a column almost always wants.
 

@@ -5,7 +5,7 @@ module, the JavaScript module, the C# class, and the TypeScript the layouts are 
 against. Add a name here first, then use it.
 
 It is TypeScript, but only four exports are read: `state`, `commands`, `tables`,
-`routes`. Anything else in the file is ignored, unless a `compute` or a `run` uses it --
+`routes`. Anything else in the file is ignored, unless a `compute`, a `watch` or a `run` uses it --
 then it ships with them.
 
 ```ts
@@ -80,6 +80,7 @@ export const state = defineState({
   price: 0,
   qty:   1,
   total: { compute: () => state.price * state.qty, doc: "what it costs" },   // computed
+  theme: { value: "dark", watch: (now: string) => commands.save(now) },      // watched
 })
 
 export const commands = defineCommands({
@@ -92,6 +93,10 @@ export const commands = defineCommands({
   changes. Its type is what it returns when the build runs it once on the starting values,
   tables empty -- give `value` too if it cannot run without data. It may read `state` and
   `tables`; it may not write state or call commands.
+- **A watched field** runs its `watch` when the value changes, whoever wrote it. It runs as a
+  handler does, so this is the place for a reaction: never a write in a value binding. It is
+  told `(now, was)` -- name their types -- once for a batch of writes, not on load, and
+  not for a value that came back. For several signals or a table, put it on a `compute`.
 - **An action** is a command state.ts answers: called from a layout like any command,
   run by `rda prototype`, callable from a backend with `call("add", 2)` (returns its result),
   and bindable by a backend to hear of it after. It runs as a handler does.

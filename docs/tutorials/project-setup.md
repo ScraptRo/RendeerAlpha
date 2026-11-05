@@ -12,7 +12,7 @@ rda_add_types(myapp   res/layouts/rda.d.ts res/themes/mytheme.ts res/state.ts)
 rda_add_layouts(myapp res/layouts/main.tsx)
 ```
 
-That gives the application the library, the `rda` tool, and the build rules that compile its interface. Each `rda_add_*` rule is a build step: `rda_add_state` generates `RdaState.h` from the declaration, `rda_add_theme` compiles the theme to `.rdth`, `rda_add_types` generates the `rda.d.ts` your editor checks the layout against, and `rda_add_layouts` compiles each `.tsx` into a `.rdab`.
+That gives the application the library, the `rda` tool, and the build rules that compile its interface. Each `rda_add_*` rule is a build step: `rda_add_state` generates `RdaState.h` from the declaration, `rda_add_theme` compiles the theme to `.rdth`, `rda_add_types` generates the `rda.d.ts` your editor checks the layout against, and `rda_add_layouts` compiles each `.tsx` into a `.rdab`. A project with widget shapes of its own adds `rda_add_meshes(myapp res/mesh/tab.ts)` ahead of them, because a theme may set what a mesh declares.
 
 ## Python, Node and C# — no build system at all
 
@@ -24,7 +24,7 @@ npx rda build .            # Node
 rda build .                # anything, using bin/rda directly
 ```
 
-That compiles the theme and every layout beside their sources, and writes the generated state module for the language you are in — `state.py`, `state.mjs` or `state.cs`. The engine itself is a shared library the backend opens at run time, not something you compile against.
+That compiles any meshes, the theme and every layout beside their sources, and writes the generated state module for the language you are in — `state.py`, `state.mjs` or `state.cs`. The engine itself is a shared library the backend opens at run time, not something you compile against.
 
 | Language | What sits beside res/ |
 | --- | --- |

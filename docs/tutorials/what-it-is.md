@@ -15,7 +15,7 @@ export default function Hello() {
 }
 ```
 
-Those `{() => ...}` arrows are not closures that ship. They are parsed at build time into stack bytecode over `state`, so the running program is reactive without carrying a JavaScript engine: writing `state.count` marks exactly the bindings that read it, and the next frame evaluates only those.
+Those `{() => ...}` arrows are not closures that ship. They are parsed at build time into stack bytecode over `state`, so the running program is reactive without needing a JavaScript engine: writing `state.count` marks exactly the bindings that read it, and the next frame evaluates only those.
 
 ## The two halves
 
@@ -35,7 +35,7 @@ A backend lays nothing out, owns no widget and never sees one. That is the desig
 
 Everything the layout language allows has to survive being turned into data at build time. That constraint is where the rest of the design comes from:
 
-- Nothing that ships contains a parser or a JavaScript engine — esbuild is a build-time dependency and only that.
+- Nothing that ships contains a parser — esbuild is a build-time dependency and only that. The one script engine in the program is QuickJS, for the functions a layout defines, and it starts only if a layout has any.
 - Every element and property is declared once, in the engine’s widget schema, and the `rda.d.ts` your layout is checked against is generated from that same table. If it is in autocomplete it exists at run time.
 - A state declaration generates the C++ header, the Python module, the JavaScript module, the C# class and the TypeScript the layout is checked against — so a misspelling is a compile error on the side that made it.
 - The backend owns the GPU device directly, in its own process, with no bridge in the way.

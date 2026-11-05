@@ -80,6 +80,7 @@ bin\                       written by `stage`; not tracked
 ├── rendeer_c.dll          the engine as a shared library -- what every non-C++ backend opens
 ├── rendeer_c.lib, .pdb    the import library and the symbols
 ├── rda.exe                the toolchain: `rda build <project>` compiles an interface
+├── rda-preview.exe        what `rda prototype` and `rda shot` run, beside it
 ├── esbuild.exe            what the toolchain transforms TypeScript with
 ├── include\RendeerC.h     the C ABI, for anything with an FFI
 ├── res\                   the engine's font and syntax definitions, found from here

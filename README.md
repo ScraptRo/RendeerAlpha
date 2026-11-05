@@ -144,8 +144,8 @@ state rather than at the pixels.
 | [docs/backend/](docs/backend/README.md) | The seam, and how each language reaches it |
 | [docs/architecture/](docs/architecture/README.md) | How it fits together, and why — the long version |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version, and what to know before upgrading |
-| `RendeerAlpha/src/Layout/` | The blueprint pipeline |
-| `Cli/rda.cpp` | The toolchain's entry point |
+| `RendeerAlpha/` | The engine, one directory per layer — see [the layers](docs/architecture/layers.md) |
+| `Cli/` | The `rda` tool: `main.cpp`, and a file per group of commands; and `rda-preview`, which runs `prototype` and `shot` |
 
 ## Requirements, in short
 

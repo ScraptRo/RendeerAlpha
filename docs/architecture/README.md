@@ -38,6 +38,7 @@ and [backend/](../backend/README.md) are the reference.
 | [Screens](screens.md) | routes as state, params as signals, and where the swap happens |
 | [Asking the application to do something](commands.md) | commands, and why a binding may not call one |
 | [Code that runs: functions in a layout](runtime-code.md) | what runs at build time and what at run time, decided by where it is reached from -- built: functions, logic in state.ts, format and timers |
+| [Reacting to change](watch-and-on-open.md) | running code when a value changes or a screen opens -- `watch` is built; `onOpen`, `onClose` and a backend's `Watch` are proposed |
 
 ## Drawing
 
@@ -55,7 +56,8 @@ and [backend/](../backend/README.md) are the reference.
 | | |
 | --- | --- |
 | [The repository](repository.md) | what each folder is, and what is not vendored |
-| [Restructuring into layers](restructure.md) | proposal: what a review of the whole engine found, the layers it should be cut into, and the steps to get there |
+| [The layers](layers.md) | the engine from `foundation` to `toolchain`, what goes where, and the build that keeps it that way |
+| [Restructuring into layers](restructure.md) | what a review of the whole engine found, and the steps that cut it into layers |
 | [Testing](testing.md) | driving an interface without opening one, and the four tiers |
 | [The bindings, and the seam out of C++](bindings.md) | out-of-process hosting and why it is gone; the C ABI; Python, Node and C# |
 | [Where things stand](where-things-stand.md) | what is load-bearing, what is optional, and the known loose ends |

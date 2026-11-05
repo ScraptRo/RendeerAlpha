@@ -1,0 +1,22 @@
+#pragma once
+#include <vulkan/vulkan.h>
+#include <Core/Datatypes.h>
+namespace RDA{
+    struct WindownSurface
+    {
+        // The GLFW window handle this surface was created from.
+        void* nativeWindow = nullptr;
+
+        // Create the Vulkan surface from a GLFWwindow* passed as windowHandle.
+        bool Create(VkInstance vkInstance, void* windowHandle);
+
+        // Destroy the Vulkan surface.
+        void Destroy();
+
+        VkSurfaceKHR Get() const { return surface; }
+
+    private:
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        VkInstance instance = VK_NULL_HANDLE;
+    };
+}

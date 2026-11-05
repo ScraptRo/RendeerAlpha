@@ -198,3 +198,28 @@ TEST(writing_through_the_wrong_type_does_nothing) {
 	CHECK_EQ(fx().number(count), 1.0);
 	CHECK(!fx().anyDirty());
 }
+
+TEST(a_signal_counts_its_changes_and_nothing_else) {
+	signals().clear();
+	const uint32_t number = signals().define("counted", 1.0);
+	const uint32_t flag = signals().define("countedFlag", false);
+	const uint32_t text = signals().define("countedText", std::string_view("a"));
+	CHECK(signals().version(number) == 0);       // being defined is not a change
+
+	signals().set(number, 1.0);                  // nor is the same value again
+	signals().set(flag, false);
+	signals().set(text, std::string_view("a"));
+	CHECK(signals().version(number) == 0);
+	CHECK(signals().version(flag) == 0);
+	CHECK(signals().version(text) == 0);
+
+	signals().set(number, 2.0);
+	signals().set(flag, true);
+	signals().set(text, std::string_view("b"));
+	CHECK(signals().version(number) == 1);
+	CHECK(signals().version(flag) == 1);
+	CHECK(signals().version(text) == 1);
+
+	CHECK(signals().version(kNoSignal) == 0);
+	signals().clear();
+}

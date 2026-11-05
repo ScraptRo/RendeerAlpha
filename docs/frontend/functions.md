@@ -194,6 +194,37 @@ there so the editor types `state.qty` in state.ts as the number it is when the c
 rather than as the `{ value, doc }` it was declared as. See
 [the declaration](../backend/declaration.md#code-in-the-declaration) for the backend's side.
 
+### Reacting to a change: `watch`
+
+A field may also say what to do when its value changes:
+
+```ts
+export const state = defineState({
+  country: { value: "", watch: () => { state.city = "" } },
+  city:    "",
+  volume:  { value: 50, watch: (now: number) => { if (now > 100) state.volume = 100 } },
+  theme:   { value: "dark", watch: (now: string) => commands.saveSetting("theme", now) },
+  total:   {
+    compute: () => state.price * state.qty,
+    watch:   (now: number, was: number) => { if (now > was) commands.noteIncrease(now) },
+  },
+})
+```
+
+- **It runs as a handler does.** It may write state, call commands and start timers, which a
+  value binding and a computed value may not. That is what it is for.
+- **It is told `(now, was)`,** `was` being the value the last time it ran. Name their types, as
+  an action names its parameters'.
+- **It runs once for a batch, after the writes have finished.** Three writes in one handler are
+  one call, and a value that moved and came back is none. What it writes is on the screen in
+  the same frame.
+- **A starting value is not a change,** so it does not run on load.
+- **Any writer counts,** a backend included.
+- **It watches one field.** Several signals together are a `compute` with a `watch`, as `total`
+  is. So is a table, through a computed value that reads it.
+- **It may write what it watches,** as `volume` does: it runs again and settles. Watches that
+  never settle are stopped after 64 passes and logged by name, and what they reached stands.
+
 ## Formatting
 
 QuickJS has no `Intl`, so `toLocaleString` is not much use. `format` is there instead, in a

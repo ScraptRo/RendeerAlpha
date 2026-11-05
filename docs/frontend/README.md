@@ -10,7 +10,7 @@ into data at build time. A function you define is no exception -- it is compiled
 bytecode then, and runs only because a binding calls it.
 
 Every element and property is declared once, in
-`RendeerAlpha/src/Layout/WidgetSchema.cpp`, and the `rda.d.ts` in your project is
+`RendeerAlpha/formats/src/Layout/WidgetSchema.cpp`, and the `rda.d.ts` in your project is
 generated from that same table. If something is in your editor's autocomplete it exists at
 run time, and if it is not, it does not.
 

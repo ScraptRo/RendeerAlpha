@@ -6,6 +6,13 @@ rda prototype .
 
 A window, with your interface in it, and no backend at all.
 
+The window is `rda-preview`'s: `rda` hands this command, and `rda shot`, to the program of
+that name beside it, with the whole line and everything it printed and returned passed
+through. It is a program of its own because it is the part of the toolchain that needs Vulkan
+and a display; `rda`, which compiles, needs neither. `bin/` has both, and a `rda` copied
+somewhere without it will say that it is missing. Typing `rda-preview prototype .` is the
+same thing.
+
 An interface is written against `state`, `tables` and `commands` from `res/state.ts`, and
 normally a backend supplies all three: it defines the signals, fills the rows, answers the
 commands. That is the right arrangement and it is also the thing standing between you and

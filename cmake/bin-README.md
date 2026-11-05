@@ -9,6 +9,7 @@ configuration is in here.
 | `rendeer_c.dll` / `librendeer_c.so` | the engine as a shared library — what ctypes, koffi and P/Invoke open |
 | `rendeer_c.lib`, `rendeer_c.pdb` | Windows only: the import library and the symbols |
 | `rda` / `rda.exe` | the toolchain. `rda build <project> --python` compiles a project's interface |
+| `rda-preview` / `rda-preview.exe` | what `rda prototype` and `rda shot` run: they open a window, so `rda` hands them to this one, which has to stay beside it |
 | `esbuild` / `esbuild.exe` | what the toolchain transforms TypeScript with; put here by the bring-up |
 | `include/RendeerC.h` | the C ABI, for a C or C++ program that opens the library rather than linking the engine |
 | `res/` | the engine's own font and syntax definitions. Found from here automatically |
