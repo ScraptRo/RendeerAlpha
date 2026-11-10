@@ -1,7 +1,7 @@
 ﻿// `state`, `python`, `node` and `csharp`: one state declaration, written out as the code a
 // backend is written against. The four differ in what they emit and in what they say about
 // it, and in nothing else, so they are one function and a table.
-#include "Commands.h"
+#include "Command.h"
 
 #include <cstdio>
 
@@ -55,8 +55,23 @@ namespace Cli {
 		}
 	}
 
-	int cmdState(const Args& args)  { return generate(kCpp,    argument(args, 1), argument(args, 2)); }
-	int cmdPython(const Args& args) { return generate(kPython, argument(args, 1), argument(args, 2)); }
-	int cmdNode(const Args& args)   { return generate(kNode,   argument(args, 1), argument(args, 2)); }
-	int cmdCSharp(const Args& args) { return generate(kCSharp, argument(args, 1), argument(args, 2)); }
+	static int cmdState(const Args& args)  { return generate(kCpp,    argument(args, 1), argument(args, 2)); }
+	static int cmdPython(const Args& args) { return generate(kPython, argument(args, 1), argument(args, 2)); }
+	static int cmdNode(const Args& args)   { return generate(kNode,   argument(args, 1), argument(args, 2)); }
+	static int cmdCSharp(const Args& args) { return generate(kCSharp, argument(args, 1), argument(args, 2)); }
+
+	namespace {
+		const Command kStateCommand{ __FILE__, "state", Section::Build, 2,
+			"  rda state  <state.ts>  <out.h>     generate the C++ for a state declaration\n",
+			cmdState };
+		const Command kPythonCommand{ __FILE__, "python", Section::Build, 2,
+			"  rda python <state.ts>  <out.py>    generate the Python for a state declaration\n",
+			cmdPython };
+		const Command kNodeCommand{ __FILE__, "node", Section::Build, 2,
+			"  rda node   <state.ts>  <out.mjs>   generate the JavaScript for a state declaration\n",
+			cmdNode };
+		const Command kCSharpCommand{ __FILE__, "csharp", Section::Build, 2,
+			"  rda csharp <state.ts>  <out.cs>    generate the C# for a state declaration\n",
+			cmdCSharp };
+	}
 }

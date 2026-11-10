@@ -703,5 +703,107 @@ function emit(plan) {
   return { module: text, map: map.join("\n"), warnings: warnings };
 }
 
-return { analyse: analyse, isFunction: isFunction, binding: binding, calls: calls, emit: emit, aliases: aliases };
+// ---- a value that reads state is a binding --------------------------------------
+
+// `width={state.gap}` means what `width={() => state.gap}` means, and this is what makes it so.
+// `state` does not exist while a layout is built, so a value that reads it has to reach the
+// compiler as a function, and the arrow was only ever there to say which values those are. That
+// can be seen by looking: a value of an element that reads state, or in a row's template what the
+// row was given, is wrapped here, before anything is evaluated, and from then on there is one kind
+// of binding.
+//
+// A handler keeps its arrow, because there it says something else. `onClick={state.count++}` reads
+// as if it runs now, and what is written has to say that it runs when the event does.
+var NOT_A_VALUE = { id: 1, type: 1, children: 1, key: 1 };
+
+function keyOf(p) {
+  if (p.type !== "Property" || p.computed || p.kind !== "init") return null;
+  return p.key.type === "Identifier" ? p.key.name : p.key.value;
+}
+function isElementCall(n) {
+  return n.type === "CallExpression" && n.callee.type === "Identifier" && n.callee.name === "h";
+}
+// A layout written as an object: `{ type: "label", text: ... }`.
+function isElementObject(n) {
+  if (n.type !== "ObjectExpression") return false;
+  return n.properties.some(function (p) {
+    return keyOf(p) === "type" && p.value.type === "Literal" && typeof p.value.value === "string";
+  });
+}
+
+// Whether evaluating this reads one of `roots`. Not through a function, which reads it when it is
+// called and already says so, and not through an element, whose own values are looked at in turn.
+function readsLive(node, roots) {
+  var found = false;
+  (function look(n) {
+    if (found || isFunctionNode(n) || isElementCall(n) || isElementObject(n)) return;
+    if (n.type === "MemberExpression" && n.object.type === "Identifier" && roots[n.object.name]) {
+      found = true;
+      return;
+    }
+    children(n, look);
+  })(node);
+  return found;
+}
+
+function implicitBindings(text) {
+  var inserts = [];
+
+  function values(object, roots) {
+    object.properties.forEach(function (p) {
+      var key = keyOf(p);
+      if (key === null || p.method || NOT_A_VALUE[key] || /^on[A-Z]/.test(key)) return;
+      if (isFunctionNode(p.value) || !readsLive(p.value, roots)) return;
+      inserts.push({ at: p.value.start, text: "() => (" }, { at: p.value.end, text: ")" });
+    });
+  }
+
+  function without(roots, names) {
+    var out = Object.create(null);
+    for (var n in roots) if (names.indexOf(n) < 0) out[n] = 1;
+    return out;
+  }
+
+  function walk(n, roots) {
+    if (isFunctionNode(n)) {
+      // A name declared in here is not the one outside: a component that takes a prop called
+      // `state` means its prop.
+      var declared = [];
+      n.params.forEach(function (p) { boundNames(p, declared); });
+      if (n.body.type === "BlockStatement") {
+        var scope = new Scope(null);
+        blockDecls(n.body.body, scope);
+        hoistVars(n.body, scope);
+        declared = declared.concat(Object.keys(scope.names));
+      }
+      roots = without(roots, declared);
+    }
+    if (isElementCall(n)) {
+      if (n.arguments[1] && n.arguments[1].type === "ObjectExpression") values(n.arguments[1], roots);
+    } else if (isElementObject(n)) {
+      values(n, roots);
+    }
+    // What a row's template is given is read the way state is: it is there when the row is
+    // drawn and not while the template is built.
+    if (keyOf(n) === "row" && isFunctionNode(n.value) && n.value.params[0] &&
+        n.value.params[0].type === "Identifier") {
+      var inner = Object.create(null);
+      for (var name in roots) inner[name] = 1;
+      inner[n.value.params[0].name] = 1;
+      walk(n.value.body, inner);
+      return;
+    }
+    children(n, function (c) { walk(c, roots); });
+  }
+
+  walk(acorn.parse(text, MODULE), { state: 1 });
+
+  // From the end, so that what is still to come is where it was found.
+  inserts.sort(function (a, b) { return b.at - a.at; });
+  inserts.forEach(function (one) { text = text.slice(0, one.at) + one.text + text.slice(one.at); });
+  return text;
+}
+
+return { analyse: analyse, isFunction: isFunction, binding: binding, calls: calls, emit: emit,
+         implicitBindings: implicitBindings, aliases: aliases };
 })();

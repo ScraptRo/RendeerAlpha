@@ -8,7 +8,7 @@
 //
 // The tool links no GPU code and this keeps it so: the Vulkan loader is looked for by opening
 // the library at run time and closing it again, never linked against.
-#include "Commands.h"
+#include "Command.h"
 
 #include <Core/FileStamp.h>
 #include <Core/Location.h>
@@ -296,7 +296,7 @@ namespace Cli {
 		}
 	}
 
-	int cmdDoctor(const Args& args) {
+	static int cmdDoctor(const Args& args) {
 		fs::path project;
 		for (size_t i = 1; i < args.size(); ++i) {
 			if (!args[i].empty() && args[i][0] == '-') {
@@ -326,5 +326,12 @@ namespace Cli {
 		std::printf("rda: %s found%s\n", count(static_cast<size_t>(report.problems), "problem").c_str(),
 		            report.fatal ? ", and at least one is something that is needed" : "");
 		return report.fatal ? 1 : 0;
+	}
+
+	namespace {
+		const Command kDoctor{ __FILE__, "doctor", Section::Learn, 0,
+			"  rda doctor [<project>]             what rda found -- esbuild, the GPU loader, python,\n"
+			"                                     node, dotnet -- and, for a project, what it lacks\n",
+			cmdDoctor };
 	}
 }

@@ -1,5 +1,9 @@
 # Containers
 
+`<container>`, `<panel>`, `<stack>` and `<scroll>` also take `editable`, which lets
+[`rda prototype`](../../setup/prototyping.md#editing-in-the-window) build inside them with the
+mouse, and means nothing to anything else.
+
 ## `<container>`
 Groups children and draws nothing. Placement is absolute; use it when you want the
 grouping without the background.

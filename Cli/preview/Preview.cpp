@@ -11,7 +11,8 @@
 // an application gets.
 #include "Preview.h"
 
-#include "Commands.h"
+#include "Command.h"
+#include "Editor.h"
 
 // `prototype` opens a window, so this is the one part of the toolchain that links the runtime
 // -- the device, the window, the renderer -- and it is why it is a program of its own,
@@ -150,7 +151,7 @@ namespace Cli {
 				// Compiled first, and by the same code `rda build` runs: a prototype of a layout
 				// that has not been compiled since it was edited is a prototype of the wrong
 				// thing.
-				if (mOptions.compile && cmdBuild({ "build", mOptions.project.string(), "--no-detect" }) != 0) return 1;
+				if (mOptions.compile && runCommand({ "build", mOptions.project.string(), "--no-detect" }) != 0) return 1;
 
 				if (!readState()) return 1;
 				if (!findCompiledFiles()) return 1;
@@ -294,6 +295,7 @@ namespace Cli {
 				// this is the only moment at which there is a finished one to take.
 				config.onFrameEnd = [this] { onFrameEnd(); };
 				config.onShutdown = [this] { mRouter = RDA::Layout::Router{}; };
+				mEditor.floatPanel(!mShooting);
 			}
 
 			int outcome() const {
@@ -433,15 +435,27 @@ namespace Cli {
 				}
 				std::printf("rda: showing %s -- edit it and it rebuilds\n", source.c_str());
 				std::fflush(stdout);
+				mEditor.show(blueprint, source);
 			}
 
 			// ---- every frame ----------------------------------------------------------------
 
 			void onUpdate(float dt) {
+				// The loop runs while any window is open, and the editor's panel is one. The
+				// interface's window closing is what ends a preview.
+				if (!getMainWindow()->windowIsUp()) {
+					rendeerStop();
+					return;
+				}
+
 				// Both restructure the widget tree, which is why neither happens inside a
 				// widget's own callback.
 				if (mRouted) mRouter.update();
 				else         mHost.reloadIfChanged();
+
+				if (mRouted) followRoute();
+				// After the walk and after any reload, so it draws over what is really there.
+				if (!mShooting || mOptions.edit) mEditor.frame(getMainWindow()->gui());
 
 				if (!mShooting) {
 					if (mWatch.watching() && mWatch.due(dt) && mWatch.changed()) reloadState();
@@ -449,6 +463,16 @@ namespace Cli {
 				}
 				if (mRefused) return;
 				advanceShot(dt);
+			}
+
+			// A route is a layout by another name, and the editor works on the layout.
+			void followRoute() {
+				if (mRouter.current() == mShownRoute) return;
+				mShownRoute = mRouter.current();
+				for (const RDA::Layout::StateRoute& route : mSchema.routes) {
+					if (route.name != mShownRoute) continue;
+					mEditor.show("res/layouts/" + route.layout + ".rdab", "res/layouts/" + route.layout + ".tsx");
+				}
 			}
 
 			// Reads state.ts again and swaps its code in. What it newly declares is defined;
@@ -724,6 +748,8 @@ namespace Cli {
 			RDA::Layout::Router     mRouter;
 			RDA::Layout::LayoutHost mHost;
 			bool                    mRouted = false;
+			std::string             mShownRoute;
+			Editor                  mEditor;
 			bool                    mRefused = false;
 			// Frames spent looking for a widget that is not there yet, before saying it is not.
 			int                     mTargetMisses = 0;

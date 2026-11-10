@@ -1,8 +1,9 @@
 """What the Python binding does, checked against a running engine.
 
-Run by ctest as `rda_python_binding`. It opens a real window on a real device, because
+Run by ctest as `rda_python_binding`. It starts the real engine on a real device, because
 that is what the thing under test does -- a binding that cannot be exercised without one
-is a binding whose bugs only show up in an application.
+is a binding whose bugs only show up in an application. ctest sets RDA_OFFSCREEN, so its
+window is never shown; run this by hand and it is.
 
 The checklist here and the one in check.mjs are deliberately the same, in the same order.
 Two bindings over one ABI should be able to answer the same questions, and a line that

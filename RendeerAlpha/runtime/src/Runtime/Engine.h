@@ -34,6 +34,8 @@ namespace RDA::Runtime {
 		bool         guiEnabled = true;
 		// Physical pixels per layout unit, settled once when the first window opens.
 		float        unitScale = 1.0f;
+		// Nothing goes on the screen this run, so a window opened later is hidden as well.
+		bool         offscreen = false;
 		// What every window's interface wears: the syntax languages, then the theme.
 		std::string  languagesPath;
 		std::string  themePath;

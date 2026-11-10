@@ -81,6 +81,37 @@ namespace RDA::Layout {
 		}
 	}
 
+	bool withImplicitBindings(std::string& bundle, std::string& error) {
+		// acorn is worth loading only for a layout that could have something to find.
+		if (bundle.find("state.") == std::string::npos && bundle.find("row:") == std::string::npos) {
+			return true;
+		}
+
+		JsContext engine(JsContext::Options{ kCompileJsStack });
+		if (!engine) { error = engine.failure(); return false; }
+		JSContext* ctx = engine.get();
+
+		std::string why;
+		if (!evalScript(ctx, reinterpret_cast<const char*>(kAcornSource), kAcornSourceSize, "acorn.js", why,
+		                analysisThrown()) ||
+		    !evalScript(ctx, reinterpret_cast<const char*>(kAnalyzerSource), kAnalyzerSourceSize, "analysis.js", why,
+		                analysisThrown())) {
+			error = "cannot load the analysis: " + why;
+			return false;
+		}
+
+		JSValue argument = JS_NewStringLen(ctx, bundle.data(), bundle.size());
+		JSValue result = callAnalysis(ctx, "implicitBindings", 1, &argument);
+		JS_FreeValue(ctx, argument);
+		if (JS_IsException(result)) {
+			error = "cannot read the bundled layout: " + exception(ctx);
+			return false;
+		}
+		bundle = text(ctx, result);
+		JS_FreeValue(ctx, result);
+		return true;
+	}
+
 	bool wrapBundle(const std::string& bundle, std::string& script, std::string& error) {
 		std::unordered_map<std::string, std::string> exports;
 		return wrapBundle(bundle, script, exports, error);

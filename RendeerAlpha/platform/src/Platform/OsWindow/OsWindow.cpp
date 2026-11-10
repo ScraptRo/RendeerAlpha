@@ -103,8 +103,11 @@ namespace RDA {
 		// Placed after it is up rather than by a hint, so it is one code path with
 		// setPosition -- and so a window that says where it goes does not flash at the
 		// platform's choice first. GLFW_VISIBLE is what makes that possible.
+		//
+		// Stated either way, like the hints above: left at false, the next window opened would
+		// inherit it and never appear.
 		const bool placed = mInfo.style.x != kWindowUnplaced || mInfo.style.y != kWindowUnplaced;
-		if (placed) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+		glfwWindowHint(GLFW_VISIBLE, (placed || mInfo.style.hidden) ? GLFW_FALSE : GLFW_TRUE);
 
 		// Fullscreen is a monitor rather than a hint. Opening straight onto one avoids
 		// creating a swapchain at the windowed size and immediately throwing it away.
@@ -124,7 +127,7 @@ namespace RDA {
 		}
 		if (placed) {
 			setPosition(mInfo.style.x, mInfo.style.y);
-			glfwShowWindow(mWindow);
+			if (!mInfo.style.hidden) glfwShowWindow(mWindow);
 		}
 		// Before anything that converts between units and pixels -- the size limits on the
 		// very next line do -- and before the engine asks what scale to bake a font at.

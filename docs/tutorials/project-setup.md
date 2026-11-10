@@ -73,7 +73,7 @@ myapp/
 └── app.py | main.cpp | app.mjs | Program.cs
 ```
 
-> An unknown element or an unknown property **compiles, with a warning**. The build checks names against the widget schema and says what it did not recognise and what you probably meant: `<button> 'root/again' has no property 'widht'; did you mean 'width'?`. The loader still skips the element and ignores the property, so `rda build --strict` (or `rda layout --strict`) turns each warning into an error, which is what a build that must not ship a typo wants. The editor catches the same typo sooner, which is what `rda.d.ts` and that `tsconfig.json` are for; `rda elements checkbox` lists what an element takes.
+> An unknown element or an unknown property **compiles, with a warning**. The build checks names against the widget schema and says what it did not recognise and what you probably meant: `<button> 'root/again' has no property 'widht'; did you mean 'width'?`. The loader still skips the element and ignores the property, so `rda build --strict` (or `rda layout --strict`) turns each warning into an error, which is what a build that must not ship a typo wants. The editor catches the same typo sooner, which is what `rda.d.ts` and that `tsconfig.json` are for; `rda widgets checkbox` lists what an element takes.
 
 ## An application that already exists
 

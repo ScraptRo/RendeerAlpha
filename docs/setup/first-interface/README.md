@@ -140,7 +140,7 @@ schema, so `<div>` and `colour="#fff"` both produce a blueprint and a line sayin
 not recognised and what was probably meant (`did you mean <container>?`). The loader then
 skips the element and ignores the property, so `rda build --strict` turns the warning into
 an error. The editor catches it sooner, and this file plus the generated `rda.d.ts` is
-what does; `rda elements <name>` lists what an element takes.
+what does; `rda widgets <name>` says what a widget takes.
 
 ## What you should see
 

@@ -372,7 +372,7 @@ namespace RDA::Layout {
 				}
 			}
 			if (listed == 0) valid = "visible, width, height";
-			return message + "; it takes " + valid + ", and the common ones. `rda elements " + type +
+			return message + "; it takes " + valid + ", and the common ones. `rda widgets " + type +
 			       "` lists them all";
 		}
 
@@ -395,7 +395,7 @@ namespace RDA::Layout {
 			if (!best.empty() && bestDistance <= nameTolerance(type.size())) {
 				return message + "; did you mean <" + best + ">?";
 			}
-			return message + "; `rda elements` lists the ones there are";
+			return message + "; `rda widgets` lists the ones there are";
 		}
 
 		// A function prop is a binding. Its source is recovered from the function itself,
@@ -1032,11 +1032,22 @@ namespace RDA::Layout {
 		std::string js, sourceMap;
 		if (!bundleLayout(sourcePath, options.esbuildPath, js, sourceMap, result.error))
 			return result;
+		if (!withImplicitBindings(js, result.error)) return result;
 		result.transformMs = millisSince(transformStart);
 
 		const Clock::time_point evaluateStart = Clock::now();
 		BlueprintBuilder builder;
-		if (!evaluate(js, sourceMap, sourcePath, builder, result, result.error)) return result;
+		if (!evaluate(js, sourceMap, sourcePath, builder, result, result.error)) {
+			// A value reading state no longer gets this far, so what does is a handler, or code
+			// that runs as the file is read.
+			if (result.error.find("state is not defined") != std::string::npos) {
+				result.error += "\n`state` is there once the interface is running, and this runs while "
+				                "it is built. A value that reads it needs nothing more, but a handler "
+				                "keeps its arrow, which is what says it runs later: "
+				                "onClick={() => state.count++}";
+			}
+			return result;
+		}
 		result.evaluateMs = millisSince(evaluateStart);
 		if (options.strict && !result.nameWarnings.empty()) {
 			// Every one, not the first: a build that fails on a typo and then on the next

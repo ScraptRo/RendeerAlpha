@@ -1,12 +1,16 @@
 ﻿# The bindings, tested against a running engine.
 #
-# This is the one test tier that needs a device, a window and a second language runtime,
-# which is exactly why it did not exist for a while. It is worth having anyway: the C ABI
-# is a product with three consumers, and nothing else in the build compiles any of them.
+# This is the one test tier that needs a device and a second language runtime, which is
+# exactly why it did not exist for a while. It is worth having anyway: the C ABI is a product
+# with several consumers, and nothing else in the build compiles any of them.
 #
-# All three run the same checklist in the same order, so a line that appears in two
-# outputs and not the third is a gap rather than a difference of opinion. Each opens a
-# window, does its work, and stops itself -- no timeout, no killing.
+# All of them run the same checklist in the same order, so a line that appears in two
+# outputs and not the third is a gap rather than a difference of opinion. Each starts the
+# engine, does its work, and stops itself -- no timeout, no killing.
+#
+# Nothing appears on the screen. RDA_OFFSCREEN runs the whole engine against a window that
+# is never shown, so these can run while somebody is working. Run a check by hand, from the
+# run directory, and it opens a real window, which is how to watch one.
 #
 # Skipped rather than failed when a runtime is not installed: a machine without Node or
 # .NET should still be able to run everything else.
@@ -115,11 +119,15 @@ if(RDA_DOTNET_EXECUTABLE)
 endif()
 
 # ---- the tests ------------------------------------------------------------------------
+
+# One language's check. A new binding is one call to this and a check.<ext> beside the others.
+function(rda_binding_test name)
+	add_test(NAME ${name} COMMAND ${ARGN} WORKING_DIRECTORY "${rundir}")
+	set_tests_properties(${name} PROPERTIES TIMEOUT 180 ENVIRONMENT "RDA_OFFSCREEN=1")
+endfunction()
+
 if(Python3_Interpreter_FOUND)
-	add_test(NAME rda_python_binding
-	         COMMAND "${Python3_EXECUTABLE}" check.py
-	         WORKING_DIRECTORY "${rundir}")
-	set_tests_properties(rda_python_binding PROPERTIES TIMEOUT 180)
+	rda_binding_test(rda_python_binding "${Python3_EXECUTABLE}" check.py)
 else()
 	message(STATUS "Binding tests: no Python interpreter found, skipping rda_python_binding")
 endif()
@@ -132,10 +140,7 @@ endif()
 set(koffi "${CMAKE_SOURCE_DIR}/node_modules/koffi")
 
 if(RDA_NODE_EXECUTABLE AND EXISTS "${koffi}")
-	add_test(NAME rda_node_binding
-	         COMMAND "${RDA_NODE_EXECUTABLE}" check.mjs
-	         WORKING_DIRECTORY "${rundir}")
-	set_tests_properties(rda_node_binding PROPERTIES TIMEOUT 180)
+	rda_binding_test(rda_node_binding "${RDA_NODE_EXECUTABLE}" check.mjs)
 elseif(NOT RDA_NODE_EXECUTABLE)
 	message(STATUS "Binding tests: no node found, skipping rda_node_binding")
 else()
@@ -145,10 +150,7 @@ else()
 endif()
 
 if(RDA_DOTNET_EXECUTABLE)
-	add_test(NAME rda_csharp_binding
-	         COMMAND "${rundir}/rda_csharp_check${CMAKE_EXECUTABLE_SUFFIX}"
-	         WORKING_DIRECTORY "${rundir}")
-	set_tests_properties(rda_csharp_binding PROPERTIES TIMEOUT 180)
+	rda_binding_test(rda_csharp_binding "${rundir}/rda_csharp_check${CMAKE_EXECUTABLE_SUFFIX}")
 else()
 	message(STATUS "Binding tests: no dotnet found, skipping rda_csharp_binding")
 endif()

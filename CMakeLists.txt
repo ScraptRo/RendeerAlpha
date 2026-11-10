@@ -39,8 +39,8 @@ cmake_minimum_required(VERSION 3.21)
 #
 # Every version since is in CHANGELOG.md, which is where a running account of what changed
 # belongs rather than here. The number below and the C ABI in RendeerC.h move
-# independently: this is 1.2.0 and that is still 1.8.
-project(RendeerAlpha VERSION 1.2.0 LANGUAGES C CXX)
+# independently: this is 1.3.0 and that is 1.8.
+project(RendeerAlpha VERSION 1.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

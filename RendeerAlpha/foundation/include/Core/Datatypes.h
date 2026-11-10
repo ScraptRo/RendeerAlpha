@@ -67,6 +67,9 @@ namespace RDA {
 		bool maximized = false;       // opens filling the work area
 		bool fullscreen = false;      // opens covering the monitor
 		bool alwaysOnTop = false;
+		// Exists and is never shown, not even for a moment. For a run with nobody watching: the
+		// device and the pipelines are chosen against a window's surface, so one has to exist.
+		bool hidden = false;
 		// A framebuffer with a real alpha channel, so a clear colour that is not opaque
 		// lets the desktop through. Decided at creation and nowhere else, and ignored
 		// where the platform or the compositor will not do it.

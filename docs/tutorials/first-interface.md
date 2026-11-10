@@ -91,7 +91,7 @@ Three kinds of value, and this file has all of them. `text="Reset"` is a **const
 }
 ```
 
-Nothing emits from it, and it is worth more than it looks. `<div>` and `colour="#fff"` both produce a blueprint, with a warning from the build (`<div> ... is not an element; did you mean <container>?`) — and the loader then skips the element and ignores the property, so `rda build --strict` makes the warning an error. This file plus the generated `rda.d.ts` is what catches that typo while you are still typing it, and `rda elements` lists what each element accepts.
+Nothing emits from it, and it is worth more than it looks. `<div>` and `colour="#fff"` both produce a blueprint, with a warning from the build (`<div> ... is not an element; did you mean <container>?`) — and the loader then skips the element and ignores the property, so `rda build --strict` makes the warning an error. This file plus the generated `rda.d.ts` is what catches that typo while you are still typing it, and `rda widgets` lists what each element accepts.
 
 ## The backend
 

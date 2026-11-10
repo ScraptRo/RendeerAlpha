@@ -8,7 +8,7 @@ rda init myapp --python     # a project: res/ and a backend to start from
 rda build .                 # compile everything under res/
 rda dev .                   # build, run the backend, run it again when state.ts changes
 rda add screen settings     # a second screen, and the route to it
-rda elements checkbox       # what an element takes
+rda widgets checkbox        # all about a widget
 rda doctor .                # what rda found, and what is missing
 rda prototype .             # the interface in a window, with placeholder state
 rda shot .                  # the same with no window: a .png
@@ -76,11 +76,13 @@ The command refuses when the layout or the route already exists. A `state.ts` it
 safely -- the routes written on one line, a `routes` that is something else -- is left
 alone, and the lines to paste are printed.
 
-## elements
+## widgets
 
-`rda elements` lists every element with a line on what it is. `rda elements <name>` lists
-its properties and events and the common ones with them, with each one's type, whether it
-can be bound to state, and what it does. `--json` prints the same as data.
+`rda widgets` lists every widget with a line on what it is. `rda widgets stack` is all there
+is about one: what these pages say about it, an example, and its properties and events, with
+each one's type, whether it can be bound to state, and what it does. `rda widgets common` is
+what every widget takes. `--json` prints the same as data. `rda elements` is the same command
+under the name it had first.
 
 ## doctor
 

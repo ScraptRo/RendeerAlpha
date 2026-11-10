@@ -63,8 +63,11 @@ namespace Cli {
 		const int64_t have = RDA::fileStamp(output.string());
 		if (have == 0) return true;
 		if (have < toolStamp) return true;
+		// Or equal: a clock ticks every few milliseconds, so a source saved just after its output
+		// was written can carry the same stamp, and that is a source the output has not seen. An
+		// output written from a source that old cannot, because compiling takes longer than a tick.
 		for (const fs::path& input : inputs) {
-			if (RDA::fileStamp(input.string()) > have) return true;
+			if (RDA::fileStamp(input.string()) >= have) return true;
 		}
 		return false;
 	}

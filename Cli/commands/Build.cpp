@@ -9,7 +9,7 @@
 // It runs as steps over one object because they share a good deal: what discovery found,
 // the tally of what was made and what was kept, and the state.ts the types step has
 // already read and the module step then reuses.
-#include "Commands.h"
+#include "Command.h"
 
 #include <Core/FileStamp.h>
 #include <Core/Location.h>
@@ -393,9 +393,21 @@ namespace Cli {
 		};
 	}
 
-	int cmdBuild(const Args& args) {
+	static int cmdBuild(const Args& args) {
 		BuildOptions options;
 		if (!parseBuildOptions(args, options)) return 1;
 		return ProjectBuild(std::move(options)).run();
+	}
+
+	namespace {
+		const Command kBuild{ __FILE__, "build", Section::Build, 0,
+			"  rda build  <project> [--python] [--node] [--csharp] [--cpp <dir>] [--force]\n"
+			"             [--no-runtime-code] [--strict]\n"
+			"                                     compile everything under <project>/res/, and write\n"
+			"                                     the state module of whatever backend the folder\n"
+			"                                     has (app.py, package.json, *.csproj); a flag\n"
+			"                                     overrides that. --strict makes a misspelt element\n"
+			"                                     or property an error instead of a warning\n",
+			cmdBuild };
 	}
 }

@@ -24,6 +24,7 @@ set(RDA_TEST_SOURCES
 	StateCodeTests.cpp
 	SourceMapTests.cpp
 	CodegenTests.cpp
+	JsxSourceTests.cpp
 	TimerFormatTests.cpp
 	ViewportEventTests.cpp
 	WindowEdgeTests.cpp
@@ -61,6 +62,7 @@ set(RDA_TEST_SOURCES
 	../RendeerAlpha/ui/src/GraphicalObjects/Syntax.cpp
 	../RendeerAlpha/src/vendor/tinyxml2/tinyxml2.cpp
 	../RendeerAlpha/toolchain/src/Layout/ExpressionParser.cpp
+	../RendeerAlpha/toolchain/src/Layout/JsxSource.cpp
 	../RendeerAlpha/state/src/Core/Signals.cpp
 	../RendeerAlpha/state/src/Core/Commands.cpp
 	../RendeerAlpha/foundation/src/Core/Json.cpp
@@ -184,6 +186,43 @@ if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
 		COMMAND "${CMAKE_COMMAND}" -E compare_files "${CMAKE_CURRENT_BINARY_DIR}/same.rdab"
 		                                            "${CMAKE_CURRENT_BINARY_DIR}/same-object.rdab")
 	set_tests_properties(rda_layout_as_jsx rda_layout_as_object PROPERTIES TIMEOUT 120)
+
+	# A value that reads state, with its arrow and without. The same bytes, or the short form
+	# is a second kind of binding with its own ways of being wrong.
+	add_test(NAME rda_binding_with_arrow
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/bindings_with_arrow.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/with-arrow.rdab")
+	add_test(NAME rda_binding_without_arrow
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/bindings_without_arrow.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/without-arrow.rdab")
+	add_test(NAME rda_binding_forms_agree
+		COMMAND "${CMAKE_COMMAND}" -E compare_files "${CMAKE_CURRENT_BINARY_DIR}/with-arrow.rdab"
+		                                            "${CMAKE_CURRENT_BINARY_DIR}/without-arrow.rdab")
+	set_tests_properties(rda_binding_with_arrow rda_binding_without_arrow PROPERTIES TIMEOUT 120)
+	set_tests_properties(rda_binding_forms_agree PROPERTIES
+		DEPENDS "rda_binding_with_arrow;rda_binding_without_arrow")
+	# What the short form must not do: run a handler at build time, write from a value, drive
+	# something read once, or reach past a name the code around it declared.
+	add_test(NAME rda_handler_keeps_its_arrow
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/handler_without_arrow.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/handler.rdab")
+	add_test(NAME rda_short_value_cannot_write
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/short_value_writes.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/short-writes.rdab")
+	add_test(NAME rda_short_value_on_a_constant
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/short_value_constant.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/short-constant.rdab")
+	add_test(NAME rda_a_local_state_is_not_state
+		COMMAND rda layout "${CMAKE_CURRENT_SOURCE_DIR}/script/local_state.tsx"
+		                   "${CMAKE_CURRENT_BINARY_DIR}/local-state.rdab")
+	set_tests_properties(rda_handler_keeps_its_arrow PROPERTIES
+		PASS_REGULAR_EXPRESSION "a handler keeps its arrow" TIMEOUT 120)
+	set_tests_properties(rda_short_value_cannot_write PROPERTIES
+		PASS_REGULAR_EXPRESSION "a value binding cannot write state" TIMEOUT 120)
+	set_tests_properties(rda_short_value_on_a_constant PROPERTIES
+		PASS_REGULAR_EXPRESSION "takes a constant, not a binding" TIMEOUT 120)
+	set_tests_properties(rda_a_local_state_is_not_state PROPERTIES
+		PASS_REGULAR_EXPRESSION " 0 bindings" TIMEOUT 120)
 	set_tests_properties(rda_layout_forms_agree PROPERTIES
 		DEPENDS "rda_layout_as_jsx;rda_layout_as_object")
 	# Text between tags: named for what it is, rather than guessed at as a fragment.
@@ -447,24 +486,52 @@ if(TARGET rda AND RDA_ESBUILD_EXECUTABLE)
 		rda_names_clean rda_names_clean_strict rda_names_strict_build PROPERTIES TIMEOUT 120)
 endif()
 
-# `rda elements`: the widget schema read back, from the table the loader and the .d.ts are
-# written from. No esbuild: it compiles nothing.
+# `rda widgets`: the widget schema read back, from the table the loader and the .d.ts are
+# written from, with the documentation's section on each. No esbuild: it compiles nothing.
 if(TARGET rda)
-	add_test(NAME rda_elements_list COMMAND rda elements)
-	add_test(NAME rda_elements_one COMMAND rda elements checkbox)
-	add_test(NAME rda_elements_events COMMAND rda elements checkbox)
-	add_test(NAME rda_elements_json COMMAND rda elements checkbox --json)
-	add_test(NAME rda_elements_unknown COMMAND rda elements chekbox)
-	set_tests_properties(rda_elements_list PROPERTIES
-		PASS_REGULAR_EXPRESSION "elements\\. `rda elements <name>` lists the properties[^\n]*\n\n  container  groups children")
-	set_tests_properties(rda_elements_one PROPERTIES
-		PASS_REGULAR_EXPRESSION "<checkbox>\n  a labelled boolean toggle\n\nProperties\n  label  \\[string\\]  \\(can be bound\\)\n      the text beside the box")
-	set_tests_properties(rda_elements_events PROPERTIES
+	add_test(NAME rda_widgets_list COMMAND rda widgets)
+	add_test(NAME rda_widgets_one COMMAND rda widgets checkbox)
+	add_test(NAME rda_widgets_events COMMAND rda widgets checkbox)
+	add_test(NAME rda_widgets_json COMMAND rda widgets checkbox --json)
+	add_test(NAME rda_widgets_unknown COMMAND rda widgets chekbox)
+	add_test(NAME rda_widgets_docs COMMAND rda widgets stack)
+	add_test(NAME rda_widgets_docs_table COMMAND rda widgets stack)
+	add_test(NAME rda_widgets_example COMMAND rda widgets stack)
+	add_test(NAME rda_widgets_common_named COMMAND rda widgets stack)
+	add_test(NAME rda_widgets_page COMMAND rda widgets stack)
+	add_test(NAME rda_widgets_shared_heading COMMAND rda widgets tab)
+	add_test(NAME rda_widgets_undocumented COMMAND rda widgets shortcut)
+	add_test(NAME rda_widgets_common COMMAND rda widgets common)
+	add_test(NAME rda_widgets_old_name COMMAND rda elements stack)
+	# One short pattern each. CTest's matcher backtracks on (.|\n)* across output this long, and a
+	# test written that way ran for ten minutes before anyone looked.
+	set_tests_properties(rda_widgets_docs PROPERTIES PASS_REGULAR_EXPRESSION "The workhorse\\.")
+	set_tests_properties(rda_widgets_docs_table PROPERTIES PASS_REGULAR_EXPRESSION "arrange +\"vertical\" \\(default\\)")
+	set_tests_properties(rda_widgets_example PROPERTIES PASS_REGULAR_EXPRESSION "Example\n  <stack id=\"stack\"")
+	set_tests_properties(rda_widgets_common_named PROPERTIES PASS_REGULAR_EXPRESSION "Every widget also takes\n  id, visible")
+	set_tests_properties(rda_widgets_page PROPERTIES PASS_REGULAR_EXPRESSION "More in docs/frontend/elements/containers\\.md")
+	set_tests_properties(rda_widgets_shared_heading PROPERTIES PASS_REGULAR_EXPRESSION "More in docs/frontend/elements/choices-and-pages\\.md")
+	set_tests_properties(rda_widgets_undocumented PROPERTIES PASS_REGULAR_EXPRESSION "Every widget also takes")
+	set_tests_properties(rda_widgets_common PROPERTIES PASS_REGULAR_EXPRESSION "width +\\[size\\]")
+	set_tests_properties(rda_widgets_old_name PROPERTIES PASS_REGULAR_EXPRESSION "The workhorse")
+	set_tests_properties(rda_widgets_list PROPERTIES
+		PASS_REGULAR_EXPRESSION "widgets\\. `rda widgets <name>` says all there is[^\n]*\n\n  container  groups children")
+	set_tests_properties(rda_widgets_one PROPERTIES
+		PASS_REGULAR_EXPRESSION "Properties\n  label  \\[string\\]  \\(can be bound\\)\n      the text beside the box")
+	set_tests_properties(rda_widgets_events PROPERTIES
 		PASS_REGULAR_EXPRESSION "Events\n  onChange  \\[event with a boolean\\]")
-	set_tests_properties(rda_elements_json PROPERTIES
+	set_tests_properties(rda_widgets_json PROPERTIES
 		PASS_REGULAR_EXPRESSION "\"name\": \"label\", \"type\": \"string\", \"bindable\": true, \"common\": false")
-	set_tests_properties(rda_elements_unknown PROPERTIES
-		PASS_REGULAR_EXPRESSION "there is no element called `chekbox`. The elements are: container, panel")
+	set_tests_properties(rda_widgets_unknown PROPERTIES
+		PASS_REGULAR_EXPRESSION "there is no widget called `chekbox`. The widgets are: container, panel")
+endif()
+
+# Every file in Cli/commands/ reached the core. Nothing else notices one that did not: it
+# compiles, it links, and the command is simply not there.
+if(TARGET rda)
+	add_test(NAME rda_commands_connected COMMAND rda --check-commands)
+	set_tests_properties(rda_commands_connected PROPERTIES
+		PASS_REGULAR_EXPRESSION "rda: [0-9]+ commands from [0-9]+ files, all connected")
 endif()
 
 # `rda doctor`: says what it found. What it finds depends on the machine, so what is checked is

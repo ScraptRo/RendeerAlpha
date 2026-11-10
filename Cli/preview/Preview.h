@@ -42,6 +42,9 @@ namespace Cli {
 		// --compose, --files.
 		InputScript script;
 		std::string a11yOut;                 // --a11y: where to write the accessibility tree
+		// --edit: draws the editor, as `prototype` does, and lets a script drive it. Off for a
+		// shot otherwise, because a picture of an interface should be of the interface.
+		bool        edit = false;
 	};
 
 	// False, with the reason printed, for an option it does not know or cannot read.

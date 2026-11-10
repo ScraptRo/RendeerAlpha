@@ -62,6 +62,10 @@ across it.
 
 ## Containers
 
+`editable` on a `<container>`, `<panel>`, `<stack>` or `<scroll>` lets `rda prototype` drop widgets
+into it and edit their properties, writing the result into the `.tsx`. It means nothing to an
+application, so it can stay in a layout that ships.
+
 ### `<stack>` — a row or a column
 
 | Property | Type | Meaning |

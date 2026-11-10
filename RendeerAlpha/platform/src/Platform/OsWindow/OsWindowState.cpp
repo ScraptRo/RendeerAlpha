@@ -73,27 +73,42 @@ namespace RDA {
 		if (mWindow) glfwGetWindowPos(mWindow, &x, &y);
 	}
 
+	// Maximising, minimising, restoring and going fullscreen all show a window on one platform or
+	// another, so a hidden one only remembers what was asked: everything that reads the answer
+	// back still gets it, and nothing appears on anybody's screen.
 	void OsWindow::setMaximized(bool on) {
 		if (!mWindow) return;
+		if (mInfo.style.hidden) {
+			mInfo.style.maximized = on;
+			if (on) mHiddenMinimized = false;
+			return;
+		}
 		if (on) glfwMaximizeWindow(mWindow);
 		else    glfwRestoreWindow(mWindow);
 	}
 
 	bool OsWindow::isMaximized() const {
+		if (mInfo.style.hidden) return mInfo.style.maximized;
 		return mWindow && glfwGetWindowAttrib(mWindow, GLFW_MAXIMIZED) == GLFW_TRUE;
 	}
 
 	void OsWindow::setMinimized(bool on) {
 		if (!mWindow) return;
+		if (mInfo.style.hidden) {
+			mHiddenMinimized = on;
+			return;
+		}
 		if (on) glfwIconifyWindow(mWindow);
 		else    glfwRestoreWindow(mWindow);
 	}
 
 	bool OsWindow::isMinimized() const {
+		if (mInfo.style.hidden) return mHiddenMinimized;
 		return mWindow && glfwGetWindowAttrib(mWindow, GLFW_ICONIFIED) == GLFW_TRUE;
 	}
 
 	bool OsWindow::isFullscreen() const {
+		if (mInfo.style.hidden) return mInfo.style.fullscreen;
 		return mWindow && glfwGetWindowMonitor(mWindow) != nullptr;
 	}
 
@@ -103,6 +118,10 @@ namespace RDA {
 
 	void OsWindow::setFullscreen(bool on) {
 		if (!mWindow || on == isFullscreen()) return;
+		if (mInfo.style.hidden) {
+			mInfo.style.fullscreen = on;
+			return;
+		}
 		if (on) {
 			// Remembered here rather than recomputed on the way back: once the window is
 			// on a monitor its own rectangle is gone, and a window that returned to the

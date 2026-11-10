@@ -3,7 +3,7 @@
 ```tsx
 <label id="t"
        text="Ready"                                    // 1. a constant
-       visible={() => state.count > 0}                 // 2. a binding
+       visible={state.count > 0}                       // 2. a binding
 />
 
 <button id="b" text="Add"
@@ -12,8 +12,8 @@
 ```
 
 - **A constant** is written into the blueprint and never looked at again.
-- **A binding** — `{() => …}` — is parsed at build time into stack operations over signals, and evaluated when one of the signals it reads changes. That is the whole of the reactivity.
-- **A handler** — `onClick`, `onChange` — is the same machinery pointed the other way. It may write signals and call commands, and it runs when the widget says so.
+- **A binding** — any value that reads `state` — is parsed at build time into stack operations over signals, and evaluated when one of the signals it reads changes. That is the whole of the reactivity. You may write it with an arrow, `{() => state.count > 0}`, and it means the same; the arrow is added for you when it is not there.
+- **A handler** — `onClick`, `onChange` — is the same machinery pointed the other way. It may write signals and call commands, and it runs when the widget says so. A handler always keeps its arrow, because that is what says it runs later.
 
 The arrow is **not a closure**. It is a syntax the compiler recognises so it knows *this expression is to be evaluated later*, and it is compiled from its source text. Nothing from the code around it comes along. What it can name is `state`, `commands`, `tables`, and the top level of its file and its imports:
 

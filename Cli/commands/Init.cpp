@@ -15,7 +15,7 @@
 //
 // Nothing here needs a GPU or a window, and it must stay that way: `rda` links neither, and
 // the project it makes is built by the same code `rda build` runs.
-#include "Commands.h"
+#include "Command.h"
 
 #include <Core/Location.h>
 #include <Layout/ModuleTransform.h>
@@ -360,7 +360,7 @@ namespace Cli {
 					// The directory as it was typed, so what the build prints is short enough to read.
 					Args buildLine = { "build", options.dir.string() };
 					if (const char* flag = buildFlagFor(options.language)) buildLine.push_back(flag);
-					if (cmdBuild(buildLine) != 0) return 1;
+					if (runCommand(buildLine) != 0) return 1;
 				}
 			}
 
@@ -369,9 +369,18 @@ namespace Cli {
 		}
 	}
 
-	int cmdInit(const Args& args) {
+	static int cmdInit(const Args& args) {
 		InitOptions options;
 		if (!parseInitOptions(args, options)) return 1;
 		return initProject(options);
+	}
+
+	namespace {
+		// Nothing is required: no directory means this one.
+		const Command kInit{ __FILE__, "init", Section::Start, 0,
+			"  rda init   [<dir>] [--python] [--node] [--csharp] [--cpp] [--force] [--no-build]\n"
+			"                                     start a project: res/ and, with a language, its\n"
+			"                                     backend. Refuses to overwrite without --force\n",
+			cmdInit };
 	}
 }

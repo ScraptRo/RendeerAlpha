@@ -11,16 +11,30 @@
 # it, so they are still typed as `rda prototype` and `rda shot`. The preview compiles the
 # project before it shows it, with the same code `rda build` runs, so both are made of the
 # commands below.
-add_library(rda_commands STATIC
-	Common.cpp
-	CmdCompile.cpp
-	CmdState.cpp
-	CmdBuild.cpp
-	CmdInit.cpp
-	CmdAdd.cpp
-	CmdElements.cpp
-	CmdDoctor.cpp)
+#
+# Every file in commands/ is compiled, with no list to add it to: a command registers itself, so
+# that adding one touches nothing shared. README.md is how to write one. An object library rather
+# than a static one, because nothing refers to a command by name, and a linker drops whatever
+# nothing refers to.
+file(GLOB RDA_CLI_COMMANDS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/commands/*.cpp")
+add_library(rda_commands OBJECT
+	core/Command.cpp
+	core/Common.cpp
+	core/Forward.cpp
+	core/Starters.cpp
+	${RDA_CLI_COMMANDS})
+target_include_directories(rda_commands PUBLIC core PRIVATE preview)
 target_link_libraries(rda_commands PUBLIC rendeer)
+
+# What `rda --check-commands` holds the registered commands against.
+set(RDA_CLI_COMMAND_NAMES "")
+foreach(command_file IN LISTS RDA_CLI_COMMANDS)
+	get_filename_component(command_name "${command_file}" NAME)
+	list(APPEND RDA_CLI_COMMAND_NAMES "${command_name}")
+endforeach()
+list(JOIN RDA_CLI_COMMAND_NAMES "," RDA_CLI_COMMAND_NAMES)
+set_source_files_properties(core/Command.cpp PROPERTIES
+	COMPILE_DEFINITIONS "RDA_CLI_COMMAND_FILES=\"${RDA_CLI_COMMAND_NAMES}\"")
 # `rda doctor` opens the Vulkan loader by name at run time, so that this tool still links no
 # GPU code. dlopen is in libdl on older glibc; the list is empty where it is part of libc.
 target_link_libraries(rda_commands PRIVATE ${CMAKE_DL_LIBS})
@@ -45,19 +59,27 @@ rda_embed_js(InitCSharp       "${CMAKE_CURRENT_SOURCE_DIR}/templates/csharp/Prog
 rda_embed_js(InitCSharpProject "${CMAKE_CURRENT_SOURCE_DIR}/templates/csharp/project.csproj")
 rda_embed_js(InitCppMain      "${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp/main.cpp")
 rda_embed_js(InitCppCMake     "${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp/CMakeLists.txt")
+# What `rda widgets` prints about a widget is the documentation's own section on it, so that
+# there is one description to keep true.
+set(RDA_ELEMENT_DOCS "${CMAKE_CURRENT_SOURCE_DIR}/../docs/frontend/elements")
+rda_embed_js(DocContainers "${RDA_ELEMENT_DOCS}/containers.md")
+rda_embed_js(DocText       "${RDA_ELEMENT_DOCS}/text-and-input.md")
+rda_embed_js(DocChoices    "${RDA_ELEMENT_DOCS}/choices-and-pages.md")
+rda_embed_js(DocList       "${RDA_ELEMENT_DOCS}/list.md")
+rda_embed_js(DocDocking    "${RDA_ELEMENT_DOCS}/docking.md")
+rda_embed_js(DocStream     "${RDA_ELEMENT_DOCS}/stream.md")
+rda_embed_js(DocViewport   "${RDA_ELEMENT_DOCS}/viewport.md")
 target_include_directories(rda_commands PRIVATE "${RDA_GENERATED_DIR}")
 
-add_executable(rda
-	main.cpp
-	Forward.cpp
-	CmdDev.cpp)
+add_executable(rda main.cpp)
 target_link_libraries(rda PRIVATE rda_commands)
 
 add_executable(rda-preview
-	PreviewMain.cpp
-	Preview.cpp
-	PreviewOptions.cpp
-	InputScript.cpp)
+	preview/PreviewMain.cpp
+	preview/Preview.cpp
+	preview/PreviewOptions.cpp
+	preview/InputScript.cpp
+	preview/Editor.cpp)
 target_link_libraries(rda-preview PRIVATE rda_commands)
 
 # UTF-8 as the process code page, so a non-Latin argument reaches the tool intact. MSVC

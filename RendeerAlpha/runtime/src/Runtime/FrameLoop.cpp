@@ -13,6 +13,8 @@
 #include <Logger/Logger.h>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 // std::exception, for the one catch in engineMain. Named rather than inherited: MSVC
 // supplies it through other headers here and GCC has no reason to.
 #include <exception>
@@ -413,7 +415,16 @@ namespace RDA::Runtime {
 	}
 }
 
-void rendeerRun(const RDA::AppConfig& config) {
+void rendeerRun(const RDA::AppConfig& asked) {
+	// RDA_OFFSCREEN=1 runs the application with nothing on the screen, without the application
+	// doing anything about it. Here rather than in a setting because what wants it is outside the
+	// program: a test of a binding, or a build server running somebody's app, in whichever
+	// language that happens to be. Every binding reaches this, so none of them needs to know.
+	RDA::AppConfig config = asked;
+	if (const char* offscreen = std::getenv("RDA_OFFSCREEN")) {
+		if (*offscreen && std::strcmp(offscreen, "0") != 0) config.offscreen = true;
+	}
+
 	if (config.threadMode == RDA::ThreadMode::Caller) {
 		RDA::Runtime::engineMain(config);
 	} else {

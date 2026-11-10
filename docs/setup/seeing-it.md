@@ -53,6 +53,11 @@ rda shot . --hover 208,27 --out hovered.png
 rda shot . --press 208,27 --out pressed.png
 ```
 
+`--edit` draws the [editor](prototyping.md#editing-in-the-window) over the picture, with its
+panel inside the window because a shot has only the one, and the options below drive it as they
+drive the interface. So `rda shot . --edit --drag 800,104,440,44` drags a widget into the layout
+and writes it into the `.tsx`, with nobody at the machine.
+
 Hover and press are worked out from where the pointer is, so a picture of a hovered widget
 needs a pointer to be somewhere. The coordinates are in layout units -- the ones the layout
 is written in -- which is why a shot of the whole screen is the thing to read them off.
@@ -110,6 +115,13 @@ among it -- so a capture taken there is the frame minus those things.
 follow, `rendeerSetSyntheticModifiers(ctrl, shift)` holds those down until it is told
 otherwise, and `rendeerClearSyntheticPointer()` gives the mouse its place back and lets go
 of both.
+
+From outside the program, in any language, `RDA_OFFSCREEN=1` does the same, which is how to
+run an application on a build server or in a test with nothing appearing on the screen:
+
+```bash
+RDA_OFFSCREEN=1 python app.py
+```
 
 `config.offscreen` is not `hiddenMainWindow`: that one says the window is a device anchor and
 runs no interface in it at all.

@@ -12,7 +12,7 @@
 // printed -- a refusal that costs the person a paste, against a guess that costs them a
 // file. And whatever is written is read back the way the build will read it, and put back
 // as it was if the build would not accept it.
-#include "Commands.h"
+#include "Command.h"
 
 #include <algorithm>
 #include <cctype>
@@ -436,13 +436,20 @@ namespace Cli {
 
 			if (!options.build) return 0;
 			std::printf("\n");
-			return cmdBuild({ "build", options.project.string() });
+			return runCommand({ "build", options.project.string() });
 		}
 	}
 
-	int cmdAdd(const Args& args) {
+	static int cmdAdd(const Args& args) {
 		if (argument(args, 1) == "screen") return addScreen(args);
 		std::printf("rda: `add` knows `screen`: rda add screen <name> [<project>]\n");
 		return 1;
+	}
+
+	namespace {
+		const Command kAdd{ __FILE__, "add", Section::Start, 3,
+			"  rda add screen <name> [<project>] [--no-build]\n"
+			"                                     a new layout, and the route to it in state.ts\n",
+			cmdAdd };
 	}
 }

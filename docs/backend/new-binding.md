@@ -30,10 +30,12 @@ The path is the one Python, Node and C# all took:
 Adding a generator is one file beside `PythonStateGen.cpp`, `NodeStateGen.cpp` and
 `CSharpStateGen.cpp` in `RendeerAlpha/toolchain/src/Layout/Codegen/` -- using `CodeWriter` for its
 string literals, so text with a newline in it comes out valid -- one target in
-`Cli/CmdState.cpp` with its line in `Cli/main.cpp`'s command table, and a flag for it in
-`Cli/CmdBuild.cpp`, which is how a
+`Cli/commands/State.cpp`, and a flag for it in
+`Cli/commands/Build.cpp`, which is how a
 project without a build system asks for its state module. The test is a fourth
-`check.<ext>` and a few lines in `bindings/tests/CMakeLists.txt`.
+`check.<ext>`, copied from `check.py`, and one `rda_binding_test` line in
+`bindings/tests/CMakeLists.txt`, which runs it with nothing on the screen: see
+[the binding tests](../../bindings/tests/README.md#adding-a-language).
 
 ---
 

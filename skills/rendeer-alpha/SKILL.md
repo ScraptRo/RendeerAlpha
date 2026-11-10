@@ -143,10 +143,10 @@ The first four are build errors. The rest are worse: they build, and go wrong la
 6. **A name the application never declared also compiles.** `state.typo` reads 0,
    `commands.typo()` does nothing, `<list of="typo">` shows nothing — each with a warning
    in `RDA_DEBUG.txt`. The build cannot catch these; **read the log**.
-7. **A value is a constant or a thunk.** `text="Save"` is a constant. `text={() => ...}`
-   is a binding, re-evaluated only when a signal it reads changes. `text={state.notes}`
-   without the arrow reads the value once, while the layout is compiled, and then never
-   changes again.
+7. **A value is a constant or a binding.** `text="Save"` is a constant. `text={state.notes}`
+   reads state, so it is a binding, re-evaluated only when a signal it reads changes, and
+   `text={() => state.notes}` is the same thing. A handler always keeps its arrow:
+   `onClick={() => state.count++}`.
 8. **Sizing.** In a **vertical** stack give every child a `height`
    (`"content"`, `"fill"` or a number); its width fills the stack. In a **horizontal**
    stack give every child a `width`; its height fills the row. `"fill"` shares what is

@@ -157,6 +157,11 @@ namespace Cli {
 			return {};
 		}
 
+		std::string takeEdit(PreviewOptions& options, const std::string&, const std::string&) {
+			options.edit = true;
+			return {};
+		}
+
 		std::string takeFiles(PreviewOptions& options, const std::string&, const std::string& value) {
 			options.script.addFiles(value);
 			return {};
@@ -180,6 +185,7 @@ namespace Cli {
 			{ "--still",    false, true,  takeStill },
 			{ "--moving",   false, true,  takeMoving },
 			{ "--a11y",     true,  true,  storeText<&PreviewOptions::a11yOut> },
+			{ "--edit",     false, true,  takeEdit },
 
 			// Where the pointer is, and the wheel.
 			{ "--hover",    true,  true,  takePointer },

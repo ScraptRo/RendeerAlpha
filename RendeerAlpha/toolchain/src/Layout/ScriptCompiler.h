@@ -30,6 +30,12 @@ namespace RDA::Layout {
 	// mapped back by. See SourceMap.h.
 	constexpr size_t kWrapLinesBefore = 1;
 
+	// A value that reads state, without the arrow that says so, given the arrow: `width={state.gap}`
+	// becomes `width={() => (state.gap)}`, so that nothing after this has two cases. Done on the
+	// bundle, so it reaches what a layout imports, and before it is evaluated, because `state` does
+	// not exist then. Adds no lines, so every line the source map knows stays where it was.
+	bool withImplicitBindings(std::string& bundle, std::string& error);
+
 	class ScriptPlanner {
 	public:
 		// `ctx` is the context the wrapped bundle was evaluated in, and must outlive this.

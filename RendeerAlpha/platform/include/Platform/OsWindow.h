@@ -149,5 +149,8 @@ namespace RDA {
 		// Where a fullscreen window came from, so leaving it puts it back rather than
 		// leaving it the size of the monitor with a frame around it.
 		int mWindowedX = 0, mWindowedY = 0, mWindowedW = 0, mWindowedH = 0;
+		// What a hidden window was last told, since nothing on the screen can say. Maximised and
+		// fullscreen are kept in the style, which already has a place for them.
+		bool mHiddenMinimized = false;
 	};
 }

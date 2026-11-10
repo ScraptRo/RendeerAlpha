@@ -86,11 +86,14 @@ namespace RDA::Layout {
 
 		constexpr PropDesc kContainer[] = {
 			PROP(visible, Bool, "grouping node; draws nothing of its own"),
+			PROP_CONST(editable, Bool, "`rda prototype` lets you drop widgets into this and edit them, and writes what you do into the .tsx; nothing else reads it"),
 		};
 		constexpr PropDesc kPanel[] = {
 			PROP_VARIANT("panel"),
+			PROP_CONST(editable, Bool, "`rda prototype` lets you drop widgets into this and edit them, and writes what you do into the .tsx; nothing else reads it"),
 		};
 		constexpr PropDesc kStack[] = {
+			PROP_CONST(editable, Bool, "`rda prototype` lets you drop widgets into this and edit them, and writes what you do into the .tsx; nothing else reads it"),
 			PROP_ENUM(arrange, "vertical|horizontal",
 			          "which way its children are laid out"),
 			PROP(spacing,  Number, "gap between children"),
@@ -106,6 +109,7 @@ namespace RDA::Layout {
 			// Styled by a text field variant: that is where the scroll colours live, so a
 			// scroll view matches the fields it usually contains.
 			PROP_VARIANT("textfield"),
+			PROP_CONST(editable, Bool, "`rda prototype` lets you drop widgets into this and edit them, and writes what you do into the .tsx; nothing else reads it"),
 			PROP(spacing, Number, "gap between stacked children"),
 			PROP(padding, Number, "inset around the content"),
 			PROP_ALIGN(hAlign, "stretch|start|center|end",

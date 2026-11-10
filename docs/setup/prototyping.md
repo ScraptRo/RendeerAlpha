@@ -105,6 +105,48 @@ the tool works from the project directory rather than rewriting paths it does no
 Nobody at the machine, or two screens to compare? [`rda shot`](seeing-it.md) is this same
 command with no window and a `.png` at the end.
 
+## Editing in the window
+
+Mark a container `editable` and the window lets you build inside it with the mouse.
+
+```tsx
+<stack id="sidebar" arrange="vertical" spacing={8} editable>
+  <label id="title" height="content" text="Settings" />
+</stack>
+```
+
+`editable` works on `<container>`, `<panel>`, `<stack>` and `<scroll>`. With one in the layout,
+the interface gets an outline around it, and a second window opens: the editor's panel, which
+stays on top and can go anywhere, off the interface or onto another screen.
+
+| | |
+| --- | --- |
+| drag a widget from the panel into an outline | adds it. In a stack it goes between the children you let go of it between. In a panel or a container it goes where you let go, with a position and a size |
+| or click a widget in the panel, then click in an outline | the same, and Esc puts it back. On Wayland, which does not tell a program where its windows are, this is the way |
+| click a widget inside an outline | selects it, and its properties appear in the panel |
+| type in a property | saves on Enter, or when you click away. Clearing it takes the property out of the file |
+| click a choice | moves to the next word; after the last it goes back to the default |
+| **Remove from the file** | takes the selected widget out |
+| F2, or closing the panel | hides all of it, so you can try what you built. F2 brings it back |
+
+While the editor is showing the interface takes no clicks: a click selects, and pressing a
+button does nothing until F2 has hidden the overlay.
+
+Everything goes straight into the `.tsx`, and hot reload is what puts it on the screen, so there
+is nothing to save and nothing to lose by closing the window. An edit changes only what it has
+to. Comments, blank lines and the way you broke a long tag stay as they were, so the file can be
+open in an editor beside the window, and a save from either side is picked up by the other.
+
+A few things are left to you, in the file:
+
+- A value worked out from state, like `text={() => state.title}`, is shown and cannot be typed
+  over, because typing over it would lose the expression. Events are code, and are not shown.
+- A widget whose id is worked out by code cannot be found in the file, so it cannot be edited.
+- A layout written as [objects](../frontend/objects.md) has no JSX to change, and says so.
+
+`editable` means nothing outside `rda prototype`. An application reads it and ignores it, so it
+can stay in a layout that ships.
+
 ---
 
 Back to [setup](README.md) · [all documentation](../README.md)

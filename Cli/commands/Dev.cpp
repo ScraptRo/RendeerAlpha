@@ -11,10 +11,7 @@
 //
 // Without a backend there is still something to look at, so it falls back to the prototype,
 // which is the interface with placeholder state and reloads state.ts itself.
-//
-// Lives in `rda`, not in the library the other commands share: it needs the child-process
-// code that is beside `main`, and `rda-preview` has no use for either.
-#include "Commands.h"
+#include "Command.h"
 #include "Forward.h"
 
 #include <Core/FileStamp.h>
@@ -160,7 +157,7 @@ namespace Cli {
 			if (options.python) buildLine.push_back("--python");
 			if (options.node)   buildLine.push_back("--node");
 			if (options.csharp) buildLine.push_back("--csharp");
-			if (cmdBuild(buildLine) != 0) return 1;
+			if (runCommand(buildLine) != 0) return 1;
 
 			if (command.empty()) {
 				// A project that has a backend we cannot start has been told why; one that has
@@ -203,7 +200,7 @@ namespace Cli {
 						std::fflush(stdout);
 						// Watched afresh: an import added since is one to watch from now on.
 						watch.watch(watchedFiles(options.project));
-						if (cmdBuild(buildLine) == 0) {
+						if (runCommand(buildLine) == 0) {
 							backend.stop();
 							std::printf("rda: running %s again\n", commandText(command).c_str());
 							std::fflush(stdout);
@@ -225,9 +222,18 @@ namespace Cli {
 		}
 	}
 
-	int cmdDev(const Args& args) {
+	static int cmdDev(const Args& args) {
 		DevOptions options;
 		if (!parseDevOptions(args, options)) return 1;
 		return runDev(options);
+	}
+
+	namespace {
+		const Command kDev{ __FILE__, "dev", Section::Run, 0,
+			"  rda dev    [<project>] [--layout <name>] [--dry-run] [--python] [--node] [--csharp]\n"
+			"                                     build, run the project's backend, and build and\n"
+			"                                     run it again when res/state.ts changes; with no\n"
+			"                                     backend, the prototype\n",
+			cmdDev };
 	}
 }

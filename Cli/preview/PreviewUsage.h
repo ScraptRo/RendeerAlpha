@@ -8,7 +8,9 @@ namespace Cli {
 	inline constexpr const char* kPrototypeUsage =
 		"  rda prototype <project> [--layout <name>] [--set n=v] [--rows t=n]\n"
 		"                          [--data <file.json>] [--no-build]\n"
-		"                                     open the interface with placeholder state\n";
+		"                                     open the interface with placeholder state; a\n"
+		"                                     container marked `editable` can be edited in the\n"
+		"                                     window, and what you do is written into the .tsx\n";
 
 	inline constexpr const char* kShotUsage =
 		"  rda shot   <project> [--out <file.png>] [--size WxH] [--scale <n>]\n"
@@ -17,7 +19,7 @@ namespace Cli {
 		"                       [--key <chord>]... [--type <text>]...\n"
 		"                       [--drag X1,Y1,X2,Y2 [--hold]] [--files <a;b>]\n"
 		"                       [--click [Ctrl+][Shift+]X,Y|id]...\n"
-		"                       [--a11y <tree.txt>] [--compose <text>]\n"
+		"                       [--a11y <tree.txt>] [--compose <text>] [--edit]\n"
 		"                                                          + the above\n"
 		"                                     the same with no window: writes a .png\n";
 }

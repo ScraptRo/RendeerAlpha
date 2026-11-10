@@ -1,6 +1,6 @@
 ﻿// The commands that compile one source file: a layout, a theme, a mesh -- and the two that
 // read the result back or write what layouts are checked against, `types` and `dump`.
-#include "Commands.h"
+#include "Command.h"
 
 #include <Layout/Expression.h>
 #include <Layout/ThemeCompiler.h>
@@ -197,29 +197,52 @@ namespace Cli {
 		}
 	}
 
-	int cmdLayout(const Args& args) {
+	static int cmdLayout(const Args& args) {
 		return compileLayout(argument(args, 1), argument(args, 2));
 	}
 
-	int cmdTheme(const Args& args) {
+	static int cmdTheme(const Args& args) {
 		// Before the compiler, because the schema it checks the theme against is the
 		// engine's table merged with this.
 		if (!registerMeshes(globalOptions().meshes)) return 1;
 		return compileTheme(argument(args, 1), argument(args, 2));
 	}
 
-	int cmdMesh(const Args& args) {
+	static int cmdMesh(const Args& args) {
 		return compileMesh(argument(args, 1), argument(args, 2));
 	}
 
-	int cmdTypes(const Args& args) {
+	static int cmdTypes(const Args& args) {
 		// Before the emitter, so the generated .d.ts carries the fields a mesh asked for
 		// as well as the ones the engine has.
 		if (!registerMeshes(globalOptions().meshes)) return 1;
 		return emitTypes(argument(args, 1), argument(args, 2), argument(args, 3));
 	}
 
-	int cmdDump(const Args& args) {
+	static int cmdDump(const Args& args) {
 		return dumpBlueprint(argument(args, 1));
+	}
+
+	namespace {
+		const Command kLayout{ __FILE__, "layout", Section::Build, 1,
+			"  rda layout <file.tsx> [out.rdab] [--strict]\n"
+			"                                     compile a layout into a blueprint\n",
+			cmdLayout };
+		const Command kTypes{ __FILE__, "types", Section::Build, 1,
+			"  rda types  <out.d.ts> [theme] [state]  emit the TypeScript definitions\n",
+			cmdTypes };
+		const Command kTheme{ __FILE__, "theme", Section::Build, 1,
+			"  rda theme  <theme.ts> [out.rdth]   compile a theme\n",
+			cmdTheme };
+		// --mesh sits with the command that makes what it names: it is the one option here
+		// that is about a mesh, though it is read by `theme` and `types`.
+		const Command kMesh{ __FILE__, "mesh", Section::Build, 1,
+			"  rda mesh   <mesh.ts>  [out.rdam]   compile a widget mesh\n"
+			"  --mesh <mesh.ts>                   on `theme` and `types`, repeatable: a mesh\n"
+			"                                     whose parameters the schema includes\n",
+			cmdMesh };
+		const Command kDump{ __FILE__, "dump", Section::Learn, 1,
+			"  rda dump   <file.rdab>             print what a compiled layout contains\n",
+			cmdDump };
 	}
 }

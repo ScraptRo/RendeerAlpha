@@ -2,14 +2,15 @@
 
 Three tests, one checklist. `rda_python_binding`, `rda_node_binding` and
 `rda_csharp_binding` each start a real engine and walk the same list of questions in the
-same order.
+same order, with nothing on the screen, so they can run while you work and all at once.
 
 ```bash
-ctest --test-dir build/default -C Debug -R binding --output-on-failure
+ctest --test-dir build/default -C Debug -R _binding$ -j3 --output-on-failure
 ```
 
 Or one of them directly, which is what you want while fixing something — the output is
-the checklist and it scrolls past in a few seconds:
+the checklist and it scrolls past in a few seconds, and the window is really there to look
+at. `RDA_OFFSCREEN=1` in front of any of these hides it, which is all ctest does:
 
 ```bash
 cd build/default/bin/Debug/bindingtests
@@ -22,12 +23,27 @@ node check.mjs
 
 The C ABI is a product with three consumers, and nothing else in the build compiles any
 of them. `rendeer_tests` cannot: it deliberately links only device-independent sources,
-and a binding is the opposite of device-independent — it opens a shared library, starts a
-renderer, and puts a window on screen.
+and a binding is the opposite of device-independent — it opens a shared library and starts a
+renderer.
 
-So this tier costs what the others avoid: a device, a window, and another language
-runtime. That is the whole reason it did not exist for a while, and the whole reason it
-skips itself rather than failing when any of those is missing.
+So this tier costs what the others avoid: a device and another language runtime. That is
+the whole reason it did not exist for a while, and the whole reason it skips itself rather
+than failing when one of those is missing.
+
+## Nothing on the screen
+
+`RDA_OFFSCREEN=1` runs the whole engine against a window that is never shown, not even for a
+moment. The frames are still built, the bindings still run and the layouts still load, so the
+checklist says exactly what it says with a real window, and that has been compared line by line.
+
+The engine reads it, so a binding needs no code for it and a new language gets it for free. The
+window is hidden rather than absent, because the device and the pipelines are chosen against a
+surface, so a machine with no display at all still needs a virtual one, such as `xvfb` on a Linux
+build server.
+
+Asking a hidden window to maximise, minimise or go fullscreen is remembered and read back rather
+than done, since each of those shows a window on one platform or another. So the checks on
+`rda.maximized` test the path through the binding and the signal, and not the operating system.
 
 ## What is here
 
@@ -80,6 +96,19 @@ Then: every row shape `fill()` promises to take, a run written at an offset, ten
 rows, routing with history in both directions, and the calls that must be **refused**
 rather than quietly ignored — a blueprint that is not there, a misspelled signal, a row
 past the end, a command nothing is bound to, a command that does not exist.
+
+## Adding a language
+
+1. Copy `check.py`, which is the fullest of the three, to `check.<ext>` and answer each question.
+2. Generate its state module and copy its package into the run directory, in `CMakeLists.txt`,
+   beside the others.
+3. Add one line, which sets the timeout and keeps it off the screen:
+
+```cmake
+rda_binding_test(rda_ruby_binding "${RDA_RUBY_EXECUTABLE}" check.rb)
+```
+
+[Writing a binding](../../docs/backend/new-binding.md) is the rest of it.
 
 ## Adding a check
 

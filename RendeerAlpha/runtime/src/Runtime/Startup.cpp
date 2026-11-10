@@ -131,6 +131,7 @@ namespace RDA::Runtime {
 		// What the application asked for, if it asked. 0 means it did not, and the display
 		// is asked instead once there is a window to ask about.
 		gRendererSetup.unitScale = config.gui.uiScale;
+		gRendererSetup.offscreen = config.offscreen;
 
 		if (config.app.windowDependent) {
 			WindowInfo createInfo;
@@ -152,14 +153,13 @@ namespace RDA::Runtime {
 			createInfo.name = config.app.name;
 			createInfo.vsync = config.vsync;
 			createInfo.style = config.window;
+			// Present only as a device anchor: hidden rather than never created, because the
+			// device and the pipelines are chosen against its surface. Hidden from the start,
+			// so that a run with nobody watching never flashes on anybody's desktop.
+			createInfo.style.hidden = config.window.hidden || config.hiddenMainWindow || config.offscreen;
 			mainWindow = new Window(createInfo);
 			mainWindow->input().setCallbacks(config.input);
 			watchForModalLoop(mainWindow);
-			// Present only as a device anchor: hidden here rather than never created,
-			// because the device and the pipelines are chosen against its surface.
-			if ((config.hiddenMainWindow || config.offscreen) && mainWindow->isOpen()) {
-				mainWindow->hide();
-			}
 
 			// What one layout unit is worth here. Settled once, before the font is baked,
 			// because the atlas is baked at it: `uiScale = 0` means ask the display, which
@@ -285,6 +285,7 @@ RDA::Window* rendeerCreateWindow(uint32_t width, uint32_t height, const char* ti
 	info.Height = height;
 	info.name = title ? title : "";
 	info.vsync = vsync;
+	info.style.hidden = gRendererSetup.offscreen;
 
 	// Registers itself in windowList, so the event pump and the draw loop pick it up
 	// without being told about it.

@@ -1,5 +1,9 @@
 # Bindings and handlers
 
+A value that reads `state`, or in a row what the row is given, is a binding by itself:
+`width={state.gap}` is `width={() => state.gap}`, and compiles to the same bytes. Only a handler
+needs its arrow. The arrow is written in what follows because either form works.
+
 `{() => ...}` is compiled at build time, two ways. What the grammar below covers becomes a
 few stack operations with no engine behind it -- the fast path, used whenever it can be.
 Anything more is JavaScript, compiled to QuickJS bytecode and run by the engine: a function

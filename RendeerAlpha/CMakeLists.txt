@@ -228,6 +228,7 @@ list(APPEND RDA_SOURCES
 	toolchain/src/Layout/Codegen/NodeStateGen.cpp
 	toolchain/src/Layout/Codegen/CSharpStateGen.cpp
 	toolchain/src/Layout/ExpressionParser.cpp
+	toolchain/src/Layout/JsxSource.cpp
 	# Which of a layout's functions run at run time, and the bytecode they ship as.
 	toolchain/src/Layout/ScriptCompiler.cpp
 	# esbuild's source map, read back, so a file that throws while it is built is
